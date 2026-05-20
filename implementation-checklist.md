@@ -50,16 +50,16 @@ Tasks are ordered by dependency. Complete each section before moving to the next
 
 ## 4. Broker — WebSocket Hub
 
-- [ ] Implement `GET /agent/connect` WebSocket upgrade handler: validate agent token (hash lookup in `agent_tokens`, check `revoked_at`), update `last_used_at`
-- [ ] On connection: look up agent from DB, add to in-memory `Map<agent_id, WebSocket>`; log connect event with `agentId`, `host`, `userId`
-- [ ] Handle duplicate connections: if `agent_id` already in map, terminate old connection, log replacement, accept new
-- [ ] Implement broker-initiated ping loop: send WS ping every `HEARTBEAT_INTERVAL_SECONDS`; hook `pong` event to update `agents.last_heartbeat_at`
-- [ ] Implement missed heartbeat detection: terminate connection and remove from map after `HEARTBEAT_INTERVAL_SECONDS × HEARTBEAT_MAX_MISSED` without pong; log timeout
-- [ ] Handle `config_update` message from agent: upsert `path_labels` (add new, update existing, remove absent); enforce label uniqueness; return structured error on conflict
-- [ ] Handle `update_host` message from agent: validate new host is unique for user; update `agents.host`; return error on conflict
-- [ ] Handle `rotate_token` message from agent: generate new token, insert `agent_tokens` row, update `agents.agent_token_id`, send `token_rotated` response; mark old token `revoked_at` on successful reconnect with new token
-- [ ] On disconnect: remove from in-memory map; log disconnect event
-- [ ] Add rate limiting: custom in-memory sliding window on WebSocket reconnections — `RATE_LIMIT_WS_RECONNECT_PER_MIN` per agent token
+- [x] Implement `GET /agent/connect` WebSocket upgrade handler: validate agent token (hash lookup in `agent_tokens`, check `revoked_at`), update `last_used_at`
+- [x] On connection: look up agent from DB, add to in-memory `Map<agent_id, WebSocket>`; log connect event with `agentId`, `host`, `userId`
+- [x] Handle duplicate connections: if `agent_id` already in map, terminate old connection, log replacement, accept new
+- [x] Implement broker-initiated ping loop: send WS ping every `HEARTBEAT_INTERVAL_SECONDS`; hook `pong` event to update `agents.last_heartbeat_at`
+- [x] Implement missed heartbeat detection: terminate connection and remove from map after `HEARTBEAT_INTERVAL_SECONDS × HEARTBEAT_MAX_MISSED` without pong; log timeout
+- [x] Handle `config_update` message from agent: upsert `path_labels` (add new, update existing, remove absent); enforce label uniqueness; return structured error on conflict
+- [x] Handle `update_host` message from agent: validate new host is unique for user; update `agents.host`; return error on conflict
+- [x] Handle `rotate_token` message from agent: generate new token, insert `agent_tokens` row, update `agents.agent_token_id`, send `token_rotated` response; mark old token `revoked_at` on successful reconnect with new token
+- [x] On disconnect: remove from in-memory map; log disconnect event
+- [x] Add rate limiting: custom in-memory sliding window on WebSocket reconnections — `RATE_LIMIT_WS_RECONNECT_PER_MIN` per agent token
 
 ---
 
