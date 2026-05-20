@@ -1,0 +1,22 @@
+{
+  "name": "@constellation/broker",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@constellation/shared": "workspace:*",
+    "@prisma/client": "^7.8.0",
+    "pino": "^9.0.0",
+    "prisma": "^7.8.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "pino-pretty": "^11.0.0",
+    "typescript": "^5.5.0"
+  }
+}

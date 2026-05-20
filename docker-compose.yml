@@ -1,0 +1,33 @@
+services:
+  broker:
+    build:
+      context: .
+      dockerfile: packages/broker/Dockerfile
+    ports:
+      - "3000:3000"
+    env_file:
+      - packages/broker/.env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: constellation
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+
+volumes:
+  pgdata:
