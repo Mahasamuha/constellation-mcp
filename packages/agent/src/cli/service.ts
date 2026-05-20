@@ -32,12 +32,14 @@ function installSystemd(exec: string): void {
   mkdirSync(unitDir, { recursive: true });
 
   const unitPath = join(unitDir, `${SERVICE_NAME}.service`);
+  const path = process.env["PATH"] ?? "/usr/local/bin:/usr/bin:/bin";
   const unit = `[Unit]
 Description=Constellation Agent
 After=network.target
 
 [Service]
 Type=simple
+Environment="PATH=${path}"
 ExecStart=${exec} agent start --foreground
 Restart=on-failure
 RestartSec=5
