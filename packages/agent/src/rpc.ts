@@ -25,10 +25,12 @@ export interface RpcEnvelope {
   [key: string]: unknown;
 }
 
+type RpcError = string | { message: string; edit_index?: number; match_count?: number };
+
 export interface RpcResponse {
   request_id: string;
-  result?: unknown;
-  error?: unknown;
+  result?: object;
+  error?: RpcError;
 }
 
 /**

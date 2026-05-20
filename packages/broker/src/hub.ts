@@ -396,10 +396,12 @@ async function handleRotateToken(conn: ConnectedAgent): Promise<void> {
 // RPC dispatch (used by the request router in section 5)
 // ---------------------------------------------------------------------------
 
+export type RpcError = string | { message: string; edit_index?: number; match_count?: number };
+
 interface RpcResponse {
   request_id: string;
-  result?: unknown;
-  error?: unknown;
+  result?: object;
+  error?: RpcError;
 }
 
 const pendingRpcs = new Map<string, {
@@ -472,7 +474,7 @@ function routeRpcResponse(msg: RpcResponse): void {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function send(ws: WebSocket, msg: unknown): void {
+function send(ws: WebSocket, msg: object): void {
   if (ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify(msg));
   }

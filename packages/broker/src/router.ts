@@ -1,7 +1,7 @@
 import micromatch from "micromatch";
 import { randomBytes } from "node:crypto";
 import { prisma } from "./db.js";
-import { dispatchRpc, getConnection, type RpcEnvelope } from "./hub.js";
+import { dispatchRpc, getConnection, type RpcEnvelope, type RpcError } from "./hub.js";
 import { createLogger } from "@constellation/shared";
 
 const log = createLogger("router");
@@ -139,8 +139,8 @@ async function isPathFiltered(
 export type ToolParams = Record<string, unknown>;
 
 export interface DispatchResult {
-  result?: unknown;
-  error?: unknown;
+  result?: object;
+  error?: RpcError;
 }
 
 /**

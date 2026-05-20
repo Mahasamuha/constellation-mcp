@@ -56,7 +56,7 @@ export class AgentConnection {
     this.send({ type: "rotate_token" });
   }
 
-  private send(msg: unknown): void {
+  private send(msg: object): void {
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(msg));
     } else {
