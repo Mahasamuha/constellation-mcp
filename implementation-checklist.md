@@ -75,22 +75,22 @@ Tasks are ordered by dependency. Complete each section before moving to the next
 
 ## 6. Broker — MCP Layer
 
-- [ ] Initialise MCP server with Streamable HTTP transport using `@modelcontextprotocol/sdk`
-- [ ] Register `list_hosts` tool: query `agents` for user, return host names with liveness status (compare `last_heartbeat_at` against `HEARTBEAT_INTERVAL_SECONDS × HEARTBEAT_MAX_MISSED`)
-- [ ] Register `list_labels` tool: query `path_labels` for user; support optional `host` filter; return labels with `reported_path`
-- [ ] Register `list_directory` tool: forward to router; support `recursive`, `max_depth`, `limit`, `exclude` params; handle `truncated_by` response
-- [ ] Register `file_info` tool: forward to router; return `size`, `mtime`, `type` (file/directory/symlink)
-- [ ] Register `search_files` tool: forward to router; support `type` (glob/regex) param; handle `truncated` response
-- [ ] Register `read_file` tool: forward to router; support `start_line`, `end_line` params; handle size cap error
-- [ ] Register `grep_files` tool: forward to router; support `file_glob` and `type` params; handle `truncated` response
-- [ ] Register `write_file` tool: forward to router; support `mode` (overwrite/append)
-- [ ] Register `edit_file` tool: forward to router; support `edits` array and `dry_run`; handle `edit_index`/`match_count` errors
-- [ ] Register `copy` tool: forward to router; handle destination-exists error
-- [ ] Register `create_directory` tool: forward to router
-- [ ] Register `delete` tool: forward to router; handle two-phase recursive confirmation response
-- [ ] Register `move` tool: forward to router; support `dst_label`
-- [ ] Apply tool annotations (`readOnlyHint`, `destructiveHint`, `idempotentHint`) per annotations table in plan
-- [ ] Map all error taxonomy cases to structured MCP error responses
+- [x] Initialise MCP server with Streamable HTTP transport using `@modelcontextprotocol/sdk`
+- [x] Register `list_hosts` tool: query `agents` for user, return host names with liveness status (compare `last_heartbeat_at` against `HEARTBEAT_INTERVAL_SECONDS × HEARTBEAT_MAX_MISSED`)
+- [x] Register `list_labels` tool: query `path_labels` for user; support optional `host` filter; return labels with `reported_path`
+- [x] Register `list_directory` tool: forward to router; support `recursive`, `max_depth`, `limit`, `exclude` params; handle `truncated_by` response
+- [x] Register `file_info` tool: forward to router; return `size`, `mtime`, `type` (file/directory/symlink)
+- [x] Register `search_files` tool: forward to router; support `type` (glob/regex) param; handle `truncated` response
+- [x] Register `read_file` tool: forward to router; support `start_line`, `end_line` params; handle size cap error
+- [x] Register `grep_files` tool: forward to router; support `file_glob` and `type` params; handle `truncated` response
+- [x] Register `write_file` tool: forward to router; support `mode` (overwrite/append)
+- [x] Register `edit_file` tool: forward to router; support `edits` array and `dry_run`; handle `edit_index`/`match_count` errors
+- [x] Register `copy` tool: forward to router; handle destination-exists error
+- [x] Register `create_directory` tool: forward to router
+- [x] Register `delete` tool: forward to router; handle two-phase recursive confirmation response
+- [x] Register `move` tool: forward to router; support `dst_label`
+- [x] Apply tool annotations (`readOnlyHint`, `destructiveHint`, `idempotentHint`) per annotations table in plan
+- [x] Map all error taxonomy cases to structured MCP error responses
 
 ---
 
