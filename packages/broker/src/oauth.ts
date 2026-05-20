@@ -223,7 +223,7 @@ oauthRouter.get("/oauth/callback", async (req: Request, res: Response) => {
     userId = await exchangeCodeAndUpsertUser(
       prisma,
       callbackUrl,
-      upstreamState,
+      rawState,
       pending.codeVerifier
     );
   } catch (err) {
