@@ -7,6 +7,5 @@ src/generated/
 .env
 .env.local
 
-pnpm-lock.yaml
 
 *.log
