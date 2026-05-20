@@ -160,12 +160,13 @@ async function dispatch(
 
     case "copy": {
       const dstLabel = s(env, "dst_label");
-      // dst_label resolution (cross-label root) must be provided by broker as dst_root.
-      const dstRoot = s(env, "dst_root") ?? root;
+      if (dstLabel && !s(env, "dst_root")) {
+        throw new Error("Cross-label copy requires dst_root to be resolved by the broker");
+      }
       await copyPath(root, {
         src_relative_path: req(env, "src_relative_path"),
         dst_relative_path: req(env, "dst_relative_path"),
-        dst_root: dstLabel ? dstRoot : undefined,
+        dst_root: dstLabel ? s(env, "dst_root") : undefined,
       });
       return { ok: true };
     }
@@ -184,11 +185,13 @@ async function dispatch(
 
     case "move": {
       const dstLabel = s(env, "dst_label");
-      const dstRoot = s(env, "dst_root") ?? root;
+      if (dstLabel && !s(env, "dst_root")) {
+        throw new Error("Cross-label move requires dst_root to be resolved by the broker");
+      }
       await movePath(root, {
         src_relative_path: req(env, "src_relative_path"),
         dst_relative_path: req(env, "dst_relative_path"),
-        dst_root: dstLabel ? dstRoot : undefined,
+        dst_root: dstLabel ? s(env, "dst_root") : undefined,
       });
       return { ok: true };
     }
@@ -236,13 +239,17 @@ async function safeRealpath(path: string, boundaryRoot: string): Promise<string>
   try {
     return await fs.realpath(path);
   } catch {
-    // Walk up until we find an existing ancestor, then re-append the suffix.
     const { dirname: dirnameF, relative: relativeF, join: joinF } = await import("node:path");
     const parent = dirnameF(path);
-    if (parent === path || !parent.startsWith(boundaryRoot)) {
+    if (parent === path) throw new Error("Cannot resolve path");
+
+    // Resolve the parent first, then verify it's still inside the boundary.
+    // Using string startsWith on the unresolved parent is insufficient because
+    // a path like /root/../outside passes the prefix check before resolution.
+    const resolvedParent = await safeRealpath(parent, boundaryRoot);
+    if (!resolvedParent.startsWith(boundaryRoot + "/") && resolvedParent !== boundaryRoot) {
       throw new Error("Cannot resolve path");
     }
-    const resolvedParent = await safeRealpath(parent, boundaryRoot);
     return joinF(resolvedParent, relativeF(parent, path));
   }
 }

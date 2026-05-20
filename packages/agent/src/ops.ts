@@ -62,7 +62,7 @@ export async function listDirectory(
 
       if (nodes.length >= limit) {
         truncated = true;
-        truncatedBy = nodes.length >= hardCap ? "limit" : "limit";
+        truncatedBy = "limit";
         break;
       }
 

@@ -135,21 +135,21 @@ Tasks are ordered by dependency. Complete each section before moving to the next
 
 ## 9. Agent — CLI (`constellation agent`)
 
-- [ ] Set up CLI entry point with subcommand routing (`agent`, `broker`); use `commander` or equivalent
-- [ ] Implement `constellation agent init [--broker <url>]`: device flow (`scope=agent:register`), poll `/oauth/token`, write `agent.yaml` and `paths.yaml`
-- [ ] Implement `constellation agent install`: register with OS service manager (systemd user unit on Linux, launchd LaunchAgent on macOS, Task Scheduler on Windows); no escalation required for user-scoped installs
-- [ ] Implement `constellation agent start` / `stop` / `restart`: wrap OS service manager commands transparently
-- [ ] Implement `constellation agent status [--json]`: show service state, broker connection, labels, last heartbeat
-- [ ] Implement `constellation agent sync`: send `config_update` to broker with current `paths.yaml` contents
-- [ ] Implement `constellation agent rotate`: send `rotate_token` request; write returned token to `agent.yaml`
-- [ ] Implement `constellation agent rename <host>`: send `update_host` message; update `agent.yaml` on success
-- [ ] Implement `constellation agent logs [-f] [--lines <n>]`: read from OS service log; tail with `-f`
-- [ ] Implement `constellation agent config show`: print `agent.yaml` and `paths.yaml` with token masked
-- [ ] Implement `constellation agent config edit`: open config files in `$EDITOR`
-- [ ] Implement `constellation agent config path`: print config directory path
-- [ ] Implement `constellation agent paths list [--json]`: list labels from `paths.yaml`
-- [ ] Implement `constellation agent paths add <label> <path>`: append to `paths.yaml`; prompt to run `constellation agent sync`
-- [ ] Implement `constellation agent paths remove <label>`: remove from `paths.yaml`; prompt to run `constellation agent sync`
+- [x] Set up CLI entry point with subcommand routing (`agent`, `broker`); use `commander` or equivalent
+- [x] Implement `constellation agent init [--broker <url>]`: device flow (`scope=agent:register`), poll `/oauth/token`, write `agent.yaml` and `paths.yaml`
+- [x] Implement `constellation agent install`: register with OS service manager (systemd user unit on Linux, launchd LaunchAgent on macOS, Task Scheduler on Windows); no escalation required for user-scoped installs
+- [x] Implement `constellation agent start` / `stop` / `restart`: wrap OS service manager commands transparently
+- [x] Implement `constellation agent status [--json]`: show service state, broker connection, labels, last heartbeat
+- [x] Implement `constellation agent sync`: send `config_update` to broker with current `paths.yaml` contents
+- [x] Implement `constellation agent rotate`: send `rotate_token` request; write returned token to `agent.yaml`
+- [x] Implement `constellation agent rename <host>`: send `update_host` message; update `agent.yaml` on success
+- [x] Implement `constellation agent logs [-f] [--lines <n>]`: read from OS service log; tail with `-f`
+- [x] Implement `constellation agent config show`: print `agent.yaml` and `paths.yaml` with token masked
+- [x] Implement `constellation agent config edit`: open config files in `$EDITOR`
+- [x] Implement `constellation agent config path`: print config directory path
+- [x] Implement `constellation agent paths list [--json]`: list labels from `paths.yaml`
+- [x] Implement `constellation agent paths add <label> <path>`: append to `paths.yaml`; prompt to run `constellation agent sync`
+- [x] Implement `constellation agent paths remove <label>`: remove from `paths.yaml`; prompt to run `constellation agent sync`
 
 ---
 
