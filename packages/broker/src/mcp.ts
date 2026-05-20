@@ -6,6 +6,72 @@ import { prisma } from "./db.js";
 import { routeToolCall, RouterError } from "./router.js";
 import { hashToken, createLogger } from "@constellation/shared";
 
+// ---------------------------------------------------------------------------
+// Output schemas — used as outputSchema in registerTool and to type ok()
+// ---------------------------------------------------------------------------
+
+const HostEntry = {
+  host: z.string(),
+  online: z.boolean(),
+  last_seen: z.string().nullable(),
+  labels: z.array(z.string()),
+};
+
+const LabelEntry = {
+  label: z.string(),
+  host: z.string(),
+  reported_path: z.string(),
+};
+
+const DirNode = {
+  path: z.string(),
+  type: z.enum(["file", "directory", "symlink"]),
+};
+
+const ListDirectoryOutput = {
+  nodes: z.array(z.object(DirNode)),
+  total_nodes: z.number(),
+  truncated: z.boolean(),
+  truncated_by: z.enum(["limit", "max_depth"]).optional(),
+};
+
+const FileInfoOutput = {
+  size: z.number(),
+  mtime: z.string(),
+  type: z.enum(["file", "directory", "symlink"]),
+  target: z.string().optional(),
+};
+
+const SearchFilesOutput = {
+  matches: z.array(z.string()),
+  truncated: z.boolean(),
+};
+
+const ReadFileOutput = {
+  content: z.string(),
+  total_lines: z.number(),
+};
+
+const GrepMatch = { line: z.number(), text: z.string() };
+const GrepFilesOutput = {
+  results: z.array(z.object({ file: z.string(), matches: z.array(z.object(GrepMatch)) })),
+  truncated: z.boolean(),
+};
+
+const OkOutput = { ok: z.literal(true) };
+
+const EditFileOutput = { diff: z.string() };
+
+const DeleteOutput = z.union([
+  z.object({ ok: z.literal(true) }),
+  z.object({
+    requires_confirmation: z.literal(true),
+    path: z.string(),
+    size_bytes: z.number(),
+    file_count: z.number(),
+  }),
+]);
+
 const log = createLogger("mcp");
 
 export const mcpRouter: IRouter = Router();
@@ -37,7 +103,6 @@ async function resolveBearerToken(token: string): Promise<{
 // ---------------------------------------------------------------------------
 
 mcpRouter.all("/mcp", async (req: Request, res: Response) => {
-  // Validate bearer token and attach auth info for the SDK.
   const authHeader = req.headers["authorization"];
   const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
 
@@ -52,7 +117,6 @@ mcpRouter.all("/mcp", async (req: Request, res: Response) => {
     return;
   }
 
-  // Attach auth to the request so the transport passes it to tool callbacks.
   (req as Request & { auth: object }).auth = {
     token,
     clientId: session.clientId,
@@ -78,10 +142,7 @@ mcpRouter.all("/mcp", async (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 
 function buildMcpServer(): McpServer {
-  const server = new McpServer({
-    name: "constellation",
-    version: "0.1.0",
-  });
+  const server = new McpServer({ name: "constellation", version: "0.1.0" });
 
   registerListHosts(server);
   registerListLabels(server);
@@ -110,19 +171,20 @@ function userId(extra: { authInfo?: { extra?: Record<string, unknown> } }): stri
   return id;
 }
 
-/** Converts a RouterError to a thrown MCP tool error string. */
-function routerErrorMessage(err: RouterError): string {
-  return err.message;
-}
-
 function isRouterError(v: unknown): v is RouterError {
   return typeof v === "object" && v !== null && "code" in v;
 }
 
-type ToolResult = { content: Array<{ type: "text"; text: string }> };
+type ToolResult<T extends Record<string, unknown>> = {
+  content: Array<{ type: "text"; text: string }>;
+  structuredContent: T;
+};
 
-function ok(data: unknown): ToolResult {
-  return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+function ok<T extends Record<string, unknown>>(data: T): ToolResult<T> {
+  return {
+    content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+    structuredContent: data,
+  };
 }
 
 function toolError(message: string): never {
@@ -135,11 +197,11 @@ async function dispatch(
   label: string,
   params: Record<string, unknown>,
   host?: string
-): Promise<ToolResult> {
+): Promise<ToolResult<Record<string, unknown>>> {
   const result = await routeToolCall(uid, tool, label, params, host);
-  if (isRouterError(result)) toolError(routerErrorMessage(result));
+  if (isRouterError(result)) toolError(result.message);
   if (result.error) toolError(typeof result.error === "string" ? result.error : JSON.stringify(result.error));
-  return ok(result.result);
+  return ok(result.result as Record<string, unknown>);
 }
 
 // ---------------------------------------------------------------------------
@@ -147,14 +209,16 @@ async function dispatch(
 // ---------------------------------------------------------------------------
 
 function registerListHosts(server: McpServer): void {
-  server.tool(
+  server.registerTool(
     "list_hosts",
-    "List all registered hosts with liveness status and their labels",
-    {},
-    { readOnlyHint: true },
-    async (_args, extra) => {
+    {
+      description: "List all registered hosts with liveness status and their labels",
+      outputSchema: { hosts: z.array(z.object(HostEntry)) },
+      annotations: { readOnlyHint: true },
+    },
+    async (extra) => {
       const uid = userId(extra);
-      const heartbeatThresholdMs =
+      const thresholdMs =
         parseInt(process.env["HEARTBEAT_INTERVAL_SECONDS"] ?? "60", 10) *
         parseInt(process.env["HEARTBEAT_MAX_MISSED"] ?? "3", 10) *
         1000;
@@ -164,16 +228,12 @@ function registerListHosts(server: McpServer): void {
         include: { pathLabels: { select: { label: true } } },
       });
 
-      const hosts = agents.map((a) => ({
+      return ok({ hosts: agents.map((a) => ({
         host: a.host,
-        online:
-          a.lastHeartbeatAt !== null &&
-          Date.now() - a.lastHeartbeatAt.getTime() < heartbeatThresholdMs,
+        online: a.lastHeartbeatAt !== null && Date.now() - a.lastHeartbeatAt.getTime() < thresholdMs,
         last_seen: a.lastHeartbeatAt?.toISOString() ?? null,
         labels: a.pathLabels.map((pl) => pl.label),
-      }));
-
-      return ok(hosts);
+      })) });
     }
   );
 }
@@ -183,27 +243,21 @@ function registerListHosts(server: McpServer): void {
 // ---------------------------------------------------------------------------
 
 function registerListLabels(server: McpServer): void {
-  server.tool(
+  server.registerTool(
     "list_labels",
-    "List path labels, optionally filtered by host",
-    { host: z.string().optional() },
-    { readOnlyHint: true },
+    {
+      description: "List path labels, optionally filtered by host",
+      inputSchema: { host: z.string().optional() },
+      outputSchema: { labels: z.array(z.object(LabelEntry)) },
+      annotations: { readOnlyHint: true },
+    },
     async ({ host }, extra) => {
       const uid = userId(extra);
-
       const labels = await prisma.pathLabel.findMany({
-        where: {
-          userId: uid,
-          ...(host ? { agent: { host } } : {}),
-        },
+        where: { userId: uid, ...(host ? { agent: { host } } : {}) },
         include: { agent: { select: { host: true } } },
       });
-
-      return ok(labels.map((l) => ({
-        label: l.label,
-        host: l.agent.host,
-        reported_path: l.reportedPath,
-      })));
+      return ok({ labels: labels.map((l) => ({ label: l.label, host: l.agent.host, reported_path: l.reportedPath })) });
     }
   );
 }
@@ -213,19 +267,22 @@ function registerListLabels(server: McpServer): void {
 // ---------------------------------------------------------------------------
 
 function registerListDirectory(server: McpServer): void {
-  server.tool(
+  server.registerTool(
     "list_directory",
-    "List the contents of a label root or subdirectory. Use recursive:true with exclude:[\"node_modules\",\".git\"] for repo trees. Returns truncated:true and truncated_by when a limit or max_depth is hit.",
     {
-      label: z.string(),
-      relative_path: z.string().optional(),
-      recursive: z.boolean().optional(),
-      max_depth: z.number().int().optional(),
-      limit: z.number().int().optional(),
-      exclude: z.array(z.string()).optional(),
-      host: z.string().optional(),
+      description: "List the contents of a label root or subdirectory. Use recursive:true with exclude:[\"node_modules\",\".git\"] for repo trees. Returns truncated:true and truncated_by when a limit or max_depth is hit.",
+      inputSchema: {
+        label: z.string(),
+        relative_path: z.string().optional(),
+        recursive: z.boolean().optional(),
+        max_depth: z.number().int().optional(),
+        limit: z.number().int().optional(),
+        exclude: z.array(z.string()).optional(),
+        host: z.string().optional(),
+      },
+      outputSchema: ListDirectoryOutput,
+      annotations: { readOnlyHint: true },
     },
-    { readOnlyHint: true },
     async ({ label, host, ...params }, extra) => dispatch(userId(extra), "list_directory", label, params, host)
   );
 }
@@ -235,15 +292,18 @@ function registerListDirectory(server: McpServer): void {
 // ---------------------------------------------------------------------------
 
 function registerFileInfo(server: McpServer): void {
-  server.tool(
+  server.registerTool(
     "file_info",
-    "Returns size, mtime, and type (file/directory/symlink) for a path. Use before read_file to check size.",
     {
-      label: z.string(),
-      relative_path: z.string(),
-      host: z.string().optional(),
+      description: "Returns size, mtime, and type (file/directory/symlink) for a path. Use before read_file to check size.",
+      inputSchema: {
+        label: z.string(),
+        relative_path: z.string(),
+        host: z.string().optional(),
+      },
+      outputSchema: FileInfoOutput,
+      annotations: { readOnlyHint: true },
     },
-    { readOnlyHint: true },
     async ({ label, host, ...params }, extra) => dispatch(userId(extra), "file_info", label, params, host)
   );
 }
@@ -253,17 +313,20 @@ function registerFileInfo(server: McpServer): void {
 // ---------------------------------------------------------------------------
 
 function registerSearchFiles(server: McpServer): void {
-  server.tool(
+  server.registerTool(
     "search_files",
-    "Filename search across a directory tree. type:\"glob\" (default, micromatch syntax) or \"regex\". Capped at 200 results; response includes truncated:true if hit.",
     {
-      label: z.string(),
-      pattern: z.string(),
-      relative_path: z.string().optional(),
-      type: z.enum(["glob", "regex"]).optional(),
-      host: z.string().optional(),
+      description: "Filename search across a directory tree. type:\"glob\" (default, micromatch syntax) or \"regex\". Capped at 200 results; response includes truncated:true if hit.",
+      inputSchema: {
+        label: z.string(),
+        pattern: z.string(),
+        relative_path: z.string().optional(),
+        type: z.enum(["glob", "regex"]).optional(),
+        host: z.string().optional(),
+      },
+      outputSchema: SearchFilesOutput,
+      annotations: { readOnlyHint: true },
     },
-    { readOnlyHint: true },
     async ({ label, host, ...params }, extra) => dispatch(userId(extra), "search_files", label, params, host)
   );
 }
@@ -273,17 +336,20 @@ function registerSearchFiles(server: McpServer): void {
 // ---------------------------------------------------------------------------
 
 function registerReadFile(server: McpServer): void {
-  server.tool(
+  server.registerTool(
     "read_file",
-    "Returns file content or a specified line range. Includes total_lines. Returns a size error if the file exceeds the cap — use start_line/end_line to page, or grep_files for content search.",
     {
-      label: z.string(),
-      relative_path: z.string(),
-      start_line: z.number().int().optional(),
-      end_line: z.number().int().optional(),
-      host: z.string().optional(),
+      description: "Returns file content or a specified line range. Includes total_lines. Returns a size error if the file exceeds the cap — use start_line/end_line to page, or grep_files for content search.",
+      inputSchema: {
+        label: z.string(),
+        relative_path: z.string(),
+        start_line: z.number().int().optional(),
+        end_line: z.number().int().optional(),
+        host: z.string().optional(),
+      },
+      outputSchema: ReadFileOutput,
+      annotations: { readOnlyHint: true },
     },
-    { readOnlyHint: true },
     async ({ label, host, ...params }, extra) => dispatch(userId(extra), "read_file", label, params, host)
   );
 }
@@ -293,18 +359,21 @@ function registerReadFile(server: McpServer): void {
 // ---------------------------------------------------------------------------
 
 function registerGrepFiles(server: McpServer): void {
-  server.tool(
+  server.registerTool(
     "grep_files",
-    "Content search. type:\"literal\" (default) or \"regex\". relative_path can be a file or directory. file_glob scopes recursive search (e.g. \"*.ts\"). Results grouped by file. Capped at 50 matches and 100KB output.",
     {
-      label: z.string(),
-      pattern: z.string(),
-      relative_path: z.string().optional(),
-      file_glob: z.string().optional(),
-      type: z.enum(["literal", "regex"]).optional(),
-      host: z.string().optional(),
+      description: "Content search. type:\"literal\" (default) or \"regex\". relative_path can be a file or directory. file_glob scopes recursive search (e.g. \"*.ts\"). Results grouped by file. Capped at 50 matches and 100KB output.",
+      inputSchema: {
+        label: z.string(),
+        pattern: z.string(),
+        relative_path: z.string().optional(),
+        file_glob: z.string().optional(),
+        type: z.enum(["literal", "regex"]).optional(),
+        host: z.string().optional(),
+      },
+      outputSchema: GrepFilesOutput,
+      annotations: { readOnlyHint: true },
     },
-    { readOnlyHint: true },
     async ({ label, host, ...params }, extra) => dispatch(userId(extra), "grep_files", label, params, host)
   );
 }
@@ -314,17 +383,20 @@ function registerGrepFiles(server: McpServer): void {
 // ---------------------------------------------------------------------------
 
 function registerWriteFile(server: McpServer): void {
-  server.tool(
+  server.registerTool(
     "write_file",
-    "Write content to a file. mode:\"overwrite\" (default) replaces the file; \"append\" adds to it.",
     {
-      label: z.string(),
-      relative_path: z.string(),
-      content: z.string(),
-      mode: z.enum(["overwrite", "append"]).optional(),
-      host: z.string().optional(),
+      description: "Write content to a file. mode:\"overwrite\" (default) replaces the file; \"append\" adds to it.",
+      inputSchema: {
+        label: z.string(),
+        relative_path: z.string(),
+        content: z.string(),
+        mode: z.enum(["overwrite", "append"]).optional(),
+        host: z.string().optional(),
+      },
+      outputSchema: OkOutput,
+      annotations: { idempotentHint: true, destructiveHint: true },
     },
-    { idempotentHint: true, destructiveHint: true },
     async ({ label, host, ...params }, extra) => dispatch(userId(extra), "write_file", label, params, host)
   );
 }
@@ -334,17 +406,20 @@ function registerWriteFile(server: McpServer): void {
 // ---------------------------------------------------------------------------
 
 function registerEditFile(server: McpServer): void {
-  server.tool(
+  server.registerTool(
     "edit_file",
-    "Apply a list of exact-match text substitutions. Each old_text must match exactly once — zero or multiple matches abort with edit_index and match_count. All edits validated before any write. dry_run:true returns the diff without writing.",
     {
-      label: z.string(),
-      relative_path: z.string(),
-      edits: z.array(z.object({ old_text: z.string(), new_text: z.string() })),
-      dry_run: z.boolean().optional(),
-      host: z.string().optional(),
+      description: "Apply a list of exact-match text substitutions. Each old_text must match exactly once — zero or multiple matches abort with edit_index and match_count. All edits validated before any write. dry_run:true returns the diff without writing.",
+      inputSchema: {
+        label: z.string(),
+        relative_path: z.string(),
+        edits: z.array(z.object({ old_text: z.string(), new_text: z.string() })),
+        dry_run: z.boolean().optional(),
+        host: z.string().optional(),
+      },
+      outputSchema: EditFileOutput,
+      annotations: { destructiveHint: true, idempotentHint: false },
     },
-    { destructiveHint: true, idempotentHint: false },
     async ({ label, host, ...params }, extra) => dispatch(userId(extra), "edit_file", label, params, host)
   );
 }
@@ -354,17 +429,19 @@ function registerEditFile(server: McpServer): void {
 // ---------------------------------------------------------------------------
 
 function registerCopy(server: McpServer): void {
-  server.tool(
+  server.registerTool(
     "copy",
-    "Copy a file or directory within a label root. dst_label enables cross-label copy on the same host. Fails if the destination already exists.",
     {
-      label: z.string(),
-      src_relative_path: z.string(),
-      dst_relative_path: z.string(),
-      dst_label: z.string().optional(),
-      host: z.string().optional(),
+      description: "Copy a file or directory within a label root. dst_label enables cross-label copy on the same host. Fails if the destination already exists.",
+      inputSchema: {
+        label: z.string(),
+        src_relative_path: z.string(),
+        dst_relative_path: z.string(),
+        dst_label: z.string().optional(),
+        host: z.string().optional(),
+      },
+      outputSchema: OkOutput,
     },
-    {},
     async ({ label, host, ...params }, extra) => dispatch(userId(extra), "copy", label, params, host)
   );
 }
@@ -374,15 +451,18 @@ function registerCopy(server: McpServer): void {
 // ---------------------------------------------------------------------------
 
 function registerCreateDirectory(server: McpServer): void {
-  server.tool(
+  server.registerTool(
     "create_directory",
-    "Create a directory and any missing parents.",
     {
-      label: z.string(),
-      relative_path: z.string(),
-      host: z.string().optional(),
+      description: "Create a directory and any missing parents.",
+      inputSchema: {
+        label: z.string(),
+        relative_path: z.string(),
+        host: z.string().optional(),
+      },
+      outputSchema: OkOutput,
+      annotations: { idempotentHint: true },
     },
-    { idempotentHint: true },
     async ({ label, host, ...params }, extra) => dispatch(userId(extra), "create_directory", label, params, host)
   );
 }
@@ -392,16 +472,19 @@ function registerCreateDirectory(server: McpServer): void {
 // ---------------------------------------------------------------------------
 
 function registerDelete(server: McpServer): void {
-  server.tool(
+  server.registerTool(
     "delete",
-    "Delete a file or directory. If relative_path is a directory and recursive is absent or false, returns a summary (size, file count) asking you to confirm by re-calling with recursive:true. Always surface this confirmation to the user before proceeding.",
     {
-      label: z.string(),
-      relative_path: z.string(),
-      recursive: z.boolean().optional(),
-      host: z.string().optional(),
+      description: "Delete a file or directory. If relative_path is a directory and recursive is absent or false, returns a summary (size, file count) asking you to confirm by re-calling with recursive:true. Always surface this confirmation to the user before proceeding.",
+      inputSchema: {
+        label: z.string(),
+        relative_path: z.string(),
+        recursive: z.boolean().optional(),
+        host: z.string().optional(),
+      },
+      outputSchema: DeleteOutput,
+      annotations: { destructiveHint: true, idempotentHint: false },
     },
-    { destructiveHint: true, idempotentHint: false },
     async ({ label, host, ...params }, extra) => dispatch(userId(extra), "delete", label, params, host)
   );
 }
@@ -411,17 +494,19 @@ function registerDelete(server: McpServer): void {
 // ---------------------------------------------------------------------------
 
 function registerMove(server: McpServer): void {
-  server.tool(
+  server.registerTool(
     "move",
-    "Move a file or directory. dst_label enables cross-label move on the same host.",
     {
-      label: z.string(),
-      src_relative_path: z.string(),
-      dst_relative_path: z.string(),
-      dst_label: z.string().optional(),
-      host: z.string().optional(),
+      description: "Move a file or directory. dst_label enables cross-label move on the same host.",
+      inputSchema: {
+        label: z.string(),
+        src_relative_path: z.string(),
+        dst_relative_path: z.string(),
+        dst_label: z.string().optional(),
+        host: z.string().optional(),
+      },
+      outputSchema: OkOutput,
     },
-    {},
     async ({ label, host, ...params }, extra) => dispatch(userId(extra), "move", label, params, host)
   );
 }

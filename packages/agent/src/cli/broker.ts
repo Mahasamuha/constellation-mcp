@@ -1,7 +1,6 @@
 import { Command } from "commander";
 import open from "open";
 import {
-  configDir,
   loadAgentConfig,
   loadBrokerSession,
   writeBrokerSession,

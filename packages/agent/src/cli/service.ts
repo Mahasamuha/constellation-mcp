@@ -1,5 +1,5 @@
 import { writeFileSync, mkdirSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { join } from "node:path";
 import { homedir } from "node:os";
 import { run, runInherited, currentPlatform } from "./util.js";
 

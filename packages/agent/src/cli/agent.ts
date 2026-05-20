@@ -3,7 +3,6 @@ import { execFileSync } from "node:child_process";
 import WebSocket from "ws";
 import open from "open";
 import {
-  configDir,
   loadAgentConfig,
   loadPathsConfig,
   writeAgentConfig,
@@ -21,7 +20,7 @@ import {
   serviceStatus,
   showLogs,
 } from "./service.js";
-import { poll, maskToken, confirm } from "./util.js";
+import { poll, maskToken } from "./util.js";
 
 export function registerAgentCommands(program: Command, getConfigDir: () => string): void {
   const agent = program.command("agent").description("Manage the local Constellation agent");
