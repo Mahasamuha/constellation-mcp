@@ -17,7 +17,6 @@ const oauthLimiter = rateLimit({
   limit: () => parseInt(process.env["RATE_LIMIT_OAUTH_PER_15MIN"] ?? "10", 10),
   standardHeaders: "draft-7",
   legacyHeaders: false,
-  keyGenerator: (req) => req.ip ?? "unknown",
   message: { error: "rate_limit_exceeded" },
 });
 
