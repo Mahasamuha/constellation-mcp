@@ -33,10 +33,10 @@ Tasks are ordered by dependency. Complete each section before moving to the next
 
 ## 3. Broker — OAuth Layer
 
-- [ ] Implement OIDC client: exchange upstream provider auth code for user identity; upsert `users` row on first login
-- [ ] Implement `GET /.well-known/oauth-authorization-server` metadata endpoint
-- [ ] Implement `POST /oauth/register` — Dynamic Client Registration; store new `oauth_clients` row with `is_dynamic: true`
-- [ ] Implement `GET /oauth/authorize` — redirect to upstream OIDC provider
+- [x] Implement OIDC client: exchange upstream provider auth code for user identity; upsert `users` row on first login
+- [x] Implement `GET /.well-known/oauth-authorization-server` metadata endpoint
+- [x] Implement `POST /oauth/register` — Dynamic Client Registration; store new `oauth_clients` row with `is_dynamic: true`
+- [x] Implement `GET /oauth/authorize` — redirect to upstream OIDC provider
 - [ ] Implement upstream OIDC callback handler — complete auth code exchange, resolve user, redirect back to MCP client
 - [ ] Implement `POST /oauth/token` — `authorization_code` grant: issue access + optional refresh token; store hashes in `oauth_sessions`
 - [ ] Implement `POST /oauth/token` — `refresh_token` grant: validate refresh token hash, issue new access token
