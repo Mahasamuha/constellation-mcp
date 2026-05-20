@@ -112,24 +112,24 @@ Tasks are ordered by dependency. Complete each section before moving to the next
 
 ## 8. Agent — Core
 
-- [ ] Initialise `agent` package; configure TypeScript, Pino logging
-- [ ] Implement config loader: read and validate `agent.yaml` and `paths.yaml` from `~/.config/constellation/` (Linux/macOS) or `%APPDATA%\constellation\` (Windows)
-- [ ] Implement WebSocket client: connect to `broker_url` with agent token in Authorization header; exponential backoff reconnect (1s initial, 2× multiplier, ±20% jitter, 60s cap)
-- [ ] Implement startup `config_update` send: on connection established, immediately push current `paths.yaml` labels to broker
-- [ ] Implement outbound control messages: `rotate_token`, `update_host`, `config_update`
-- [ ] Implement inbound control message handler: accept `token_rotated` (write new token to `agent.yaml`); log and drop all others
-- [ ] Implement RPC handler: receive broker RPC; validate `absolute_root` against `paths.yaml` allowlist; resolve final path with `fs.realpath()`; check resolved path starts with allowed root (traversal + symlink check); dispatch to file operation; respond `{ request_id, result }` or `{ request_id, error }`
-- [ ] Implement `list_directory` operation: support `recursive`, `max_depth`, `limit`, `exclude`; enforce 10,000 node hard cap; return `truncated`, `truncated_by`
-- [ ] Implement `file_info` operation: return `size`, `mtime`, `type`; report symlinks as `symlink` with `target` field
-- [ ] Implement `search_files` operation: filename search with micromatch (glob) or JS regex; cap at 200 results
-- [ ] Implement `read_file` operation: full file or line range; enforce `max_file_size_kb` cap; include `total_lines`
-- [ ] Implement `grep_files` operation: literal or regex content search; always group by file; cap at 50 matches and 100KB output
-- [ ] Implement `write_file` operation: overwrite and append modes
-- [ ] Implement `edit_file` operation: validate all `old_text` matches (exactly once each) before any write; apply edits; return unified diff; support `dry_run`
-- [ ] Implement `copy` operation: file and directory copy; fail if destination exists
-- [ ] Implement `create_directory` operation: mkdir with parents
-- [ ] Implement `delete` operation: file deletion; directory deletion — return summary if `recursive` absent, delete if present
-- [ ] Implement `move` operation: within label root and cross-label on same host via `dst_label`
+- [x] Initialise `agent` package; configure TypeScript, Pino logging
+- [x] Implement config loader: read and validate `agent.yaml` and `paths.yaml` from `~/.config/constellation/` (Linux/macOS) or `%APPDATA%\constellation\` (Windows)
+- [x] Implement WebSocket client: connect to `broker_url` with agent token in Authorization header; exponential backoff reconnect (1s initial, 2× multiplier, ±20% jitter, 60s cap)
+- [x] Implement startup `config_update` send: on connection established, immediately push current `paths.yaml` labels to broker
+- [x] Implement outbound control messages: `rotate_token`, `update_host`, `config_update`
+- [x] Implement inbound control message handler: accept `token_rotated` (write new token to `agent.yaml`); log and drop all others
+- [x] Implement RPC handler: receive broker RPC; validate `absolute_root` against `paths.yaml` allowlist; resolve final path with `fs.realpath()`; check resolved path starts with allowed root (traversal + symlink check); dispatch to file operation; respond `{ request_id, result }` or `{ request_id, error }`
+- [x] Implement `list_directory` operation: support `recursive`, `max_depth`, `limit`, `exclude`; enforce 10,000 node hard cap; return `truncated`, `truncated_by`
+- [x] Implement `file_info` operation: return `size`, `mtime`, `type`; report symlinks as `symlink` with `target` field
+- [x] Implement `search_files` operation: filename search with micromatch (glob) or JS regex; cap at 200 results
+- [x] Implement `read_file` operation: full file or line range; enforce `max_file_size_kb` cap; include `total_lines`
+- [x] Implement `grep_files` operation: literal or regex content search; always group by file; cap at 50 matches and 100KB output
+- [x] Implement `write_file` operation: overwrite and append modes
+- [x] Implement `edit_file` operation: validate all `old_text` matches (exactly once each) before any write; apply edits; return unified diff; support `dry_run`
+- [x] Implement `copy` operation: file and directory copy; fail if destination exists
+- [x] Implement `create_directory` operation: mkdir with parents
+- [x] Implement `delete` operation: file deletion; directory deletion — return summary if `recursive` absent, delete if present
+- [x] Implement `move` operation: within label root and cross-label on same host via `dst_label`
 
 ---
 
