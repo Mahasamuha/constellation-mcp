@@ -65,11 +65,11 @@ Tasks are ordered by dependency. Complete each section before moving to the next
 
 ## 5. Broker — Request Router
 
-- [ ] Implement label resolution: given `user_id` + `label` (+ optional `host`), query `path_labels` joined to `agents`; return `agent_id` and `reported_path`
-- [ ] Implement broker path filter evaluation: load active `broker_path_filters` for user/agent; apply micromatch (glob) or JS regex against resolved path; reject if any filter matches
-- [ ] Implement RPC dispatch: look up agent WebSocket from in-memory map; if absent return offline error; forward RPC envelope `{ request_id, tool, absolute_root, relative_path, ...tool_params }`; await response with `RPC_TIMEOUT_MS` timeout
-- [ ] Implement pending RPC map (`Map<request_id, Promise>`): clean up on agent disconnect (reject all pending with timeout error)
-- [ ] Add rate limiting: per-user sliding window — `RATE_LIMIT_TOOL_CALLS_PER_MIN`; separate lower limit for expensive tools (`grep_files`, `search_files`, `list_directory` with `recursive: true`) — `RATE_LIMIT_EXPENSIVE_TOOLS_PER_MIN`
+- [x] Implement label resolution: given `user_id` + `label` (+ optional `host`), query `path_labels` joined to `agents`; return `agent_id` and `reported_path`
+- [x] Implement broker path filter evaluation: load active `broker_path_filters` for user/agent; apply micromatch (glob) or JS regex against resolved path; reject if any filter matches
+- [x] Implement RPC dispatch: look up agent WebSocket from in-memory map; if absent return offline error; forward RPC envelope `{ request_id, tool, absolute_root, relative_path, ...tool_params }`; await response with `RPC_TIMEOUT_MS` timeout
+- [x] Implement pending RPC map (`Map<request_id, Promise>`): clean up on agent disconnect (reject all pending with timeout error)
+- [x] Add rate limiting: per-user sliding window — `RATE_LIMIT_TOOL_CALLS_PER_MIN`; separate lower limit for expensive tools (`grep_files`, `search_files`, `list_directory` with `recursive: true`) — `RATE_LIMIT_EXPENSIVE_TOOLS_PER_MIN`
 
 ---
 

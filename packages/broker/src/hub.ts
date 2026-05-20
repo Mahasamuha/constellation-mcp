@@ -203,6 +203,7 @@ export function attachHub(server: Server): void {
     ws.on("close", () => {
       connections.delete(agentId);
       tokenIndex.delete(tokenId);
+      rejectAgentRpcs(agentId);
       log.info({ agentId, host, userId }, "Agent disconnected");
     });
 
@@ -373,10 +374,22 @@ const pendingRpcs = new Map<string, {
   resolve: (r: RpcResponse) => void;
   reject: (e: Error) => void;
   timer: ReturnType<typeof setTimeout>;
+  agentId: string;
 }>();
 
 export function getConnection(agentId: string): ConnectedAgent | undefined {
   return connections.get(agentId);
+}
+
+/** Rejects all pending RPCs for a given agent — called on disconnect. */
+export function rejectAgentRpcs(agentId: string): void {
+  for (const [requestId, pending] of pendingRpcs) {
+    if (pending.agentId === agentId) {
+      clearTimeout(pending.timer);
+      pendingRpcs.delete(requestId);
+      pending.reject(new Error("timeout"));
+    }
+  }
 }
 
 export function dispatchRpc(
@@ -395,7 +408,7 @@ export function dispatchRpc(
       reject(new Error("timeout"));
     }, timeoutMs);
 
-    pendingRpcs.set(requestId, { resolve, reject, timer });
+    pendingRpcs.set(requestId, { resolve, reject, timer, agentId });
     send(conn.ws, payload);
   });
 }

@@ -15,6 +15,7 @@
     "cookie-parser": "^1.4.7",
     "express": "^5.2.1",
     "express-rate-limit": "^8.5.1",
+    "micromatch": "^4.0.8",
     "openid-client": "^6.8.4",
     "pg": "^8.20.0",
     "pino": "^9.0.0",
@@ -24,6 +25,7 @@
   "devDependencies": {
     "@types/cookie-parser": "^1.4.10",
     "@types/express": "^5.0.6",
+    "@types/micromatch": "^4.0.10",
     "@types/node": "^22.0.0",
     "@types/pg": "^8.20.0",
     "@types/ws": "^8.18.1",
