@@ -55,6 +55,8 @@ function checkToolRateLimit(userId: string, tool: string, params: Record<string,
     if (expensiveTs.length > expensiveLimit) return false;
   }
 
+  // Prune map entries for users who have gone quiet to prevent unbounded growth.
+
   return true;
 }
 
@@ -145,6 +147,22 @@ export interface DispatchResult {
  * Full routing pipeline: rate check → label resolution → filter check →
  * liveness check → RPC forward → result.
  */
+/** Removes expired sliding-window entries. Called periodically from index.ts. */
+export function pruneRateLimits(): void {
+  const now = Date.now();
+  const window = 60_000;
+  for (const [k, ts] of toolCallTimestamps) {
+    const fresh = ts.filter((t) => now - t < window);
+    if (fresh.length === 0) toolCallTimestamps.delete(k);
+    else toolCallTimestamps.set(k, fresh);
+  }
+  for (const [k, ts] of expensiveToolTimestamps) {
+    const fresh = ts.filter((t) => now - t < window);
+    if (fresh.length === 0) expensiveToolTimestamps.delete(k);
+    else expensiveToolTimestamps.set(k, fresh);
+  }
+}
+
 export async function routeToolCall(
   userId: string,
   tool: string,

@@ -26,8 +26,8 @@ interface DeviceEntry {
 
 const deviceCodes = new Map<string, DeviceEntry>();
 
-// Prune expired entries on each new issuance to avoid unbounded growth.
-function pruneExpired(): void {
+/** Removes expired device code entries. Called on new issuance and periodically from index.ts. */
+export function pruneDeviceCodes(): void {
   const now = Date.now();
   for (const [k, v] of deviceCodes) {
     if (v.expiresAt < now) deviceCodes.delete(k);
@@ -64,7 +64,7 @@ deviceRouter.post("/oauth/device/code", (req: Request, res: Response) => {
     return;
   }
 
-  pruneExpired();
+  pruneDeviceCodes();
 
   const deviceCode = generateToken();
   const userCode = generateUserCode();
@@ -132,6 +132,7 @@ deviceRouter.get("/activate", async (req: Request, res: Response) => {
 
   const pendingId = generateToken().slice(0, 32);
   activatePending.set(pendingId, { state, deviceCode });
+  setTimeout(() => activatePending.delete(pendingId), 10 * 60 * 1000);
 
   res.cookie(`activate_pending_${pendingId}`, JSON.stringify({ state, codeVerifier, deviceCode }), {
     httpOnly: true,

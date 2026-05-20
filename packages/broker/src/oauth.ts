@@ -227,14 +227,16 @@ oauthRouter.get("/oauth/callback", async (req: Request, res: Response) => {
 
   // Issue a short-lived authorization code to hand back to the MCP client.
   const code = generateToken();
+  const codeExpiresAt = Date.now() + 10 * 60 * 1000;
   authCodes.set(code, {
     userId,
     clientId: pending.clientId,
     redirectUri: pending.redirectUri,
     codeChallenge: pending.downstreamCodeChallenge,
     codeChallengeMethod: pending.downstreamCodeChallengeMethod,
-    expiresAt: Date.now() + 10 * 60 * 1000,
+    expiresAt: codeExpiresAt,
   });
+  setTimeout(() => authCodes.delete(code), 10 * 60 * 1000);
 
   const redirectParams = new URLSearchParams({ code });
   if (pending.downstreamState) redirectParams.set("state", pending.downstreamState);

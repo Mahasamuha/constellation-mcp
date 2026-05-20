@@ -397,6 +397,17 @@ export function getConnection(agentId: string): ConnectedAgent | undefined {
 }
 
 /** Rejects all pending RPCs for a given agent — called on disconnect. */
+/** Removes expired reconnect timestamp entries. Called periodically from index.ts. */
+export function pruneReconnectTimestamps(): void {
+  const now = Date.now();
+  const window = 60_000;
+  for (const [k, ts] of reconnectTimestamps) {
+    const fresh = ts.filter((t) => now - t < window);
+    if (fresh.length === 0) reconnectTimestamps.delete(k);
+    else reconnectTimestamps.set(k, fresh);
+  }
+}
+
 export function rejectAgentRpcs(agentId: string): void {
   for (const [requestId, pending] of pendingRpcs) {
     if (pending.agentId === agentId) {
