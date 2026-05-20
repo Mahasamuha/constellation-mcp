@@ -41,25 +41,27 @@ Required variables:
 
 ### OIDC provider setup
 
-The broker works with any OIDC-compliant provider. Register an OAuth application and set the redirect/callback URL to `https://your-broker.example.com/oauth/callback`.
+The broker works with any OIDC-compliant provider. Register an OAuth application and add both redirect/callback URLs:
+- `https://your-broker.example.com/oauth/callback` — used by MCP clients (Claude, Cursor)
+- `https://your-broker.example.com/activate/callback` — used by the agent and broker CLI device flows
 
 **Google (simplest for personal use)**
 
 1. Go to [Google Cloud Console → APIs & Services → Credentials](https://console.cloud.google.com/apis/credentials)
 2. Create an OAuth 2.0 Client ID (Web application)
-3. Add `https://your-broker.example.com/oauth/callback` as an authorized redirect URI
+3. Add both redirect URIs as authorized redirect URIs
 4. Set `OIDC_ISSUER=https://accounts.google.com`
 
 **Azure Active Directory**
 
 1. Register an app in [Azure Portal → App registrations](https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps)
-2. Add `https://your-broker.example.com/oauth/callback` as a redirect URI
+2. Add both redirect URIs
 3. Set `OIDC_ISSUER=https://login.microsoftonline.com/<tenant-id>/v2.0`
 
 **Authentik (self-hosted)**
 
 1. Create an OAuth2/OpenID Provider in Authentik
-2. Set the redirect URI to `https://your-broker.example.com/oauth/callback`
+2. Add both redirect URIs to the provider
 3. Set `OIDC_ISSUER=https://your-authentik.example.com/application/o/<slug>/`
 
 ### Start with Docker Compose
