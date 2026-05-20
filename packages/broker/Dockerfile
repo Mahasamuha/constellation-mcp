@@ -4,7 +4,7 @@ WORKDIR /app
 
 RUN npm install -g pnpm@latest
 
-COPY pnpm-workspace.yaml package.json pnpm-lock.yaml ./
+COPY pnpm-workspace.yaml package.json pnpm-lock.yaml .npmrc ./
 COPY packages/shared/package.json ./packages/shared/
 COPY packages/broker/package.json ./packages/broker/
 RUN pnpm install --frozen-lockfile
@@ -27,7 +27,7 @@ WORKDIR /app
 
 RUN npm install -g pnpm@latest
 
-COPY pnpm-workspace.yaml package.json pnpm-lock.yaml ./
+COPY pnpm-workspace.yaml package.json pnpm-lock.yaml .npmrc ./
 COPY packages/shared/package.json ./packages/shared/
 COPY packages/broker/package.json ./packages/broker/
 RUN pnpm install --frozen-lockfile --prod
