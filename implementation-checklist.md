@@ -37,14 +37,14 @@ Tasks are ordered by dependency. Complete each section before moving to the next
 - [x] Implement `GET /.well-known/oauth-authorization-server` metadata endpoint
 - [x] Implement `POST /oauth/register` — Dynamic Client Registration; store new `oauth_clients` row with `is_dynamic: true`
 - [x] Implement `GET /oauth/authorize` — redirect to upstream OIDC provider
-- [ ] Implement upstream OIDC callback handler — complete auth code exchange, resolve user, redirect back to MCP client
-- [ ] Implement `POST /oauth/token` — `authorization_code` grant: issue access + optional refresh token; store hashes in `oauth_sessions`
-- [ ] Implement `POST /oauth/token` — `refresh_token` grant: validate refresh token hash, issue new access token
-- [ ] Implement `POST /oauth/device/code` — issue `device_code`, `user_code`, `verification_uri`; differentiate `scope=agent:register` vs `scope=broker:manage`
-- [ ] Implement `/activate` consent page — display user code, authenticate via OIDC; render agent registration form (host name field) for `agent:register` scope; render simple confirmation for `broker:manage` scope
-- [ ] Implement `POST /oauth/token` — `device_code` grant: poll completion; on approval issue token (agent token for `agent:register`, OAuth session for `broker:manage`)
-- [ ] Implement bearer token validation middleware: decode token, hash, look up `oauth_sessions`, reject if expired or deactivated user
-- [ ] Add rate limiting: `express-rate-limit` on `/oauth/token` and `/oauth/register` — `RATE_LIMIT_OAUTH_PER_15MIN` per IP
+- [x] Implement upstream OIDC callback handler — complete auth code exchange, resolve user, redirect back to MCP client
+- [x] Implement `POST /oauth/token` — `authorization_code` grant: issue access + optional refresh token; store hashes in `oauth_sessions`
+- [x] Implement `POST /oauth/token` — `refresh_token` grant: validate refresh token hash, issue new access token
+- [x] Implement `POST /oauth/device/code` — issue `device_code`, `user_code`, `verification_uri`; differentiate `scope=agent:register` vs `scope=broker:manage`
+- [x] Implement `/activate` consent page — display user code, authenticate via OIDC; render agent registration form (host name field) for `agent:register` scope; render simple confirmation for `broker:manage` scope
+- [x] Implement `POST /oauth/token` — `device_code` grant: poll completion; on approval issue token (agent token for `agent:register`, OAuth session for `broker:manage`)
+- [x] Implement bearer token validation middleware: decode token, hash, look up `oauth_sessions`, reject if expired or deactivated user
+- [x] Add rate limiting: `express-rate-limit` on `/oauth/token` and `/oauth/register` — `RATE_LIMIT_OAUTH_PER_15MIN` per IP
 
 ---
 

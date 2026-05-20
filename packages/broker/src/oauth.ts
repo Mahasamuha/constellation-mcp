@@ -1,8 +1,9 @@
 import { Router, Request, Response, IRouter } from "express";
-import { randomBytes } from "node:crypto";
+import { randomBytes, createHash } from "node:crypto";
 import { prisma } from "./db.js";
-import { buildAuthorizationUrl } from "./oidc.js";
-import { createLogger } from "@constellation/shared";
+import { buildAuthorizationUrl, exchangeCodeAndUpsertUser } from "./oidc.js";
+import { handleDeviceCodeGrant } from "./device.js";
+import { generateToken, hashToken, createLogger } from "@constellation/shared";
 
 const log = createLogger("oauth");
 
@@ -56,7 +57,6 @@ oauthRouter.post("/oauth/register", async (req: Request, res: Response) => {
   let clientSecretHash: string | undefined;
 
   if (!isPublic) {
-    const { generateToken, hashToken } = await import("@constellation/shared");
     clientSecret = generateToken();
     clientSecretHash = hashToken(clientSecret);
   }
@@ -124,7 +124,6 @@ oauthRouter.get("/oauth/authorize", async (req: Request, res: Response) => {
   // Store CSRF state and downstream client context in a short-lived signed cookie
   // so the callback handler can validate and complete the flow.
   const pendingId = randomBytes(16).toString("hex");
-  (req as Request & { session?: Record<string, unknown> });
 
   res.cookie(`oidc_pending_${pendingId}`, JSON.stringify({
     state,
@@ -149,6 +148,251 @@ oauthRouter.get("/oauth/authorize", async (req: Request, res: Response) => {
   log.info({ clientId: client_id }, "Authorization redirected to upstream OIDC");
   res.redirect(url.toString());
 });
+
+// ---------------------------------------------------------------------------
+// GET /oauth/callback — upstream OIDC callback
+// ---------------------------------------------------------------------------
+
+interface PendingOidc {
+  state: string;
+  codeVerifier?: string;
+  clientId: string;
+  redirectUri: string;
+  downstreamCodeChallenge?: string;
+  downstreamCodeChallengeMethod?: string;
+  downstreamState?: string;
+}
+
+interface AuthCodeEntry {
+  userId: string;
+  clientId: string;
+  redirectUri: string;
+  codeChallenge?: string;
+  codeChallengeMethod?: string;
+  expiresAt: number;
+}
+
+// In-memory store for short-lived authorization codes (10 min TTL).
+const authCodes = new Map<string, AuthCodeEntry>();
+
+oauthRouter.get("/oauth/callback", async (req: Request, res: Response) => {
+  const rawState = typeof req.query["state"] === "string" ? req.query["state"] : "";
+  const colonIdx = rawState.lastIndexOf(":");
+  if (colonIdx === -1) {
+    res.status(400).send("Invalid state parameter");
+    return;
+  }
+
+  const upstreamState = rawState.slice(0, colonIdx);
+  const pendingId = rawState.slice(colonIdx + 1);
+  const cookieName = `oidc_pending_${pendingId}`;
+  const cookieVal = (req.cookies as Record<string, string>)[cookieName];
+
+  if (!cookieVal) {
+    res.status(400).send("Authorization session expired or not found");
+    return;
+  }
+
+  res.clearCookie(cookieName);
+
+  let pending: PendingOidc;
+  try {
+    pending = JSON.parse(cookieVal) as PendingOidc;
+  } catch {
+    res.status(400).send("Malformed authorization session");
+    return;
+  }
+
+  if (pending.state !== upstreamState) {
+    res.status(400).send("State mismatch");
+    return;
+  }
+
+  // Reconstruct the full callback URL (including query params) for the token exchange.
+  const callbackUrl = `${requireEnv("BROKER_URL")}/oauth/callback?${new URLSearchParams(req.query as Record<string, string>).toString()}`;
+
+  let userId: string;
+  try {
+    userId = await exchangeCodeAndUpsertUser(
+      prisma,
+      callbackUrl,
+      upstreamState,
+      pending.codeVerifier
+    );
+  } catch (err) {
+    log.warn({ err }, "OIDC code exchange failed");
+    res.status(400).send("Authentication failed");
+    return;
+  }
+
+  // Issue a short-lived authorization code to hand back to the MCP client.
+  const code = generateToken();
+  authCodes.set(code, {
+    userId,
+    clientId: pending.clientId,
+    redirectUri: pending.redirectUri,
+    codeChallenge: pending.downstreamCodeChallenge,
+    codeChallengeMethod: pending.downstreamCodeChallengeMethod,
+    expiresAt: Date.now() + 10 * 60 * 1000,
+  });
+
+  const redirectParams = new URLSearchParams({ code });
+  if (pending.downstreamState) redirectParams.set("state", pending.downstreamState);
+
+  log.info({ userId, clientId: pending.clientId }, "Authorization code issued");
+  res.redirect(`${pending.redirectUri}?${redirectParams.toString()}`);
+});
+
+// ---------------------------------------------------------------------------
+// POST /oauth/token
+// ---------------------------------------------------------------------------
+
+oauthRouter.post("/oauth/token", async (req: Request, res: Response) => {
+  const body = req.body as Record<string, string>;
+  const grantType = body["grant_type"];
+
+  if (grantType === "authorization_code") {
+    await handleAuthorizationCodeGrant(body, res);
+  } else if (grantType === "refresh_token") {
+    await handleRefreshTokenGrant(body, res);
+  } else if (grantType === "urn:ietf:params:oauth:grant-type:device_code") {
+    await handleDeviceCodeGrant(body, res);
+  } else {
+    res.status(400).json({ error: "unsupported_grant_type" });
+  }
+});
+
+async function handleAuthorizationCodeGrant(
+  body: Record<string, string>,
+  res: Response
+): Promise<void> {
+  const { code, redirect_uri, client_id, code_verifier } = body;
+
+  if (!code || !redirect_uri || !client_id) {
+    res.status(400).json({ error: "invalid_request", error_description: "code, redirect_uri, and client_id are required" });
+    return;
+  }
+
+  const entry = authCodes.get(code);
+  if (!entry || entry.expiresAt < Date.now()) {
+    authCodes.delete(code);
+    res.status(400).json({ error: "invalid_grant", error_description: "Authorization code invalid or expired" });
+    return;
+  }
+
+  if (entry.clientId !== client_id || entry.redirectUri !== redirect_uri) {
+    res.status(400).json({ error: "invalid_grant", error_description: "client_id or redirect_uri mismatch" });
+    return;
+  }
+
+  // Verify PKCE if the authorization request included a code_challenge.
+  if (entry.codeChallenge) {
+    if (!code_verifier) {
+      res.status(400).json({ error: "invalid_grant", error_description: "code_verifier required" });
+      return;
+    }
+    const method = entry.codeChallengeMethod ?? "S256";
+    if (method !== "S256") {
+      res.status(400).json({ error: "invalid_grant", error_description: "Unsupported code_challenge_method" });
+      return;
+    }
+    const challenge = createHash("sha256").update(code_verifier).digest("base64url");
+    if (challenge !== entry.codeChallenge) {
+      res.status(400).json({ error: "invalid_grant", error_description: "code_verifier mismatch" });
+      return;
+    }
+  }
+
+  authCodes.delete(code);
+
+  const oauthClient = await prisma.oauthClient.findUnique({ where: { id: client_id } });
+  if (!oauthClient) {
+    res.status(400).json({ error: "invalid_client" });
+    return;
+  }
+
+  const accessToken = generateToken();
+  const accessTokenHash = hashToken(accessToken);
+  const refreshToken = generateToken();
+  const refreshTokenHash = hashToken(refreshToken);
+
+  const accessTtlHours = parseInt(process.env["OAUTH_ACCESS_TOKEN_TTL_HOURS"] ?? "24", 10);
+  const refreshTtlDays = parseInt(process.env["OAUTH_REFRESH_TOKEN_TTL_DAYS"] ?? "30", 10);
+  const now = new Date();
+  const expiresAt = new Date(now.getTime() + accessTtlHours * 3600 * 1000);
+  const refreshExpiresAt = new Date(now.getTime() + refreshTtlDays * 86400 * 1000);
+
+  await prisma.oauthSession.create({
+    data: {
+      userId: entry.userId,
+      mcpClientId: client_id,
+      accessTokenHash,
+      expiresAt,
+      refreshTokenHash,
+      refreshTokenExpiresAt: refreshExpiresAt,
+    },
+  });
+
+  log.info({ userId: entry.userId, clientId: client_id }, "Access token issued (authorization_code)");
+
+  res.json({
+    access_token: accessToken,
+    token_type: "Bearer",
+    expires_in: accessTtlHours * 3600,
+    refresh_token: refreshToken,
+  });
+}
+
+async function handleRefreshTokenGrant(
+  body: Record<string, string>,
+  res: Response
+): Promise<void> {
+  const { refresh_token, client_id } = body;
+
+  if (!refresh_token || !client_id) {
+    res.status(400).json({ error: "invalid_request", error_description: "refresh_token and client_id are required" });
+    return;
+  }
+
+  const refreshTokenHash = hashToken(refresh_token);
+  const session = await prisma.oauthSession.findUnique({
+    where: { refreshTokenHash },
+    include: { user: { select: { id: true, deactivatedAt: true } } },
+  });
+
+  if (!session || session.mcpClientId !== client_id) {
+    res.status(400).json({ error: "invalid_grant", error_description: "Refresh token invalid" });
+    return;
+  }
+
+  if (!session.refreshTokenExpiresAt || session.refreshTokenExpiresAt < new Date()) {
+    res.status(400).json({ error: "invalid_grant", error_description: "Refresh token expired" });
+    return;
+  }
+
+  if (session.user.deactivatedAt !== null) {
+    res.status(400).json({ error: "invalid_grant", error_description: "Account is deactivated" });
+    return;
+  }
+
+  const accessToken = generateToken();
+  const accessTokenHash = hashToken(accessToken);
+  const accessTtlHours = parseInt(process.env["OAUTH_ACCESS_TOKEN_TTL_HOURS"] ?? "24", 10);
+  const expiresAt = new Date(Date.now() + accessTtlHours * 3600 * 1000);
+
+  await prisma.oauthSession.update({
+    where: { id: session.id },
+    data: { accessTokenHash, expiresAt },
+  });
+
+  log.info({ userId: session.userId, clientId: client_id }, "Access token issued (refresh_token)");
+
+  res.json({
+    access_token: accessToken,
+    token_type: "Bearer",
+    expires_in: accessTtlHours * 3600,
+  });
+}
 
 // ---------------------------------------------------------------------------
 // helpers
