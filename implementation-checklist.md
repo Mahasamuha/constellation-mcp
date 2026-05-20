@@ -188,4 +188,4 @@ Tasks are ordered by dependency. Complete each section before moving to the next
 - [x] Verify all error taxonomy cases from plan are reachable and return correct messages
 - [x] Verify all MCP tool annotations match the annotations table in plan
 - [x] Verify `chmod 600` is documented in agent install instructions for config files
-- [ ] End-to-end test: deploy broker locally, run `constellation agent init`, connect claude.ai, execute a `read_file` tool call
+- [x] End-to-end test: deploy broker locally, run `constellation agent init`, connect claude.ai, execute a `read_file` tool call
