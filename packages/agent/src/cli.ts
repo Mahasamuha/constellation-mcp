@@ -2,6 +2,7 @@
 import { Command } from "commander";
 import { configDir } from "./config.js";
 import { registerAgentCommands } from "./cli/agent.js";
+import { registerBrokerCommands } from "./cli/broker.js";
 
 const program = new Command();
 
@@ -11,8 +12,6 @@ program
   .version("0.1.0")
   .option("--config <dir>", "Override config directory");
 
-// Resolve the config dir once, respecting --config flag.
-// Commander parses global options before subcommand actions fire.
 function getConfigDir(): string {
   return configDir(
     (program.opts() as { config?: string }).config ??
@@ -21,16 +20,7 @@ function getConfigDir(): string {
 }
 
 registerAgentCommands(program, getConfigDir);
-
-// broker subcommands are registered in section 10
-program
-  .command("broker", { hidden: false })
-  .description("Manage the remote broker (see: constellation broker --help)")
-  .allowUnknownOption(true)
-  .action(() => {
-    console.error("constellation broker commands are not yet implemented.");
-    process.exit(1);
-  });
+registerBrokerCommands(program, getConfigDir);
 
 program.parseAsync(process.argv).catch((err: Error) => {
   console.error(err.message);

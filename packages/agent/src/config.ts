@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { homedir, platform } from "node:os";
 import yaml from "js-yaml";
@@ -100,6 +100,53 @@ export function loadPathsConfig(dir: string): PathsConfig {
 export function writePathsConfig(dir: string, config: PathsConfig): void {
   mkdirSync(dir, { recursive: true });
   writeFileSync(pathsYamlPath(dir), yaml.dump(config), { mode: 0o600 });
+}
+
+// ---------------------------------------------------------------------------
+// broker-session.yaml
+// ---------------------------------------------------------------------------
+
+export interface BrokerSession {
+  broker_url: string;
+  access_token: string;
+  access_token_expires_at: string; // ISO 8601
+  refresh_token?: string;
+  refresh_token_expires_at?: string; // ISO 8601
+}
+
+export function brokerSessionPath(dir: string): string {
+  return join(dir, "broker-session.yaml");
+}
+
+export function loadBrokerSession(dir: string): BrokerSession {
+  const raw = readFileSync(brokerSessionPath(dir), "utf8");
+  const parsed = yaml.load(raw) as Record<string, unknown>;
+  const broker_url = str(parsed, "broker_url");
+  const access_token = str(parsed, "access_token");
+  const access_token_expires_at = str(parsed, "access_token_expires_at");
+  if (!broker_url || !access_token || !access_token_expires_at) {
+    throw new Error("broker-session.yaml is incomplete — run 'constellation broker login' first");
+  }
+  return {
+    broker_url,
+    access_token,
+    access_token_expires_at,
+    refresh_token: str(parsed, "refresh_token") || undefined,
+    refresh_token_expires_at: str(parsed, "refresh_token_expires_at") || undefined,
+  };
+}
+
+export function writeBrokerSession(dir: string, session: BrokerSession): void {
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(brokerSessionPath(dir), yaml.dump(session), { mode: 0o600 });
+}
+
+export function deleteBrokerSession(dir: string): void {
+  try {
+    unlinkSync(brokerSessionPath(dir));
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -155,20 +155,20 @@ Tasks are ordered by dependency. Complete each section before moving to the next
 
 ## 10. Broker CLI (`constellation broker`)
 
-- [ ] Implement `constellation broker login [--broker <url>]`: device flow (`scope=broker:manage`), poll `/oauth/token`, write `broker-session.yaml` (`broker_url`, `access_token`, `access_token_expires_at`, `refresh_token`, `refresh_token_expires_at`)
-- [ ] Implement `constellation broker logout`: delete `broker-session.yaml`
-- [ ] Implement broker URL resolution: `--broker` flag → `broker_url` from `agent.yaml` → error with help message
-- [ ] Implement silent token refresh: before each API call, check `access_token_expires_at`; refresh if expired and refresh token available; prompt re-login if not
-- [ ] Implement `constellation broker status`: call `GET /api/status`
-- [ ] Implement `constellation broker agents list [--json]`: call `GET /api/agents`
-- [ ] Implement `constellation broker agents revoke <agent-id>`: call `DELETE /api/agents/:id/token`; confirm before executing
-- [ ] Implement `constellation broker labels list [--agent <id>] [--json]`: call `GET /api/labels`
-- [ ] Implement `constellation broker filters list [--json]`: call `GET /api/filters`
-- [ ] Implement `constellation broker filters add <pattern> [--type glob|regex] [--agent <id>]`: call `POST /api/filters`
-- [ ] Implement `constellation broker filters remove <filter-id>`: call `DELETE /api/filters/:id`
-- [ ] Implement `constellation broker sessions list [--json]`: call `GET /api/sessions`
-- [ ] Implement `constellation broker sessions revoke <session-id>`: call `DELETE /api/sessions/:id`
-- [ ] Implement `constellation broker account deactivate`: call `POST /api/account/deactivate`; require typed confirmation prompt
+- [x] Implement `constellation broker login [--broker <url>]`: device flow (`scope=broker:manage`), poll `/oauth/token`, write `broker-session.yaml` (`broker_url`, `access_token`, `access_token_expires_at`, `refresh_token`, `refresh_token_expires_at`)
+- [x] Implement `constellation broker logout`: delete `broker-session.yaml`
+- [x] Implement broker URL resolution: `--broker` flag → `broker_url` from `agent.yaml` → error with help message
+- [x] Implement silent token refresh: before each API call, check `access_token_expires_at`; refresh if expired and refresh token available; prompt re-login if not
+- [x] Implement `constellation broker status`: call `GET /api/status`
+- [x] Implement `constellation broker agents list [--json]`: call `GET /api/agents`
+- [x] Implement `constellation broker agents revoke <agent-id>`: call `DELETE /api/agents/:id/token`; confirm before executing
+- [x] Implement `constellation broker labels list [--agent <id>] [--json]`: call `GET /api/labels`
+- [x] Implement `constellation broker filters list [--json]`: call `GET /api/filters`
+- [x] Implement `constellation broker filters add <pattern> [--type glob|regex] [--agent <id>]`: call `POST /api/filters`
+- [x] Implement `constellation broker filters remove <filter-id>`: call `DELETE /api/filters/:id`
+- [x] Implement `constellation broker sessions list [--json]`: call `GET /api/sessions`
+- [x] Implement `constellation broker sessions revoke <session-id>`: call `DELETE /api/sessions/:id`
+- [x] Implement `constellation broker account deactivate`: call `POST /api/account/deactivate`; require typed confirmation prompt
 
 ---
 
