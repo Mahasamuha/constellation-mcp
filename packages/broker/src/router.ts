@@ -14,10 +14,11 @@ export interface RouteResult {
   agentId: string;
   absoluteRoot: string;
   host: string;
+  lastHeartbeatAt: Date | null;
 }
 
 export interface RouterError {
-  code: "label_not_found" | "host_not_found" | "agent_offline" | "path_filtered" | "rate_limited" | "timeout";
+  code: "label_not_found" | "host_not_found" | "agent_offline" | "path_filtered" | "rate_limited" | "timeout" | "cross_host";
   message: string;
 }
 
@@ -79,7 +80,7 @@ export async function resolveLabel(
 
   const pathLabel = await prisma.pathLabel.findFirst({
     where,
-    include: { agent: { select: { id: true, host: true } } },
+    include: { agent: { select: { id: true, host: true, lastHeartbeatAt: true } } },
   });
 
   if (!pathLabel) {
@@ -97,6 +98,7 @@ export async function resolveLabel(
     agentId: pathLabel.agent.id,
     absoluteRoot: pathLabel.reportedPath,
     host: pathLabel.agent.host,
+    lastHeartbeatAt: pathLabel.agent.lastHeartbeatAt,
   };
 }
 
@@ -135,6 +137,15 @@ async function isPathFiltered(
 // ---------------------------------------------------------------------------
 // RPC dispatch
 // ---------------------------------------------------------------------------
+
+function formatRelativeTime(date: Date): string {
+  const minutes = Math.round((Date.now() - date.getTime()) / 60_000);
+  if (minutes < 1) return "just now";
+  if (minutes === 1) return "1 minute ago";
+  if (minutes < 60) return `${minutes} minutes ago`;
+  const hours = Math.round(minutes / 60);
+  return hours === 1 ? "1 hour ago" : `${hours} hours ago`;
+}
 
 export type ToolParams = Record<string, unknown>;
 
@@ -177,10 +188,25 @@ export async function routeToolCall(
   const resolved = await resolveLabel(userId, label, host);
   if ("code" in resolved) return resolved;
 
-  const { agentId, absoluteRoot, host: agentHost } = resolved;
+  const { agentId, absoluteRoot, host: agentHost, lastHeartbeatAt } = resolved;
+
+  // For copy/move with dst_label: resolve the destination label and inject dst_root.
+  let effectiveParams = params;
+  if ((tool === "copy" || tool === "move") && typeof params["dst_label"] === "string") {
+    const dstLabel = params["dst_label"];
+    const dstResolved = await resolveLabel(userId, dstLabel);
+    if ("code" in dstResolved) return dstResolved;
+    if (dstResolved.agentId !== agentId) {
+      return {
+        code: "cross_host",
+        message: `'${label}' is on '${agentHost}' and '${dstLabel}' is on '${dstResolved.host}' — cross-host move/copy is not supported`,
+      };
+    }
+    effectiveParams = { ...params, dst_root: dstResolved.absoluteRoot };
+  }
 
   // Apply broker-side deny filters against the resolved root path.
-  const relativePath = typeof params["relative_path"] === "string" ? params["relative_path"] : "";
+  const relativePath = typeof effectiveParams["relative_path"] === "string" ? effectiveParams["relative_path"] : "";
   const candidatePath = relativePath ? `${absoluteRoot}/${relativePath}` : absoluteRoot;
 
   if (await isPathFiltered(userId, agentId, candidatePath)) {
@@ -189,18 +215,20 @@ export async function routeToolCall(
   }
 
   if (!getConnection(agentId)) {
+    const lastSeen = lastHeartbeatAt ? formatRelativeTime(lastHeartbeatAt) : "never";
     return {
       code: "agent_offline",
-      message: `'${label}' is on '${agentHost}', which is currently offline`,
+      message: `'${label}' is on '${agentHost}', which was last seen ${lastSeen}`,
     };
   }
 
   const requestId = randomBytes(16).toString("hex");
+  const timeoutMs = parseInt(process.env["RPC_TIMEOUT_MS"] ?? "30000", 10);
   const envelope: RpcEnvelope = {
     request_id: requestId,
     tool,
     absolute_root: absoluteRoot,
-    ...params,
+    ...effectiveParams,
   };
 
   log.info({ userId, agentId, tool, label, requestId }, "Dispatching RPC");
@@ -221,7 +249,7 @@ export async function routeToolCall(
       log.warn({ userId, agentId, tool, requestId }, "RPC timed out");
       return {
         code: "timeout",
-        message: `No response from '${agentHost}' within ${process.env["RPC_TIMEOUT_MS"] ?? "30000"}ms`,
+        message: `No response from '${agentHost}' within ${timeoutMs / 1000}s`,
       };
     }
     throw err;

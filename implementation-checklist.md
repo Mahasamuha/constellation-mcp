@@ -174,18 +174,18 @@ Tasks are ordered by dependency. Complete each section before moving to the next
 
 ## 11. Deployment
 
-- [ ] Write broker `Dockerfile`: multi-stage build; run `prisma generate` in build stage
-- [ ] Add `prisma migrate deploy` to broker container startup (not build) — applies pending migrations on deploy
-- [ ] Write systemd user unit file for `constellation agent`; ship with npm package
-- [ ] Write launchd `.plist` for `constellation agent`; ship with npm package
-- [ ] Write Task Scheduler XML template for `constellation agent`; ship with npm package
-- [ ] Write `README.md` covering broker deployment (Docker Compose), OIDC provider configuration, and agent install
+- [x] Write broker `Dockerfile`: multi-stage build; run `prisma generate` in build stage
+- [x] Add `prisma migrate deploy` to broker container startup (not build) — applies pending migrations on deploy
+- [x] Write systemd user unit file for `constellation agent`; ship with npm package
+- [x] Write launchd `.plist` for `constellation agent`; ship with npm package
+- [x] Write Task Scheduler XML template for `constellation agent`; ship with npm package
+- [x] Write `README.md` covering broker deployment (Docker Compose), OIDC provider configuration, and agent install
 
 ---
 
 ## 12. Polish
 
-- [ ] Verify all error taxonomy cases from plan are reachable and return correct messages
-- [ ] Verify all MCP tool annotations match the annotations table in plan
-- [ ] Verify `chmod 600` is documented in agent install instructions for config files
+- [x] Verify all error taxonomy cases from plan are reachable and return correct messages
+- [x] Verify all MCP tool annotations match the annotations table in plan
+- [x] Verify `chmod 600` is documented in agent install instructions for config files
 - [ ] End-to-end test: deploy broker locally, run `constellation agent init`, connect claude.ai, execute a `read_file` tool call
