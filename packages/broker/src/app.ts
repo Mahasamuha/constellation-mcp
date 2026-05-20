@@ -4,6 +4,7 @@ import { rateLimit } from "express-rate-limit";
 import { oauthRouter } from "./oauth.js";
 import { deviceRouter } from "./device.js";
 import { mcpRouter } from "./mcp.js";
+import { apiRouter } from "./api.js";
 
 export const app: Express = express();
 
@@ -26,3 +27,4 @@ app.use("/oauth/register", oauthLimiter);
 app.use("/", oauthRouter);
 app.use("/", deviceRouter);
 app.use("/", mcpRouter);
+app.use("/", apiRouter);

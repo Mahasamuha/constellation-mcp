@@ -96,17 +96,17 @@ Tasks are ordered by dependency. Complete each section before moving to the next
 
 ## 7. Broker — Management API
 
-- [ ] Implement `GET /api/agents` — list agents with liveness, last heartbeat, host, labels
-- [ ] Implement `DELETE /api/agents/:id/token` — revoke agent token (set `revoked_at`)
-- [ ] Implement `GET /api/labels` — list path labels; support `?agent_id` filter
-- [ ] Implement `GET /api/filters` — list broker path filters
-- [ ] Implement `POST /api/filters` — create filter; accept `pattern`, `pattern_type`, optional `agent_id`
-- [ ] Implement `DELETE /api/filters/:id` — delete filter
-- [ ] Implement `GET /api/sessions` — list active OAuth sessions
-- [ ] Implement `DELETE /api/sessions/:id` — revoke OAuth session
-- [ ] Implement `POST /api/account/deactivate` — set `users.deactivated_at`
-- [ ] Implement `GET /api/status` — broker health, uptime, version
-- [ ] Apply bearer token auth middleware to all `/api/*` routes; require `broker:manage` scope
+- [x] Implement `GET /api/agents` — list agents with liveness, last heartbeat, host, labels
+- [x] Implement `DELETE /api/agents/:id/token` — revoke agent token (set `revoked_at`)
+- [x] Implement `GET /api/labels` — list path labels; support `?agent_id` filter
+- [x] Implement `GET /api/filters` — list broker path filters
+- [x] Implement `POST /api/filters` — create filter; accept `pattern`, `pattern_type`, optional `agent_id`
+- [x] Implement `DELETE /api/filters/:id` — delete filter
+- [x] Implement `GET /api/sessions` — list active OAuth sessions
+- [x] Implement `DELETE /api/sessions/:id` — revoke OAuth session
+- [x] Implement `POST /api/account/deactivate` — set `users.deactivated_at`
+- [x] Implement `GET /api/status` — broker health, uptime, version
+- [x] Apply bearer token auth middleware to all `/api/*` routes; require `broker:manage` scope
 
 ---
 
