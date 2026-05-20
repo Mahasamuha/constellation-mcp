@@ -2,8 +2,7 @@
 FROM node:22-alpine AS builder
 WORKDIR /app
 
-RUN npm install -g pnpm@latest && \
-    echo "minimum-release-age=0" >> /root/.npmrc
+RUN npm install -g pnpm@latest
 
 COPY pnpm-workspace.yaml package.json pnpm-lock.yaml .npmrc ./
 COPY packages/shared/package.json ./packages/shared/
@@ -26,8 +25,7 @@ RUN pnpm --filter @constellation/broker build
 FROM node:22-alpine
 WORKDIR /app
 
-RUN npm install -g pnpm@latest && \
-    echo "minimum-release-age=0" >> /root/.npmrc
+RUN npm install -g pnpm@latest
 
 COPY pnpm-workspace.yaml package.json pnpm-lock.yaml .npmrc ./
 COPY packages/shared/package.json ./packages/shared/
