@@ -62,15 +62,13 @@ const OkOutput = { ok: z.literal(true) };
 
 const EditFileOutput = { diff: z.string() };
 
-const DeleteOutput = z.union([
-  z.object({ ok: z.literal(true) }),
-  z.object({
-    requires_confirmation: z.literal(true),
-    path: z.string(),
-    size_bytes: z.number(),
-    file_count: z.number(),
-  }),
-]);
+const DeleteOutput = {
+  ok: z.boolean().optional(),
+  requires_confirmation: z.boolean().optional(),
+  path: z.string().optional(),
+  size_bytes: z.number().optional(),
+  file_count: z.number().optional(),
+};
 
 const log = createLogger("mcp");
 
@@ -212,7 +210,9 @@ function registerListHosts(server: McpServer): void {
   server.registerTool(
     "list_hosts",
     {
+      title: "List Hosts",
       description: "List all registered hosts with liveness status and their labels",
+      inputSchema: {},
       outputSchema: { hosts: z.array(z.object(HostEntry)) },
       annotations: { readOnlyHint: true },
     },
@@ -246,6 +246,7 @@ function registerListLabels(server: McpServer): void {
   server.registerTool(
     "list_labels",
     {
+      title: "List Labels",
       description: "List path labels, optionally filtered by host",
       inputSchema: { host: z.string().optional() },
       outputSchema: { labels: z.array(z.object(LabelEntry)) },
@@ -270,6 +271,7 @@ function registerListDirectory(server: McpServer): void {
   server.registerTool(
     "list_directory",
     {
+      title: "List Directory",
       description: "List the contents of a label root or subdirectory. Use recursive:true with exclude:[\"node_modules\",\".git\"] for repo trees. Returns truncated:true and truncated_by when a limit or max_depth is hit.",
       inputSchema: {
         label: z.string(),
@@ -281,7 +283,7 @@ function registerListDirectory(server: McpServer): void {
         host: z.string().optional(),
       },
       outputSchema: ListDirectoryOutput,
-      annotations: { readOnlyHint: true },
+      annotations: { readOnlyHint: true, openWorldHint: true },
     },
     async ({ label, host, ...params }, extra) => dispatch(userId(extra), "list_directory", label, params, host)
   );
@@ -295,6 +297,7 @@ function registerFileInfo(server: McpServer): void {
   server.registerTool(
     "file_info",
     {
+      title: "File Info",
       description: "Returns size, mtime, and type (file/directory/symlink) for a path. Use before read_file to check size.",
       inputSchema: {
         label: z.string(),
@@ -302,7 +305,7 @@ function registerFileInfo(server: McpServer): void {
         host: z.string().optional(),
       },
       outputSchema: FileInfoOutput,
-      annotations: { readOnlyHint: true },
+      annotations: { readOnlyHint: true, openWorldHint: true },
     },
     async ({ label, host, ...params }, extra) => dispatch(userId(extra), "file_info", label, params, host)
   );
@@ -316,6 +319,7 @@ function registerSearchFiles(server: McpServer): void {
   server.registerTool(
     "search_files",
     {
+      title: "Search Files",
       description: "Filename search across a directory tree. type:\"glob\" (default, micromatch syntax) or \"regex\". Capped at 200 results; response includes truncated:true if hit.",
       inputSchema: {
         label: z.string(),
@@ -325,7 +329,7 @@ function registerSearchFiles(server: McpServer): void {
         host: z.string().optional(),
       },
       outputSchema: SearchFilesOutput,
-      annotations: { readOnlyHint: true },
+      annotations: { readOnlyHint: true, openWorldHint: true },
     },
     async ({ label, host, ...params }, extra) => dispatch(userId(extra), "search_files", label, params, host)
   );
@@ -339,6 +343,7 @@ function registerReadFile(server: McpServer): void {
   server.registerTool(
     "read_file",
     {
+      title: "Read File",
       description: "Returns file content or a specified line range. Includes total_lines. Returns a size error if the file exceeds the cap — use start_line/end_line to page, or grep_files for content search.",
       inputSchema: {
         label: z.string(),
@@ -348,7 +353,7 @@ function registerReadFile(server: McpServer): void {
         host: z.string().optional(),
       },
       outputSchema: ReadFileOutput,
-      annotations: { readOnlyHint: true },
+      annotations: { readOnlyHint: true, openWorldHint: true },
     },
     async ({ label, host, ...params }, extra) => dispatch(userId(extra), "read_file", label, params, host)
   );
@@ -362,6 +367,7 @@ function registerGrepFiles(server: McpServer): void {
   server.registerTool(
     "grep_files",
     {
+      title: "Search File Contents",
       description: "Content search. type:\"literal\" (default) or \"regex\". relative_path can be a file or directory. file_glob scopes recursive search (e.g. \"*.ts\"). Results grouped by file. Capped at 50 matches and 100KB output.",
       inputSchema: {
         label: z.string(),
@@ -372,7 +378,7 @@ function registerGrepFiles(server: McpServer): void {
         host: z.string().optional(),
       },
       outputSchema: GrepFilesOutput,
-      annotations: { readOnlyHint: true },
+      annotations: { readOnlyHint: true, openWorldHint: true },
     },
     async ({ label, host, ...params }, extra) => dispatch(userId(extra), "grep_files", label, params, host)
   );
@@ -386,6 +392,7 @@ function registerWriteFile(server: McpServer): void {
   server.registerTool(
     "write_file",
     {
+      title: "Write File",
       description: "Write content to a file. mode:\"overwrite\" (default) replaces the file; \"append\" adds to it.",
       inputSchema: {
         label: z.string(),
@@ -395,7 +402,7 @@ function registerWriteFile(server: McpServer): void {
         host: z.string().optional(),
       },
       outputSchema: OkOutput,
-      annotations: { idempotentHint: true, destructiveHint: true },
+      annotations: { idempotentHint: true, destructiveHint: true, openWorldHint: true },
     },
     async ({ label, host, ...params }, extra) => dispatch(userId(extra), "write_file", label, params, host)
   );
@@ -409,6 +416,7 @@ function registerEditFile(server: McpServer): void {
   server.registerTool(
     "edit_file",
     {
+      title: "Edit File",
       description: "Apply a list of exact-match text substitutions. Each old_text must match exactly once — zero or multiple matches abort with edit_index and match_count. All edits validated before any write. dry_run:true returns the diff without writing.",
       inputSchema: {
         label: z.string(),
@@ -418,7 +426,7 @@ function registerEditFile(server: McpServer): void {
         host: z.string().optional(),
       },
       outputSchema: EditFileOutput,
-      annotations: { destructiveHint: true, idempotentHint: false },
+      annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: true },
     },
     async ({ label, host, ...params }, extra) => dispatch(userId(extra), "edit_file", label, params, host)
   );
@@ -432,6 +440,7 @@ function registerCopy(server: McpServer): void {
   server.registerTool(
     "copy",
     {
+      title: "Copy",
       description: "Copy a file or directory within a label root. dst_label enables cross-label copy on the same host. Fails if the destination already exists.",
       inputSchema: {
         label: z.string(),
@@ -441,6 +450,7 @@ function registerCopy(server: McpServer): void {
         host: z.string().optional(),
       },
       outputSchema: OkOutput,
+      annotations: { openWorldHint: true },
     },
     async ({ label, host, ...params }, extra) => dispatch(userId(extra), "copy", label, params, host)
   );
@@ -454,6 +464,7 @@ function registerCreateDirectory(server: McpServer): void {
   server.registerTool(
     "create_directory",
     {
+      title: "Create Directory",
       description: "Create a directory and any missing parents.",
       inputSchema: {
         label: z.string(),
@@ -461,7 +472,7 @@ function registerCreateDirectory(server: McpServer): void {
         host: z.string().optional(),
       },
       outputSchema: OkOutput,
-      annotations: { idempotentHint: true },
+      annotations: { idempotentHint: true, openWorldHint: true },
     },
     async ({ label, host, ...params }, extra) => dispatch(userId(extra), "create_directory", label, params, host)
   );
@@ -475,6 +486,7 @@ function registerDelete(server: McpServer): void {
   server.registerTool(
     "delete",
     {
+      title: "Delete",
       description: "Delete a file or directory. If relative_path is a directory and recursive is absent or false, returns a summary (size, file count) asking you to confirm by re-calling with recursive:true. Always surface this confirmation to the user before proceeding.",
       inputSchema: {
         label: z.string(),
@@ -483,7 +495,7 @@ function registerDelete(server: McpServer): void {
         host: z.string().optional(),
       },
       outputSchema: DeleteOutput,
-      annotations: { destructiveHint: true, idempotentHint: false },
+      annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: true },
     },
     async ({ label, host, ...params }, extra) => dispatch(userId(extra), "delete", label, params, host)
   );
@@ -497,6 +509,7 @@ function registerMove(server: McpServer): void {
   server.registerTool(
     "move",
     {
+      title: "Move",
       description: "Move a file or directory. dst_label enables cross-label move on the same host.",
       inputSchema: {
         label: z.string(),
@@ -506,6 +519,7 @@ function registerMove(server: McpServer): void {
         host: z.string().optional(),
       },
       outputSchema: OkOutput,
+      annotations: { openWorldHint: true },
     },
     async ({ label, host, ...params }, extra) => dispatch(userId(extra), "move", label, params, host)
   );
