@@ -212,7 +212,6 @@ function registerListHosts(server: McpServer): void {
     {
       title: "List Hosts",
       description: "List all registered hosts with liveness status and their labels",
-      inputSchema: {},
       outputSchema: { hosts: z.array(z.object(HostEntry)) },
       annotations: { readOnlyHint: true },
     },
