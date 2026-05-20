@@ -377,12 +377,23 @@ async function handleRefreshTokenGrant(
 
   const accessToken = generateToken();
   const accessTokenHash = hashToken(accessToken);
+  const newRefreshToken = generateToken();
+  const newRefreshTokenHash = hashToken(newRefreshToken);
+
   const accessTtlHours = parseInt(process.env["OAUTH_ACCESS_TOKEN_TTL_HOURS"] ?? "24", 10);
-  const expiresAt = new Date(Date.now() + accessTtlHours * 3600 * 1000);
+  const refreshTtlDays = parseInt(process.env["OAUTH_REFRESH_TOKEN_TTL_DAYS"] ?? "30", 10);
+  const now = new Date();
+  const expiresAt = new Date(now.getTime() + accessTtlHours * 3600 * 1000);
+  const refreshExpiresAt = new Date(now.getTime() + refreshTtlDays * 86400 * 1000);
 
   await prisma.oauthSession.update({
     where: { id: session.id },
-    data: { accessTokenHash, expiresAt },
+    data: {
+      accessTokenHash,
+      expiresAt,
+      refreshTokenHash: newRefreshTokenHash,
+      refreshTokenExpiresAt: refreshExpiresAt,
+    },
   });
 
   log.info({ userId: session.userId, clientId: client_id }, "Access token issued (refresh_token)");
@@ -391,6 +402,7 @@ async function handleRefreshTokenGrant(
     access_token: accessToken,
     token_type: "Bearer",
     expires_in: accessTtlHours * 3600,
+    refresh_token: newRefreshToken,
   });
 }
 

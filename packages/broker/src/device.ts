@@ -37,7 +37,7 @@ function pruneExpired(): void {
 function findByUserCode(userCode: string): [string, DeviceEntry] | undefined {
   const normalized = userCode.toUpperCase().replace(/[^A-Z0-9]/g, "");
   for (const [deviceCode, entry] of deviceCodes) {
-    if (entry.userCode.replace("-", "") === normalized) return [deviceCode, entry];
+    if (entry.userCode.replace(/[^A-Z0-9]/g, "") === normalized) return [deviceCode, entry];
   }
   return undefined;
 }

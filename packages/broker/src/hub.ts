@@ -144,6 +144,18 @@ export function attachHub(server: Server): void {
     host: string;
     tokenId: string;
   }) => {
+    void handleConnection(ws, meta);
+  });
+
+  startHeartbeatLoop();
+}
+
+async function handleConnection(ws: WebSocket, meta: {
+  agentId: string;
+  userId: string;
+  host: string;
+  tokenId: string;
+}): Promise<void> {
     const { agentId, userId, host, tokenId } = meta;
 
     // Handle duplicate connections — terminate the old one.
@@ -157,10 +169,16 @@ export function attachHub(server: Server): void {
     // the agent has successfully reconnected with the new one.
     const prevTokenId = existing?.tokenId;
     if (prevTokenId && prevTokenId !== tokenId) {
-      prisma.agentToken.update({
-        where: { id: prevTokenId },
-        data: { revokedAt: new Date() },
-      }).catch((err) => log.error({ err, prevTokenId }, "Failed to revoke old agent token"));
+      try {
+        await prisma.agentToken.update({
+          where: { id: prevTokenId },
+          data: { revokedAt: new Date() },
+        });
+      } catch (err) {
+        log.error({ err, prevTokenId }, "Failed to revoke old agent token — closing new connection");
+        ws.close(1011, "Internal error during token rotation");
+        return;
+      }
     }
 
     const conn: ConnectedAgent = {
@@ -210,9 +228,6 @@ export function attachHub(server: Server): void {
     ws.on("error", (err) => {
       log.error({ err, agentId }, "Agent WebSocket error");
     });
-  });
-
-  startHeartbeatLoop();
 }
 
 // ---------------------------------------------------------------------------

@@ -17,7 +17,7 @@ export interface RouteResult {
 }
 
 export interface RouterError {
-  code: "label_not_found" | "host_not_found" | "agent_offline" | "path_filtered" | "timeout";
+  code: "label_not_found" | "host_not_found" | "agent_offline" | "path_filtered" | "rate_limited" | "timeout";
   message: string;
 }
 
@@ -153,10 +153,7 @@ export async function routeToolCall(
   host?: string
 ): Promise<DispatchResult | RouterError> {
   if (!checkToolRateLimit(userId, tool, params)) {
-    return {
-      code: "path_filtered",
-      message: "Rate limit exceeded. Please slow down.",
-    };
+    return { code: "rate_limited", message: "Rate limit exceeded. Please slow down." };
   }
 
   const resolved = await resolveLabel(userId, label, host);
