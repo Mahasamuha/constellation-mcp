@@ -33,7 +33,7 @@ export interface AgentConfig {
 
 export function loadAgentConfig(dir: string): AgentConfig {
   const raw = readFileSync(agentYamlPath(dir), "utf8");
-  const parsed = yaml.load(raw) as Record<string, unknown>;
+  const parsed = yaml.load(raw) as Partial<AgentConfig>;
 
   const broker_url = str(parsed, "broker_url");
   const agent_token = str(parsed, "agent_token");
@@ -52,16 +52,16 @@ export function loadAgentConfig(dir: string): AgentConfig {
 export function writeAgentToken(dir: string, token: string): void {
   const path = agentYamlPath(dir);
   const raw = readFileSync(path, "utf8");
-  const parsed = yaml.load(raw) as Record<string, unknown>;
-  parsed["agent_token"] = token;
+  const parsed = yaml.load(raw) as Partial<AgentConfig>;
+  parsed.agent_token = token;
   writeFileSync(path, yaml.dump(parsed), { mode: 0o600 });
 }
 
 export function writeAgentConfig(dir: string, config: Partial<AgentConfig>): void {
   const path = agentYamlPath(dir);
-  let parsed: Record<string, unknown> = {};
+  let parsed: Partial<AgentConfig> = {};
   try {
-    parsed = yaml.load(readFileSync(path, "utf8")) as Record<string, unknown>;
+    parsed = yaml.load(readFileSync(path, "utf8")) as Partial<AgentConfig>;
   } catch {
     // file may not exist yet during init
   }
@@ -86,10 +86,9 @@ export interface PathsConfig {
 export function loadPathsConfig(dir: string): PathsConfig {
   try {
     const raw = readFileSync(pathsYamlPath(dir), "utf8");
-    const parsed = yaml.load(raw) as { paths?: unknown[] };
+    const parsed = yaml.load(raw) as { paths?: object[] };
     const paths = (parsed?.paths ?? []).map((p) => {
-      const entry = p as Record<string, unknown>;
-      return { label: str(entry, "label") ?? "", path: str(entry, "path") ?? "" };
+      return { label: str(p, "label") ?? "", path: str(p, "path") ?? "" };
     }).filter((e) => e.label && e.path);
     return { paths };
   } catch {
@@ -120,10 +119,10 @@ export function brokerSessionPath(dir: string): string {
 
 export function loadBrokerSession(dir: string): BrokerSession {
   const raw = readFileSync(brokerSessionPath(dir), "utf8");
-  const parsed = yaml.load(raw) as Record<string, unknown>;
-  const broker_url = str(parsed, "broker_url");
-  const access_token = str(parsed, "access_token");
-  const access_token_expires_at = str(parsed, "access_token_expires_at");
+  const parsed = yaml.load(raw) as Partial<BrokerSession>;
+  const broker_url = parsed.broker_url ?? "";
+  const access_token = parsed.access_token ?? "";
+  const access_token_expires_at = parsed.access_token_expires_at ?? "";
   if (!broker_url || !access_token || !access_token_expires_at) {
     throw new Error("broker-session.yaml is incomplete — run 'constellation broker login' first");
   }
@@ -131,8 +130,8 @@ export function loadBrokerSession(dir: string): BrokerSession {
     broker_url,
     access_token,
     access_token_expires_at,
-    refresh_token: str(parsed, "refresh_token") || undefined,
-    refresh_token_expires_at: str(parsed, "refresh_token_expires_at") || undefined,
+    refresh_token: parsed.refresh_token || undefined,
+    refresh_token_expires_at: parsed.refresh_token_expires_at || undefined,
   };
 }
 
@@ -153,7 +152,7 @@ export function deleteBrokerSession(dir: string): void {
 // helpers
 // ---------------------------------------------------------------------------
 
-function str(obj: Record<string, unknown>, key: string): string {
-  const v = obj[key];
+function str(obj: object, key: string): string {
+  const v = (obj as Record<string, unknown>)[key];
   return typeof v === "string" ? v : "";
 }

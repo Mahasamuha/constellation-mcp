@@ -9,6 +9,23 @@ const log = createLogger("hub");
 // Types
 // ---------------------------------------------------------------------------
 
+export interface RpcEnvelope {
+  request_id: string;
+  tool: string;
+  absolute_root: string;
+  [key: string]: unknown;
+}
+
+interface ConfigUpdateMessage {
+  type: "config_update";
+  paths: unknown;
+}
+
+interface UpdateHostMessage {
+  type: "update_host";
+  host: unknown;
+}
+
 interface ConnectedAgent {
   ws: WebSocket;
   agentId: string;
@@ -240,16 +257,16 @@ async function handleAgentMessage(
 ): Promise<void> {
   // RPC responses carry request_id with result or error but no type field.
   if ("request_id" in msg && ("result" in msg || "error" in msg)) {
-    routeRpcResponse(msg);
+    routeRpcResponse(msg as unknown as RpcResponse);
     return;
   }
 
   const type = msg["type"];
 
   if (type === "config_update") {
-    await handleConfigUpdate(conn, msg);
+    await handleConfigUpdate(conn, msg as unknown as ConfigUpdateMessage);
   } else if (type === "update_host") {
-    await handleUpdateHost(conn, msg);
+    await handleUpdateHost(conn, msg as unknown as UpdateHostMessage);
   } else if (type === "rotate_token") {
     await handleRotateToken(conn);
   } else {
@@ -262,8 +279,8 @@ interface PathEntry {
   reported_path: string;
 }
 
-async function handleConfigUpdate(conn: ConnectedAgent, msg: Record<string, unknown>): Promise<void> {
-  const paths = msg["paths"];
+async function handleConfigUpdate(conn: ConnectedAgent, msg: ConfigUpdateMessage): Promise<void> {
+  const paths = msg.paths;
   if (!Array.isArray(paths)) {
     send(conn.ws, { type: "config_update_error", error: "paths must be an array" });
     return;
@@ -332,8 +349,8 @@ async function handleConfigUpdate(conn: ConnectedAgent, msg: Record<string, unkn
   send(conn.ws, { type: "config_update_ok" });
 }
 
-async function handleUpdateHost(conn: ConnectedAgent, msg: Record<string, unknown>): Promise<void> {
-  const newHost = typeof msg["host"] === "string" ? msg["host"].trim() : "";
+async function handleUpdateHost(conn: ConnectedAgent, msg: UpdateHostMessage): Promise<void> {
+  const newHost = typeof msg.host === "string" ? msg.host.trim() : "";
 
   if (!newHost) {
     send(conn.ws, { type: "update_host_error", error: "host must be a non-empty string" });
@@ -420,7 +437,7 @@ export function rejectAgentRpcs(agentId: string): void {
 
 export function dispatchRpc(
   agentId: string,
-  payload: Record<string, unknown>
+  payload: RpcEnvelope
 ): Promise<RpcResponse> {
   const conn = connections.get(agentId);
   if (!conn) throw new Error(`Agent ${agentId} is not connected`);
@@ -439,8 +456,8 @@ export function dispatchRpc(
   });
 }
 
-function routeRpcResponse(msg: Record<string, unknown>): void {
-  const requestId = msg["request_id"] as string | undefined;
+function routeRpcResponse(msg: RpcResponse): void {
+  const requestId = msg.request_id;
   if (!requestId) return;
 
   const pending = pendingRpcs.get(requestId);
@@ -448,7 +465,7 @@ function routeRpcResponse(msg: Record<string, unknown>): void {
 
   clearTimeout(pending.timer);
   pendingRpcs.delete(requestId);
-  pending.resolve(msg as unknown as RpcResponse);
+  pending.resolve(msg);
 }
 
 // ---------------------------------------------------------------------------

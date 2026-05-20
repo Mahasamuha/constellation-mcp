@@ -10,6 +10,40 @@ import {
 import { poll, confirm } from "./util.js";
 
 // ---------------------------------------------------------------------------
+// API response types
+// ---------------------------------------------------------------------------
+
+interface AgentEntry {
+  id: string;
+  host: string;
+  online: boolean;
+  last_heartbeat_at: string | null;
+  labels: Array<{ label: string; reported_path: string }>;
+}
+
+interface LabelEntry {
+  label: string;
+  host: string;
+  reported_path: string;
+}
+
+interface FilterEntry {
+  id: string;
+  pattern: string;
+  pattern_type: string;
+  scope_agent_id: string | null;
+  created_at: string;
+}
+
+interface SessionEntry {
+  id: string;
+  mcp_client_id: string;
+  issued_at: string;
+  expires_at: string;
+  has_refresh_token: boolean;
+}
+
+// ---------------------------------------------------------------------------
 // Broker URL resolution
 // ---------------------------------------------------------------------------
 
@@ -276,13 +310,9 @@ export function registerBrokerCommands(program: Command, getConfigDir: () => str
     .option("--json", "Output as JSON")
     .action(async (opts: { json?: boolean }) => {
       const session = await getValidSession(cfgDir);
-      const data = await apiGet<unknown[]>(session, "/api/agents");
+      const data = await apiGet<AgentEntry[]>(session, "/api/agents");
       if (opts.json) { console.log(JSON.stringify(data, null, 2)); return; }
-      for (const a of data as Array<{
-        id: string; host: string; online: boolean;
-        last_heartbeat_at: string | null;
-        labels: Array<{ label: string; reported_path: string }>;
-      }>) {
+      for (const a of data) {
         console.log(`${a.host} (${a.id})`);
         console.log(`  Status: ${a.online ? "online" : "offline"}${a.last_heartbeat_at ? `  last seen ${a.last_heartbeat_at}` : ""}`);
         for (const l of a.labels) console.log(`  ${l.label} → ${l.reported_path}`);
@@ -315,9 +345,9 @@ export function registerBrokerCommands(program: Command, getConfigDir: () => str
     .action(async (opts: { agent?: string; json?: boolean }) => {
       const session = await getValidSession(cfgDir);
       const qs = opts.agent ? `?agent_id=${encodeURIComponent(opts.agent)}` : "";
-      const data = await apiGet<unknown[]>(session, `/api/labels${qs}`);
+      const data = await apiGet<LabelEntry[]>(session, `/api/labels${qs}`);
       if (opts.json) { console.log(JSON.stringify(data, null, 2)); return; }
-      for (const l of data as Array<{ label: string; host: string; reported_path: string }>) {
+      for (const l of data) {
         console.log(`${l.label}  (${l.host})  →  ${l.reported_path}`);
       }
     });
@@ -334,12 +364,9 @@ export function registerBrokerCommands(program: Command, getConfigDir: () => str
     .option("--json", "Output as JSON")
     .action(async (opts: { json?: boolean }) => {
       const session = await getValidSession(cfgDir);
-      const data = await apiGet<unknown[]>(session, "/api/filters");
+      const data = await apiGet<FilterEntry[]>(session, "/api/filters");
       if (opts.json) { console.log(JSON.stringify(data, null, 2)); return; }
-      for (const f of data as Array<{
-        id: string; pattern: string; pattern_type: string;
-        scope_agent_id: string | null; created_at: string;
-      }>) {
+      for (const f of data) {
         const scope = f.scope_agent_id ? ` [agent: ${f.scope_agent_id}]` : "";
         console.log(`${f.id}  ${f.pattern_type}:${f.pattern}${scope}  (${f.created_at})`);
       }
@@ -385,12 +412,9 @@ export function registerBrokerCommands(program: Command, getConfigDir: () => str
     .option("--json", "Output as JSON")
     .action(async (opts: { json?: boolean }) => {
       const session = await getValidSession(cfgDir);
-      const data = await apiGet<unknown[]>(session, "/api/sessions");
+      const data = await apiGet<SessionEntry[]>(session, "/api/sessions");
       if (opts.json) { console.log(JSON.stringify(data, null, 2)); return; }
-      for (const s of data as Array<{
-        id: string; mcp_client_id: string;
-        issued_at: string; expires_at: string; has_refresh_token: boolean;
-      }>) {
+      for (const s of data) {
         console.log(`${s.id}  client:${s.mcp_client_id}  issued:${s.issued_at}  expires:${s.expires_at}${s.has_refresh_token ? "  [refresh]" : ""}`);
       }
     });

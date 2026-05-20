@@ -106,7 +106,7 @@ async function dispatch(
   root: string,
   env: RpcEnvelope,
   config: AgentConfig
-): Promise<unknown> {
+): Promise<object> {
   switch (tool) {
     case "list_directory":
       return listDirectory(root, {

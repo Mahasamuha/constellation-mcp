@@ -73,7 +73,14 @@ oauthRouter.post("/oauth/register", async (req: Request, res: Response) => {
 
   log.info({ clientId: oauthClient.id }, "Dynamic client registered");
 
-  const response: Record<string, unknown> = {
+  const response: {
+    client_id: string;
+    client_id_issued_at: number;
+    redirect_uris: string[];
+    grant_types: string[];
+    token_endpoint_auth_method: string;
+    client_secret?: string;
+  } = {
     client_id: oauthClient.id,
     client_id_issued_at: Math.floor(oauthClient.createdAt.getTime() / 1000),
     redirect_uris: redirectUris,
@@ -82,7 +89,7 @@ oauthRouter.post("/oauth/register", async (req: Request, res: Response) => {
   };
 
   if (clientSecret) {
-    response["client_secret"] = clientSecret;
+    response.client_secret = clientSecret;
   }
 
   res.status(201).json(response);

@@ -163,8 +163,8 @@ function buildMcpServer(): McpServer {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function userId(extra: { authInfo?: { extra?: Record<string, unknown> } }): string {
-  const id = extra.authInfo?.extra?.["userId"];
+function userId(extra: { authInfo?: { extra?: { userId?: unknown } } }): string {
+  const id = extra.authInfo?.extra?.userId;
   if (typeof id !== "string") throw new Error("Missing userId in auth context");
   return id;
 }

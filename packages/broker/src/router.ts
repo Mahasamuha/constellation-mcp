@@ -1,7 +1,7 @@
 import micromatch from "micromatch";
 import { randomBytes } from "node:crypto";
 import { prisma } from "./db.js";
-import { dispatchRpc, getConnection } from "./hub.js";
+import { dispatchRpc, getConnection, type RpcEnvelope } from "./hub.js";
 import { createLogger } from "@constellation/shared";
 
 const log = createLogger("router");
@@ -196,7 +196,7 @@ export async function routeToolCall(
   }
 
   const requestId = randomBytes(16).toString("hex");
-  const envelope: Record<string, unknown> = {
+  const envelope: RpcEnvelope = {
     request_id: requestId,
     tool,
     absolute_root: absoluteRoot,
