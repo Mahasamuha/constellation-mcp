@@ -186,7 +186,10 @@ deviceRouter.get("/activate/callback", async (req: Request, res: Response) => {
 
   let userId: string;
   try {
-    userId = await exchangeCodeAndUpsertUser(prisma, callbackUrl, upstreamState, stored.codeVerifier);
+    // Pass rawState (the full composite value) as expectedState so openid-client's
+    // internal check matches the state in the callback URL. Our own state integrity
+    // check (stored.state === upstreamState) above already verified authenticity.
+    userId = await exchangeCodeAndUpsertUser(prisma, callbackUrl, rawState, stored.codeVerifier);
   } catch (err) {
     log.warn({ err }, "OIDC exchange failed on activate");
     res.status(400).send("Authentication failed. Please try again.");
