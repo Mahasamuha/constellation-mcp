@@ -27,20 +27,23 @@ export function install(executablePath: string): void {
   }
 }
 
-function installSystemd(exec: string): void {
+function installSystemd(_exec: string): void {
   const unitDir = join(homedir(), ".config", "systemd", "user");
   mkdirSync(unitDir, { recursive: true });
 
+  // Use absolute paths for node and the CLI script so the unit never depends
+  // on PATH being set in the systemd environment.
+  const nodePath = process.execPath;
+  const scriptPath = process.argv[1]!;
+
   const unitPath = join(unitDir, `${SERVICE_NAME}.service`);
-  const path = process.env["PATH"] ?? "/usr/local/bin:/usr/bin:/bin";
   const unit = `[Unit]
 Description=Constellation Agent
 After=network.target
 
 [Service]
 Type=simple
-Environment="PATH=${path}"
-ExecStart=${exec} agent start --foreground
+ExecStart=${nodePath} ${scriptPath} agent start --foreground
 Restart=on-failure
 RestartSec=5
 
@@ -53,9 +56,12 @@ WantedBy=default.target
   console.log(`Installed systemd user unit: ${unitPath}`);
 }
 
-function installLaunchd(exec: string): void {
+function installLaunchd(_exec: string): void {
   const plistDir = join(homedir(), "Library", "LaunchAgents");
   mkdirSync(plistDir, { recursive: true });
+
+  const nodePath = process.execPath;
+  const scriptPath = process.argv[1]!;
 
   const label = `com.constellation.agent`;
   const plistPath = join(plistDir, `${label}.plist`);
@@ -67,7 +73,8 @@ function installLaunchd(exec: string): void {
   <string>${label}</string>
   <key>ProgramArguments</key>
   <array>
-    <string>${exec}</string>
+    <string>${nodePath}</string>
+    <string>${scriptPath}</string>
     <string>agent</string>
     <string>start</string>
     <string>--foreground</string>
@@ -88,7 +95,9 @@ function installLaunchd(exec: string): void {
   console.log(`Run 'constellation agent start' to load it.`);
 }
 
-function installTaskScheduler(exec: string): void {
+function installTaskScheduler(_exec: string): void {
+  const nodePath = process.execPath;
+  const scriptPath = process.argv[1]!;
   const xml = `<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <Triggers>
@@ -96,8 +105,8 @@ function installTaskScheduler(exec: string): void {
   </Triggers>
   <Actions Context="Author">
     <Exec>
-      <Command>${exec}</Command>
-      <Arguments>agent start --foreground</Arguments>
+      <Command>${nodePath}</Command>
+      <Arguments>${scriptPath} agent start --foreground</Arguments>
     </Exec>
   </Actions>
   <Settings>

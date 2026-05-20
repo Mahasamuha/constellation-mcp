@@ -20,6 +20,7 @@ import {
   serviceStatus,
   showLogs,
 } from "./service.js";
+import { runDaemon } from "../index.js";
 import { poll, maskToken } from "./util.js";
 
 export function registerAgentCommands(program: Command, getConfigDir: () => string): void {
@@ -137,7 +138,17 @@ export function registerAgentCommands(program: Command, getConfigDir: () => stri
       install(exec as string);
     });
 
-  agent.command("start").description("Start the agent service").action(() => startService());
+  agent
+    .command("start")
+    .description("Start the agent service")
+    .option("--foreground", "Run in the foreground (invoked by the service manager)")
+    .action((opts: { foreground?: boolean }) => {
+      if (opts.foreground) {
+        runDaemon((agent.opts() as { config?: string }).config);
+      } else {
+        startService();
+      }
+    });
   agent.command("stop").description("Stop the agent service").action(() => stopService());
   agent.command("restart").description("Restart the agent service").action(() => restartService());
 
