@@ -8,6 +8,11 @@ import { apiRouter } from "./api.js";
 
 export const app: Express = express();
 
+const trustProxyRaw = process.env["TRUST_PROXY"];
+if (!trustProxyRaw) throw new Error("TRUST_PROXY is required. Set to the number of reverse proxies in front of the broker (e.g. 1), a specific IP, or a comma-separated CIDR list.");
+const trustProxyNum = parseInt(trustProxyRaw, 10);
+app.set("trust proxy", isNaN(trustProxyNum) ? trustProxyRaw : trustProxyNum);
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
