@@ -1,6 +1,6 @@
 services:
   broker:
-    image: ghcr.io/joerybka/constellation-broker:latest
+    image: ghcr.io/mahasamuha/constellation-broker:latest
     ports:
       - "3000:3000"
     env_file:
