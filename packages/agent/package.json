@@ -10,6 +10,14 @@
     "dev": "tsc --watch",
     "start": "node dist/index.js"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Mahasamuha/constellation-mcp.git"
+  },
+  "publishConfig": {
+    "provenance": true,
+    "access": "public"
+  },
   "bundledDependencies": ["@constellation/shared"],
   "dependencies": {
     "@constellation/shared": "workspace:*",
