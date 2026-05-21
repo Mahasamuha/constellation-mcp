@@ -32,10 +32,14 @@ interface ConnectedAgent {
   userId: string;
   host: string;
   tokenId: string;
-  /** Token id to revoke once this connection is confirmed healthy (post-rotation). */
-  pendingRevocationTokenId?: string;
   lastPongAt: number;
   missedPings: number;
+}
+
+interface PendingRotationEntry {
+  agentId: string;
+  oldTokenId: string;
+  timer: ReturnType<typeof setTimeout>;
 }
 
 // ---------------------------------------------------------------------------
@@ -47,6 +51,11 @@ const connections = new Map<string, ConnectedAgent>();
 
 /** Reverse lookup: tokenId → agentId (for reconnect rate limiting) */
 const tokenIndex = new Map<string, string>();
+
+/** Pending token rotations: newTokenId → entry. Cleared on reconnect or TTL expiry. */
+const pendingRotations = new Map<string, PendingRotationEntry>();
+
+const ROTATION_TTL_MS = 5 * 60 * 1000;
 
 // ---------------------------------------------------------------------------
 // Rate limiter — sliding window per agent token
@@ -126,11 +135,29 @@ export function attachHub(server: Server): void {
       return;
     }
 
-    const agent = agentToken.agents[0];
+    // Primary lookup: find the agent that currently references this token.
+    // For a pending rotation token, agentTokenId hasn't been updated yet — fall
+    // back to the pendingRotations map.
+    let agent = agentToken.agents[0];
+    let pendingRotation: PendingRotationEntry | undefined;
+
     if (!agent) {
-      socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
-      socket.destroy();
-      return;
+      pendingRotation = pendingRotations.get(agentToken.id);
+      if (!pendingRotation) {
+        socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
+        socket.destroy();
+        return;
+      }
+      const agentRecord = await prisma.agent.findUnique({
+        where: { id: pendingRotation.agentId },
+        select: { id: true, userId: true, host: true },
+      });
+      if (!agentRecord) {
+        socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
+        socket.destroy();
+        return;
+      }
+      agent = agentRecord;
     }
 
     if (!checkReconnectRateLimit(agentToken.id)) {
@@ -151,6 +178,7 @@ export function attachHub(server: Server): void {
         userId: agent.userId,
         host: agent.host,
         tokenId: agentToken.id,
+        pendingRotation,
       });
     });
   });
@@ -160,6 +188,7 @@ export function attachHub(server: Server): void {
     userId: string;
     host: string;
     tokenId: string;
+    pendingRotation?: PendingRotationEntry;
   }) => {
     void handleConnection(ws, meta);
   });
@@ -172,30 +201,33 @@ async function handleConnection(ws: WebSocket, meta: {
   userId: string;
   host: string;
   tokenId: string;
+  pendingRotation?: PendingRotationEntry;
 }): Promise<void> {
-    const { agentId, userId, host, tokenId } = meta;
+    const { agentId, userId, host, tokenId, pendingRotation } = meta;
+
+    // Complete a pending token rotation: atomically update agentTokenId and revoke the old token,
+    // then cancel the expiry timer.
+    if (pendingRotation) {
+      clearTimeout(pendingRotation.timer);
+      pendingRotations.delete(tokenId);
+      try {
+        await prisma.$transaction([
+          prisma.agent.update({ where: { id: agentId }, data: { agentTokenId: tokenId } }),
+          prisma.agentToken.update({ where: { id: pendingRotation.oldTokenId }, data: { revokedAt: new Date() } }),
+        ]);
+      } catch (err) {
+        log.error({ err, agentId }, "Failed to complete token rotation — closing connection");
+        ws.close(1011, "Internal error during token rotation");
+        return;
+      }
+      log.info({ agentId, host }, "Token rotation completed");
+    }
 
     // Handle duplicate connections — terminate the old one.
     const existing = connections.get(agentId);
     if (existing) {
       log.info({ agentId, host }, "Replacing stale agent connection");
       existing.ws.terminate();
-    }
-
-    // If a previous token rotation is pending, revoke the old token now that
-    // the agent has successfully reconnected with the new one.
-    const prevTokenId = existing?.tokenId;
-    if (prevTokenId && prevTokenId !== tokenId) {
-      try {
-        await prisma.agentToken.update({
-          where: { id: prevTokenId },
-          data: { revokedAt: new Date() },
-        });
-      } catch (err) {
-        log.error({ err, prevTokenId }, "Failed to revoke old agent token — closing new connection");
-        ws.close(1011, "Internal error during token rotation");
-        return;
-      }
     }
 
     const conn: ConnectedAgent = {
@@ -382,12 +414,32 @@ async function handleRotateToken(conn: ConnectedAgent): Promise<void> {
     select: { id: true },
   });
 
-  await prisma.agent.update({
-    where: { id: conn.agentId },
-    data: { agentTokenId: newAgentToken.id },
+  // Cancel any prior pending rotation for this agent to avoid orphaned tokens.
+  for (const [priorTokenId, entry] of pendingRotations) {
+    if (entry.agentId === conn.agentId) {
+      clearTimeout(entry.timer);
+      pendingRotations.delete(priorTokenId);
+      prisma.agentToken.update({ where: { id: priorTokenId }, data: { revokedAt: new Date() } })
+        .catch((err) => log.error({ err, priorTokenId }, "Failed to revoke superseded rotation token"));
+      break;
+    }
+  }
+
+  // Do NOT update agent.agentTokenId yet — the agent must reconnect with the new token first.
+  // If it does not reconnect within the TTL, revoke the new token so the old one stays valid.
+  const timer = setTimeout(() => {
+    pendingRotations.delete(newAgentToken.id);
+    prisma.agentToken.update({ where: { id: newAgentToken.id }, data: { revokedAt: new Date() } })
+      .catch((err) => log.error({ err, agentId: conn.agentId }, "Failed to revoke expired rotation token"));
+    log.warn({ agentId: conn.agentId }, "Rotation token expired unused — old token remains active");
+  }, ROTATION_TTL_MS);
+
+  pendingRotations.set(newAgentToken.id, {
+    agentId: conn.agentId,
+    oldTokenId: conn.tokenId,
+    timer,
   });
 
-  // The old token is revoked when the agent reconnects with the new one (see attachHub).
   log.info({ agentId: conn.agentId }, "Token rotation prepared");
   send(conn.ws, { type: "token_rotated", token: newToken });
 }

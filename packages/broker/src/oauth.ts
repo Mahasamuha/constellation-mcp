@@ -112,6 +112,11 @@ oauthRouter.get("/oauth/authorize", async (req: Request, res: Response) => {
     return;
   }
 
+  if (!code_challenge) {
+    res.status(400).json({ error: "invalid_request", error_description: "code_challenge is required (PKCE S256)" });
+    return;
+  }
+
   const oauthClient = await prisma.oauthClient.findUnique({ where: { id: client_id } });
   if (!oauthClient) {
     res.status(400).json({ error: "invalid_client" });

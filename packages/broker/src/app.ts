@@ -9,9 +9,11 @@ import { apiRouter } from "./api.js";
 export const app: Express = express();
 
 const trustProxyRaw = process.env["TRUST_PROXY"];
-if (!trustProxyRaw) throw new Error("TRUST_PROXY is required. Set to the number of reverse proxies in front of the broker (e.g. 1), a specific IP, or a comma-separated CIDR list.");
-const trustProxyNum = parseInt(trustProxyRaw, 10);
-app.set("trust proxy", isNaN(trustProxyNum) ? trustProxyRaw : trustProxyNum);
+if (!trustProxyRaw) throw new Error("TRUST_PROXY is required. Set to a comma-separated list of trusted proxy IP addresses or CIDR ranges (e.g. 127.0.0.1,10.0.0.0/8).");
+if (/^\d+$/.test(trustProxyRaw) || trustProxyRaw === "true" || trustProxyRaw === "false") {
+  throw new Error("TRUST_PROXY must be a comma-separated list of IP addresses or CIDR ranges, not a number or boolean.");
+}
+app.set("trust proxy", trustProxyRaw);
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
