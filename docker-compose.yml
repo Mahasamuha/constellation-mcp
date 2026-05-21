@@ -1,8 +1,6 @@
 services:
   broker:
-    build:
-      context: .
-      dockerfile: packages/broker/Dockerfile
+    image: ghcr.io/joerybka/constellation-broker:latest
     ports:
       - "3000:3000"
     env_file:
