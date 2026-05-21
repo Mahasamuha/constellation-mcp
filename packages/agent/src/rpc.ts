@@ -25,12 +25,45 @@ export interface RpcEnvelope {
   [key: string]: unknown;
 }
 
-type RpcError = string | { message: string; edit_index?: number; match_count?: number };
+export interface RpcError {
+  message: string;
+  code?: string;
+  /** edit_file: 0-based index of the failing edit */
+  edit_index?: number;
+  /** edit_file: how many times old_text matched (0 or >1) */
+  match_count?: number;
+  /** read_file: actual file size in KB */
+  file_size_kb?: number;
+  /** read_file: configured cap in KB */
+  max_file_size_kb?: number;
+  /** copy/move: destination path that already exists */
+  path?: string;
+}
 
 export interface RpcResponse {
   request_id: string;
   result?: object;
   error?: RpcError;
+}
+
+const KNOWN_CODES = new Set(["FILE_TOO_LARGE", "EDIT_NO_MATCH", "EDIT_AMBIGUOUS", "DEST_EXISTS"]);
+
+function buildRpcError(e: Error & {
+  code?: string;
+  edit_index?: number;
+  match_count?: number;
+  file_size_kb?: number;
+  max_file_size_kb?: number;
+  path?: string;
+}): RpcError {
+  const err: RpcError = { message: e.message ?? "Internal error" };
+  if (e.code !== undefined)            err.code            = e.code;
+  if (e.edit_index !== undefined)      err.edit_index      = e.edit_index;
+  if (e.match_count !== undefined)     err.match_count     = e.match_count;
+  if (e.file_size_kb !== undefined)    err.file_size_kb    = e.file_size_kb;
+  if (e.max_file_size_kb !== undefined) err.max_file_size_kb = e.max_file_size_kb;
+  if (e.path !== undefined)            err.path            = e.path;
+  return err;
 }
 
 /**
@@ -49,7 +82,7 @@ export async function handleRpc(
   const allowed = paths.find((p) => p.path === absolute_root);
   if (!allowed) {
     log.warn({ tool, absolute_root }, "Path rejected by agent — not in allowlist");
-    return { request_id, error: "Path rejected by agent" };
+    return { request_id, error: { message: "Path rejected by agent" } };
   }
 
   // Resolve the root to its real path (follows symlinks, canonicalises).
@@ -57,7 +90,7 @@ export async function handleRpc(
   try {
     resolvedRoot = await fs.realpath(absolute_root);
   } catch {
-    return { request_id, error: "Path rejected by agent" };
+    return { request_id, error: { message: "Path rejected by agent" } };
   }
 
   // For operations that take a relative_path, validate the resolved final path
@@ -73,11 +106,11 @@ export async function handleRpc(
       // Use realpath on the parent for paths that may not exist yet (write/mkdir).
       resolved = await safeRealpath(candidate, resolvedRoot);
     } catch {
-      return { request_id, error: "Path rejected by agent" };
+      return { request_id, error: { message: "Path rejected by agent" } };
     }
     if (!resolved.startsWith(resolvedRoot + "/") && resolved !== resolvedRoot) {
       log.warn({ tool, resolvedRoot, resolved }, "Path traversal attempt rejected");
-      return { request_id, error: "Path rejected by agent" };
+      return { request_id, error: { message: "Path rejected by agent" } };
     }
   }
 
@@ -85,21 +118,18 @@ export async function handleRpc(
     const result = await dispatch(tool, resolvedRoot, envelope, config);
     return { request_id, result };
   } catch (err) {
-    const e = err as Error & { code?: string; edit_index?: number; match_count?: number };
-    if (e.code === "EDIT_NO_MATCH" || e.code === "EDIT_AMBIGUOUS") {
-      return {
-        request_id,
-        error: { message: e.message, edit_index: e.edit_index, match_count: e.match_count },
-      };
+    const e = err as Error & {
+      code?: string;
+      edit_index?: number;
+      match_count?: number;
+      file_size_kb?: number;
+      max_file_size_kb?: number;
+      path?: string;
+    };
+    if (!KNOWN_CODES.has(e.code ?? "")) {
+      log.error({ err, tool, request_id }, "RPC operation failed");
     }
-    if (e.code === "FILE_TOO_LARGE") {
-      return { request_id, error: e.message };
-    }
-    if (e.code === "DEST_EXISTS") {
-      return { request_id, error: e.message };
-    }
-    log.error({ err, tool, request_id }, "RPC operation failed");
-    return { request_id, error: e.message ?? "Internal error" };
+    return { request_id, error: buildRpcError(e) };
   }
 }
 

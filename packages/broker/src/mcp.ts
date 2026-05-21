@@ -198,7 +198,7 @@ async function dispatch(
 ): Promise<ToolResult<Record<string, unknown>>> {
   const result = await routeToolCall(uid, tool, label, params, host);
   if (isRouterError(result)) toolError(result.message);
-  if (result.error) toolError(typeof result.error === "string" ? result.error : JSON.stringify(result.error));
+  if (result.error) toolError(result.error.message);
   return ok(result.result as Record<string, unknown>);
 }
 

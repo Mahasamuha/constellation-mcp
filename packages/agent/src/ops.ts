@@ -192,7 +192,7 @@ export async function readFile(
   if (!isRangeRead && stat.size > capBytes) {
     throw Object.assign(
       new Error(`File is ${(stat.size / 1024 / 1024).toFixed(1)}MB; max is ${params.max_file_size_kb}KB — use start_line/end_line to read in chunks`),
-      { code: "FILE_TOO_LARGE" }
+      { code: "FILE_TOO_LARGE", file_size_kb: Math.round(stat.size / 1024), max_file_size_kb: params.max_file_size_kb }
     );
   }
 
@@ -213,7 +213,7 @@ export async function readFile(
     if (Buffer.byteLength(slice, "utf8") > capBytes) {
       throw Object.assign(
         new Error(`Requested range exceeds ${params.max_file_size_kb}KB — reduce the line range`),
-        { code: "FILE_TOO_LARGE" }
+        { code: "FILE_TOO_LARGE", max_file_size_kb: params.max_file_size_kb }
       );
     }
     return { content: slice, total_lines: totalLines };
@@ -261,7 +261,7 @@ async function readRangeStreamed(
       if (overCap) {
         reject(Object.assign(
           new Error(`Requested range exceeds ${Math.round(capBytes / 1024)}KB — reduce the line range`),
-          { code: "FILE_TOO_LARGE" }
+          { code: "FILE_TOO_LARGE", max_file_size_kb: Math.round(capBytes / 1024) }
         ));
         return;
       }
@@ -586,8 +586,8 @@ async function assertNotExists(path: string): Promise<void> {
   try {
     await fs.access(path);
     throw Object.assign(
-      new Error(`Destination '${path}' already exists — delete it first or choose a different path`),
-      { code: "DEST_EXISTS" }
+      new Error(`Destination already exists — delete it first or choose a different path`),
+      { code: "DEST_EXISTS", path }
     );
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;

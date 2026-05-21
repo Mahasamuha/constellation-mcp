@@ -448,7 +448,15 @@ async function handleRotateToken(conn: ConnectedAgent): Promise<void> {
 // RPC dispatch (used by the request router in section 5)
 // ---------------------------------------------------------------------------
 
-export type RpcError = string | { message: string; edit_index?: number; match_count?: number };
+export interface RpcError {
+  message: string;
+  code?: string;
+  edit_index?: number;
+  match_count?: number;
+  file_size_kb?: number;
+  max_file_size_kb?: number;
+  path?: string;
+}
 
 interface RpcResponse {
   request_id: string;

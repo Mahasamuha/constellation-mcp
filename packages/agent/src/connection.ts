@@ -115,7 +115,7 @@ export class AgentConnection {
         .then((response) => this.send(response))
         .catch((err) => {
           log.error({ err }, "Unhandled error in RPC handler");
-          this.send({ request_id: msg["request_id"], error: "Internal agent error" });
+          this.send({ request_id: msg["request_id"], error: { message: "Internal agent error" } });
         });
       return;
     }
