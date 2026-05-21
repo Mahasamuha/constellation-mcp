@@ -6,6 +6,7 @@ src/generated/
 
 .env
 .env.local
+.postgres.env
 
 
 *.log
