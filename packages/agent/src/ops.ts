@@ -214,7 +214,7 @@ export async function readFile(
     if (sliceBytes > capBytes) {
       throw Object.assign(
         new Error(`Requested range exceeds ${params.max_file_size_kb}KB — reduce the line range`),
-        { code: "FILE_TOO_LARGE", read_size_kb: Math.round(sliceBytes / 1024), max_file_size_kb: params.max_file_size_kb }
+        { code: "READ_TOO_LARGE", read_size_kb: Math.round(sliceBytes / 1024), max_file_size_kb: params.max_file_size_kb }
       );
     }
     return { content: slice, total_lines: totalLines };
@@ -262,7 +262,7 @@ async function readRangeStreamed(
       if (overCap) {
         reject(Object.assign(
           new Error(`Requested range exceeds ${Math.round(capBytes / 1024)}KB — reduce the line range`),
-          { code: "FILE_TOO_LARGE", read_size_kb: Math.round(byteCount / 1024), max_file_size_kb: Math.round(capBytes / 1024) }
+          { code: "READ_TOO_LARGE", read_size_kb: Math.round(byteCount / 1024), max_file_size_kb: Math.round(capBytes / 1024) }
         ));
         return;
       }

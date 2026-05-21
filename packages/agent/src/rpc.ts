@@ -46,7 +46,7 @@ export interface RpcResponse {
   error?: RpcError;
 }
 
-const KNOWN_CODES = new Set(["FILE_TOO_LARGE", "EDIT_NO_MATCH", "EDIT_AMBIGUOUS", "DEST_EXISTS"]);
+const KNOWN_CODES = new Set(["FILE_TOO_LARGE", "READ_TOO_LARGE", "EDIT_NO_MATCH", "EDIT_AMBIGUOUS", "DEST_EXISTS"]);
 
 function buildRpcError(e: Error & {
   code?: string;
