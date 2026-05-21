@@ -109,21 +109,20 @@ chmod 600 ~/.config/constellation/paths.yaml
 
 ### Configure paths
 
-Edit `~/.config/constellation/paths.yaml` to define which directories to expose:
+Add paths with the CLI (syncs to the broker automatically):
 
-```yaml
-paths:
-  - label: projects
-    path: /home/user/projects
-  - label: dotfiles
-    path: /home/user/.config
+```sh
+constellation agent paths add projects /home/user/projects
+constellation agent paths add dotfiles /home/user/.config
 ```
 
-Labels must be unique across all your agents. Push the config to the broker:
+Or edit `~/.config/constellation/paths.yaml` directly and push manually:
 
 ```sh
 constellation agent sync
 ```
+
+Labels must be unique across all your agents.
 
 ### Install as a system service
 
@@ -203,13 +202,13 @@ constellation agent start       # Start the service
 constellation agent stop        # Stop the service
 constellation agent restart     # Restart the service
 constellation agent status      # Show connection state and labels
-constellation agent sync        # Push paths.yaml changes to broker
+constellation agent sync        # Push paths.yaml changes to broker (after manual edits)
 constellation agent rotate      # Rotate agent token
 constellation agent rename <h>  # Update host name
 constellation agent logs [-f]   # Show service logs
 constellation agent paths list  # List configured labels
-constellation agent paths add <label> <path>
-constellation agent paths remove <label>
+constellation agent paths add <label> <path>   # Add label and sync
+constellation agent paths remove <label>       # Remove label and sync
 ```
 
 ## 6. Broker CLI reference

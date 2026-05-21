@@ -192,15 +192,9 @@ export function registerAgentCommands(program: Command, getConfigDir: () => stri
 
   agent
     .command("sync")
-    .description("Push current path labels to the broker")
+    .description("Push path labels to the broker (use after manually editing paths.yaml)")
     .action(async () => {
-      await agentControlCommand(getConfigDir(), "config_update",
-        (_cfg, paths) => ({
-          type: "config_update",
-          paths: paths.map((p) => ({ label: p.label, reported_path: p.path })),
-        }),
-        "config_update_ok", "config_update_error"
-      );
+      await syncPaths(getConfigDir());
       console.log("Labels synced.");
     });
 
@@ -317,8 +311,8 @@ export function registerAgentCommands(program: Command, getConfigDir: () => stri
     .command("add")
     .argument("<label>", "Label name")
     .argument("<path>", "Absolute path on this machine")
-    .description("Add a path label")
-    .action((label: string, pathArg: string) => {
+    .description("Add a path label and sync to the broker")
+    .action(async (label: string, pathArg: string) => {
       const dir = getConfigDir();
       const cfg = loadPathsConfig(dir);
       if (cfg.paths.some((p) => p.label === label)) {
@@ -327,15 +321,15 @@ export function registerAgentCommands(program: Command, getConfigDir: () => stri
       }
       cfg.paths.push({ label, path: pathArg });
       writePathsConfig(dir, cfg);
-      console.log(`Label '${label}' added to paths.yaml.`);
-      console.log(`Run 'constellation agent sync' to push changes to the broker.`);
+      await syncPaths(dir);
+      console.log(`Label '${label}' added and synced.`);
     });
 
   paths
     .command("remove")
     .argument("<label>", "Label to remove")
-    .description("Remove a path label")
-    .action((label: string) => {
+    .description("Remove a path label and sync to the broker")
+    .action(async (label: string) => {
       const dir = getConfigDir();
       const cfg = loadPathsConfig(dir);
       const before = cfg.paths.length;
@@ -345,9 +339,23 @@ export function registerAgentCommands(program: Command, getConfigDir: () => stri
         process.exit(1);
       }
       writePathsConfig(dir, cfg);
-      console.log(`Label '${label}' removed from paths.yaml.`);
-      console.log(`Run 'constellation agent sync' to push changes to the broker.`);
+      await syncPaths(dir);
+      console.log(`Label '${label}' removed and synced.`);
     });
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+async function syncPaths(dir: string): Promise<void> {
+  await agentControlCommand(dir, "config_update",
+    (_cfg, paths) => ({
+      type: "config_update",
+      paths: paths.map((p) => ({ label: p.label, reported_path: p.path })),
+    }),
+    "config_update_ok", "config_update_error"
+  );
 }
 
 // ---------------------------------------------------------------------------

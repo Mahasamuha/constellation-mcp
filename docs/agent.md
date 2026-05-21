@@ -170,7 +170,7 @@ Shows service state (active/inactive/unknown), broker URL, host name, and config
 
 ### `agent sync`
 
-Opens a one-shot WebSocket connection to the broker, sends a `config_update` with the current `paths.yaml`, waits for acknowledgement, then exits. Use after editing `paths.yaml` directly to push changes without restarting the service.
+Opens a one-shot WebSocket connection to the broker, sends a `config_update` with the current `paths.yaml`, waits for acknowledgement, then exits. Only needed when `paths.yaml` has been edited manually — `agent paths add` and `agent paths remove` sync automatically.
 
 ### `agent rotate`
 
@@ -208,11 +208,11 @@ Lists labels and paths from `paths.yaml`.
 
 ### `agent paths add <label> <path>`
 
-Appends an entry to `paths.yaml`. Does not push to the broker — run `constellation agent sync` after.
+Appends an entry to `paths.yaml` and syncs to the broker immediately.
 
 ### `agent paths remove <label>`
 
-Removes an entry from `paths.yaml`. Does not push to the broker — run `constellation agent sync` after.
+Removes an entry from `paths.yaml` and syncs to the broker immediately.
 
 ---
 
