@@ -33,7 +33,7 @@ export interface RpcError {
   /** edit_file: how many times old_text matched (0 or >1) */
   match_count?: number;
   /** read_file: actual file size in KB */
-  file_size_kb?: number;
+  read_size_kb?: number;
   /** read_file: configured cap in KB */
   max_file_size_kb?: number;
   /** copy/move: destination path that already exists */
@@ -52,7 +52,7 @@ function buildRpcError(e: Error & {
   code?: string;
   edit_index?: number;
   match_count?: number;
-  file_size_kb?: number;
+  read_size_kb?: number;
   max_file_size_kb?: number;
   path?: string;
 }): RpcError {
@@ -60,7 +60,7 @@ function buildRpcError(e: Error & {
   if (e.code !== undefined)            err.code            = e.code;
   if (e.edit_index !== undefined)      err.edit_index      = e.edit_index;
   if (e.match_count !== undefined)     err.match_count     = e.match_count;
-  if (e.file_size_kb !== undefined)    err.file_size_kb    = e.file_size_kb;
+  if (e.read_size_kb !== undefined)    err.read_size_kb    = e.read_size_kb;
   if (e.max_file_size_kb !== undefined) err.max_file_size_kb = e.max_file_size_kb;
   if (e.path !== undefined)            err.path            = e.path;
   return err;
@@ -122,7 +122,7 @@ export async function handleRpc(
       code?: string;
       edit_index?: number;
       match_count?: number;
-      file_size_kb?: number;
+      read_size_kb?: number;
       max_file_size_kb?: number;
       path?: string;
     };

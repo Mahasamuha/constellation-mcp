@@ -453,7 +453,7 @@ export interface RpcError {
   code?: string;
   edit_index?: number;
   match_count?: number;
-  file_size_kb?: number;
+  read_size_kb?: number;
   max_file_size_kb?: number;
   path?: string;
 }
