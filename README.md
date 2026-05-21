@@ -87,7 +87,7 @@ your-broker.example.com {
 ### Via npm
 
 ```sh
-npm install -g @constellation/agent
+npm install -g @mahasamuha/constellation-agent
 ```
 
 ### Initialize
