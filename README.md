@@ -22,22 +22,13 @@ The agent never opens inbound ports. All traffic flows outbound from the agent t
 
 ### Configure environment
 
-Copy both example files and fill in the required values:
+Copy the example and fill in the required values:
 
 ```sh
 cp packages/broker/.env.example packages/broker/.env
-cp .postgres.env.example .postgres.env
 ```
 
-`.postgres.env` sets the Postgres credentials used by the database container:
-
-| Variable | Description |
-|---|---|
-| `POSTGRES_USER` | Database user |
-| `POSTGRES_PASSWORD` | Database password |
-| `POSTGRES_DB` | Database name |
-
-Make sure `DATABASE_URL` in `packages/broker/.env` matches the credentials you set here.
+`packages/broker/.env` is shared by both the broker and the Postgres container. Set `POSTGRES_USER`, `POSTGRES_PASSWORD`, and `POSTGRES_DB` there, and make sure `DATABASE_URL` uses the same credentials.
 
 Required variables:
 
