@@ -423,18 +423,24 @@ Or on error:
 ```json
 {
   "request_id": "<same-id>",
-  "error": "<message>"
+  "error": {
+    "message": "<human-readable description>",
+    "code": "<SCREAMING_SNAKE error code>",
+    "<enrichment>": "<value>"
+  }
 }
 ```
 
-`edit_file` errors may include `edit_index` (0-based index of the failing edit) and `match_count` for diagnostics:
+`error` is always an object with a required `message` field. `code` and the enrichment fields are optional and depend on the error type:
 
-```json
-{
-  "request_id": "...",
-  "error": { "message": "old_text matched 0 times", "edit_index": 2, "match_count": 0 }
-}
-```
+| `code` | Trigger | Extra fields |
+|---|---|---|
+| `EDIT_NO_MATCH` | `edit_file` — `old_text` matched zero times | `edit_index` (0-based), `match_count: 0` |
+| `EDIT_AMBIGUOUS` | `edit_file` — `old_text` matched more than once | `edit_index` (0-based), `match_count: N` |
+| `FILE_TOO_LARGE` | `read_file` — full file exceeds cap | `file_size_kb`, `max_file_size_kb` |
+| `FILE_TOO_LARGE` | `read_file` — range result exceeds cap | `max_file_size_kb` |
+| `DEST_EXISTS` | `copy` / `move` — destination already exists | `path` |
+| _(absent)_ | Path rejected, unknown tool, unexpected error | — |
 
 The broker resolves the label to an `absolute_root` before dispatching, so the agent never sees label names — only absolute paths. The agent enforces its own path restrictions against that root.
 
