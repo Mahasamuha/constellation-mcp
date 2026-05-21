@@ -31,13 +31,16 @@ Agents connect over WebSocket to `wss://<broker>/agent/connect` using a long-liv
 
 ## Configuration Reference
 
-All values are read from environment variables. The broker refuses to start if `TRUST_PROXY` is absent.
+All values are read from `packages/broker/.env`. This file is shared by both the broker and the Postgres container in Docker Compose — set `POSTGRES_USER`, `POSTGRES_PASSWORD`, and `POSTGRES_DB` here and make sure `DATABASE_URL` uses the same credentials. The broker refuses to start if `TRUST_PROXY` is absent.
 
 ### Required
 
 | Variable | Description |
 |---|---|
-| `DATABASE_URL` | PostgreSQL connection string |
+| `POSTGRES_USER` | Postgres username (also read by the Postgres container) |
+| `POSTGRES_PASSWORD` | Postgres password (also read by the Postgres container) |
+| `POSTGRES_DB` | Postgres database name (also read by the Postgres container) |
+| `DATABASE_URL` | PostgreSQL connection string — must match the `POSTGRES_*` values above |
 | `OIDC_ISSUER` | OIDC provider issuer URL (e.g. `https://accounts.google.com`) |
 | `OIDC_CLIENT_ID` | Client ID from your OIDC provider |
 | `OIDC_CLIENT_SECRET` | Client secret from your OIDC provider |
