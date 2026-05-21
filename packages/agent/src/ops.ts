@@ -1,7 +1,9 @@
 import {
   promises as fs,
   constants as fsConstants,
+  createReadStream,
 } from "node:fs";
+import { createInterface } from "node:readline";
 import { join, dirname, relative } from "node:path";
 import micromatch from "micromatch";
 import { createPatch } from "diff";
@@ -185,27 +187,89 @@ export async function readFile(
   const full = join(root, params.relative_path);
   const stat = await fs.stat(full);
   const capBytes = params.max_file_size_kb * 1024;
+  const isRangeRead = params.start_line !== undefined || params.end_line !== undefined;
 
-  if (params.start_line === undefined && params.end_line === undefined) {
-    if (stat.size > capBytes) {
-      throw Object.assign(
-        new Error(`File is ${(stat.size / 1024 / 1024).toFixed(1)}MB; max for full read is ${params.max_file_size_kb}KB — use read_file with range params or grep_files`),
-        { code: "FILE_TOO_LARGE" }
-      );
-    }
+  if (!isRangeRead && stat.size > capBytes) {
+    throw Object.assign(
+      new Error(`File is ${(stat.size / 1024 / 1024).toFixed(1)}MB; max is ${params.max_file_size_kb}KB — use start_line/end_line to read in chunks`),
+      { code: "FILE_TOO_LARGE" }
+    );
+  }
+
+  // For range reads on files larger than the cap, stream line-by-line to avoid
+  // loading the entire file into memory.
+  if (isRangeRead && stat.size > capBytes) {
+    return readRangeStreamed(full, params, capBytes);
   }
 
   const raw = await fs.readFile(full, "utf8");
   const lines = raw.split("\n");
   const totalLines = lines.length;
 
-  if (params.start_line !== undefined || params.end_line !== undefined) {
+  if (isRangeRead) {
     const start = Math.max(0, (params.start_line ?? 1) - 1);
     const end = params.end_line !== undefined ? params.end_line : totalLines;
-    return { content: lines.slice(start, end).join("\n"), total_lines: totalLines };
+    const slice = lines.slice(start, end).join("\n");
+    if (Buffer.byteLength(slice, "utf8") > capBytes) {
+      throw Object.assign(
+        new Error(`Requested range exceeds ${params.max_file_size_kb}KB — reduce the line range`),
+        { code: "FILE_TOO_LARGE" }
+      );
+    }
+    return { content: slice, total_lines: totalLines };
   }
 
   return { content: raw, total_lines: totalLines };
+}
+
+// Streams a file line-by-line to extract a range without loading the whole file.
+// Always reads to EOF so total_lines is accurate for pagination.
+async function readRangeStreamed(
+  filePath: string,
+  params: ReadFileParams,
+  capBytes: number
+): Promise<ReadFileResult> {
+  const startLine = Math.max(0, (params.start_line ?? 1) - 1); // convert to 0-indexed
+  const endLine = params.end_line; // 1-indexed inclusive; undefined = EOF
+
+  return new Promise((resolve, reject) => {
+    const rl = createInterface({ input: createReadStream(filePath), crlfDelay: Infinity });
+    const rangeLines: string[] = [];
+    let lineNum = 0;
+    let totalLines = 0;
+    let byteCount = 0;
+    let overCap = false;
+
+    rl.on("line", (line) => {
+      const current = lineNum++;
+      totalLines++;
+
+      if (overCap) return;
+
+      const inRange = current >= startLine && (endLine === undefined || current < endLine);
+      if (!inRange) return;
+
+      byteCount += Buffer.byteLength(line, "utf8") + 1; // +1 for newline
+      if (byteCount > capBytes) {
+        overCap = true;
+        return;
+      }
+      rangeLines.push(line);
+    });
+
+    rl.on("close", () => {
+      if (overCap) {
+        reject(Object.assign(
+          new Error(`Requested range exceeds ${Math.round(capBytes / 1024)}KB — reduce the line range`),
+          { code: "FILE_TOO_LARGE" }
+        ));
+        return;
+      }
+      resolve({ content: rangeLines.join("\n"), total_lines: totalLines });
+    });
+
+    rl.on("error", reject);
+  });
 }
 
 // ---------------------------------------------------------------------------

@@ -124,7 +124,7 @@ Enforced by the agent, independent of broker settings:
 | `list_directory` | Default 2,000 nodes per call; hard cap 10,000. Set `limit` to override (capped at 10,000). Returns `truncated: true` and `truncated_by` when hit. |
 | `search_files` | 200 results; returns `truncated: true` when hit. |
 | `grep_files` | 50 total matches or 100 KB of output, whichever comes first; returns `truncated: true`. |
-| `read_file` (full read) | `max_file_size_kb` from `agent.yaml` (default 100 KB). Range reads (`start_line`/`end_line`) bypass this cap. |
+| `read_file` | `max_file_size_kb` from `agent.yaml` (default 100 KB). Applies to both full reads and range reads — each call returns at most that many KB. Use `start_line`/`end_line` to page through a large file across multiple calls. `total_lines` in the response tells you the file's full line count so you know when to stop. |
 | `copy` / `move` | Fails if the destination already exists. Cross-device `move` falls back to copy + delete automatically. |
 | `delete` (directory) | Without `recursive: true`, returns a summary (`size_bytes`, `file_count`) and `requires_confirmation: true` instead of deleting. Re-call with `recursive: true` to proceed. |
 
