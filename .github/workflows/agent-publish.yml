@@ -32,4 +32,7 @@ jobs:
 
       - run: pnpm --filter @mahasamuha/constellation-agent build
 
-      - run: pnpm --filter @mahasamuha/constellation-agent publish --no-git-checks --tag beta
+      - run: npm publish --tag beta --access public
+        working-directory: packages/agent
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
