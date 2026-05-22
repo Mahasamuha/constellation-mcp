@@ -24,7 +24,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-          registry-url: 'https://registry.npmjs.org'
 
       - run: pnpm install --frozen-lockfile
 
@@ -34,5 +33,3 @@ jobs:
 
       - run: npm publish --tag beta --access public --provenance
         working-directory: packages/agent
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
