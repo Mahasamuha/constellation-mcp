@@ -1,6 +1,6 @@
 import pino from "pino";
 
-const isDev = process.env.NODE_ENV !== "production";
+const isDev = process.stdout.isTTY === true && process.env.NODE_ENV !== "production";
 
 export const logger = pino(
   isDev
