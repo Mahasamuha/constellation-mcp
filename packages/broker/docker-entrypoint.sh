@@ -2,9 +2,7 @@
 set -e
 
 echo "Applying pending migrations..."
-cd packages/broker
-pnpm exec prisma migrate deploy
-cd /app
+npm exec -w packages/broker -- prisma migrate deploy
 
 echo "Starting broker..."
 exec node packages/broker/dist/index.js

@@ -1,7 +1,0 @@
-packages:
-  - packages/*
-allowBuilds:
-  '@prisma/engines': true
-  esbuild: true
-  prisma: true
-minimumReleaseAge: 0

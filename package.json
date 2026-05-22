@@ -3,17 +3,11 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
+  "workspaces": ["packages/*"],
   "scripts": {
-    "build": "pnpm -r build",
-    "dev": "pnpm -r --parallel dev",
+    "build": "npm run build -ws --if-present",
+    "dev": "npm run dev -ws --if-present",
     "lint": "eslint packages/*/src/**/*.ts"
-  },
-  "devEngines": {
-    "packageManager": {
-      "name": "pnpm",
-      "version": "^11.1.1",
-      "onFail": "download"
-    }
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
