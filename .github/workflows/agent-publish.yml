@@ -32,4 +32,4 @@ jobs:
 
       - run: pnpm --filter @mahasamuha/constellation-agent build
 
-      - run: pnpm --filter @mahasamuha/constellation-agent publish --no-git-checks
+      - run: pnpm --filter @mahasamuha/constellation-agent publish --no-git-checks --tag beta
