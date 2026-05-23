@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use std::process::Command;
 
 use crate::config;
 
@@ -24,24 +23,6 @@ fn load_paths() -> Vec<PathEntry> {
     }
 }
 
-fn run_cli(args: &[&str]) -> Result<(), String> {
-    let output = Command::new("constellation")
-        .args(args)
-        .output()
-        .map_err(|e| format!("Could not run constellation CLI: {e}"))?;
-
-    if output.status.success() {
-        Ok(())
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        Err(if stderr.is_empty() {
-            format!("constellation {} failed (exit {})", args.join(" "), output.status)
-        } else {
-            stderr
-        })
-    }
-}
-
 #[tauri::command]
 pub fn get_paths() -> Vec<PathEntry> {
     load_paths()
@@ -54,12 +35,12 @@ pub async fn add_path(label: String, path: String) -> Result<Vec<PathEntry>, Str
     if !meta.is_dir() {
         return Err(format!("'{}' is not a directory", path));
     }
-    run_cli(&["agent", "paths", "add", &label, &path])?;
+    crate::cli::run(&["agent", "paths", "add", &label, &path])?;
     Ok(load_paths())
 }
 
 #[tauri::command]
 pub async fn remove_path(label: String) -> Result<Vec<PathEntry>, String> {
-    run_cli(&["agent", "paths", "remove", &label])?;
+    crate::cli::run(&["agent", "paths", "remove", &label])?;
     Ok(load_paths())
 }
