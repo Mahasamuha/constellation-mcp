@@ -2,7 +2,7 @@
 
 ## MCP Tools
 
-- [ ] **Refine tool descriptions** — search tools (`grep_files`, `search_files`) and navigation tools (`list_directory`, `file_info`) are bleeding into each other in model tool selection. Tighten descriptions to make the distinctions clearer: `search_files` is filename pattern matching, `grep_files` is content search, `list_directory` is structure enumeration, `read_file` is content retrieval.
+- [x] **Refine tool descriptions** — search tools (`grep_files`, `search_files`) and navigation tools (`list_directory`, `file_info`) are bleeding into each other in model tool selection. Tighten descriptions to make the distinctions clearer: `search_files` is filename pattern matching, `grep_files` is content search, `list_directory` is structure enumeration, `read_file` is content retrieval.
 
 ## Agent
 

@@ -271,7 +271,7 @@ function registerListDirectory(server: McpServer): void {
     "list_directory",
     {
       title: "List Directory",
-      description: "List the contents of a label root or subdirectory. Use recursive:true with exclude:[\"node_modules\",\".git\"] for repo trees. Returns truncated:true and truncated_by when a limit or max_depth is hit.",
+      description: "Enumerate directory contents — names, types, and sizes. Use to understand folder structure or browse what files exist in a directory. Returns entries for all items in the directory, not a single path's metadata. Use recursive:true with exclude:[\"node_modules\",\".git\"] for repo trees.",
       inputSchema: {
         label: z.string(),
         relative_path: z.string().optional(),
@@ -297,7 +297,7 @@ function registerFileInfo(server: McpServer): void {
     "file_info",
     {
       title: "File Info",
-      description: "Returns size, mtime, and type (file/directory/symlink) for a path. Use before read_file to check size.",
+      description: "Returns metadata (size, mtime, type) for a single path. Use when you need to check if a path exists, its size, or whether it is a file vs directory — without reading its contents. Single path only — does not enumerate directory contents.",
       inputSchema: {
         label: z.string(),
         relative_path: z.string(),
@@ -319,7 +319,7 @@ function registerSearchFiles(server: McpServer): void {
     "search_files",
     {
       title: "Search Files",
-      description: "Filename search across a directory tree. type:\"glob\" (default, micromatch syntax) or \"regex\". Capped at 200 results; response includes truncated:true if hit.",
+      description: "Find files by name using glob or regex. Use when you know part of a filename or extension. Matches filenames and paths only — does not read or search file contents. type:\"glob\" (default, micromatch syntax) or \"regex\". Capped at 200 results.",
       inputSchema: {
         label: z.string(),
         pattern: z.string(),
@@ -343,7 +343,7 @@ function registerReadFile(server: McpServer): void {
     "read_file",
     {
       title: "Read File",
-      description: "Returns file content or a specified line range. Includes total_lines. Returns a size error if the file exceeds the cap — use start_line/end_line to page, or grep_files for content search.",
+      description: "Read the full content of a file, or a specific line range. Includes total_lines. Files that exceed the size cap return an error with total_lines — retry with start_line/end_line to page through the content. Does not search for text within files.",
       inputSchema: {
         label: z.string(),
         relative_path: z.string(),
@@ -367,7 +367,7 @@ function registerGrepFiles(server: McpServer): void {
     "grep_files",
     {
       title: "Search File Contents",
-      description: "Content search. type:\"literal\" (default) or \"regex\". relative_path can be a file or directory. file_glob scopes recursive search (e.g. \"*.ts\"). Results grouped by file. Capped at 50 matches and 100KB output.",
+      description: "Search file contents for a literal string or regex pattern. Use to find which files contain specific text. Does not match on filenames or paths — only file contents. relative_path can be a file or directory; file_glob (e.g. \"*.ts\") scopes recursive search. Results grouped by file, capped at 50 matches and 100KB.",
       inputSchema: {
         label: z.string(),
         pattern: z.string(),
@@ -392,7 +392,7 @@ function registerWriteFile(server: McpServer): void {
     "write_file",
     {
       title: "Write File",
-      description: "Write content to a file. mode:\"overwrite\" (default) replaces the file; \"append\" adds to it.",
+      description: "Write content to a file. Replaces the entire file by default — does not support partial edits or targeted text substitutions. mode:\"overwrite\" (default) replaces the file; \"append\" adds to it.",
       inputSchema: {
         label: z.string(),
         relative_path: z.string(),
@@ -416,7 +416,7 @@ function registerEditFile(server: McpServer): void {
     "edit_file",
     {
       title: "Edit File",
-      description: "Apply a list of exact-match text substitutions. Each old_text must match exactly once — zero or multiple matches abort with edit_index and match_count. All edits validated before any write. dry_run:true returns the diff without writing.",
+      description: "Apply a list of exact-match text substitutions to an existing file. Modifies specific text in place — does not replace the entire file. Each old_text must match exactly once — zero or multiple matches abort with edit_index and match_count. All edits validated before any write. dry_run:true returns the diff without writing.",
       inputSchema: {
         label: z.string(),
         relative_path: z.string(),
@@ -440,7 +440,7 @@ function registerCopy(server: McpServer): void {
     "copy",
     {
       title: "Copy",
-      description: "Copy a file or directory within a label root. dst_label enables cross-label copy on the same host. Fails if the destination already exists.",
+      description: "Copy a file or directory within a label root. Leaves the source intact — does not remove or rename it. dst_label enables cross-label copy on the same host. Fails if the destination already exists.",
       inputSchema: {
         label: z.string(),
         src_relative_path: z.string(),
@@ -509,7 +509,7 @@ function registerMove(server: McpServer): void {
     "move",
     {
       title: "Move",
-      description: "Move a file or directory. dst_label enables cross-label move on the same host.",
+      description: "Move a file or directory. Removes the source after copying — does not leave the original in place. dst_label enables cross-label move on the same host.",
       inputSchema: {
         label: z.string(),
         src_relative_path: z.string(),
