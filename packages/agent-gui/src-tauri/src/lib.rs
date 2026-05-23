@@ -111,6 +111,8 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             commands::get_config,
+            commands::get_config_dir,
+            commands::save_settings,
             commands::update_tray,
             auth::start_device_flow,
             auth::poll_device_flow,

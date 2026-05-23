@@ -140,31 +140,12 @@ fn write_config(dir: &Path, broker_url: &str, token: &str, host: &str) -> Result
     }
 
     let content = serde_yaml::to_string(&map).map_err(|e| e.to_string())?;
-    write_secure(&path, content.as_bytes())?;
+    config::write_secure(&path, content.as_bytes())?;
 
     let paths_path = dir.join("paths.yaml");
     if !paths_path.exists() {
-        write_secure(&paths_path, b"paths: []\n")?;
+            config::write_secure(&paths_path, b"paths: []\n")?;
     }
 
     Ok(())
-}
-
-fn write_secure(path: &Path, data: &[u8]) -> Result<(), String> {
-    use std::io::Write;
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(path)
-        .map_err(|e| e.to_string())?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        file.set_permissions(std::fs::Permissions::from_mode(0o600))
-            .map_err(|e| e.to_string())?;
-    }
-
-    file.write_all(data).map_err(|e| e.to_string())
 }
