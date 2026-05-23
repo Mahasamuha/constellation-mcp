@@ -34,6 +34,7 @@ interface ConnectedAgent {
   tokenId: string;
   lastPongAt: number;
   missedPings: number;
+  disconnectReason?: "clean" | "timeout" | "error";
 }
 
 interface PendingRotationEntry {
@@ -88,6 +89,7 @@ function startHeartbeatLoop(): void {
 
       if (conn.missedPings > HEARTBEAT_MAX_MISSED) {
         log.warn({ agentId, lastPongAt: new Date(conn.lastPongAt) }, "Agent heartbeat timeout — terminating");
+        conn.disconnectReason = "timeout";
         conn.ws.terminate();
         connections.delete(agentId);
         tokenIndex.delete(conn.tokenId);
@@ -268,13 +270,19 @@ async function handleConnection(ws: WebSocket, meta: {
     });
 
     ws.on("close", () => {
+      const reason = conn.disconnectReason ?? "clean";
       connections.delete(agentId);
       tokenIndex.delete(tokenId);
       rejectAgentRpcs(agentId);
-      log.info({ agentId, host, userId }, "Agent disconnected");
+      prisma.agent.update({
+        where: { id: agentId },
+        data: { lastHeartbeatAt: null, lastDisconnectReason: reason },
+      }).catch((err) => log.error({ err, agentId }, "Failed to update disconnect state"));
+      log.info({ agentId, host, userId, reason }, "Agent disconnected");
     });
 
     ws.on("error", (err) => {
+      conn.disconnectReason = "error";
       log.error({ err, agentId }, "Agent WebSocket error");
     });
 }

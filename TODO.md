@@ -6,7 +6,7 @@
 
 ## Agent
 
-- [ ] **Deregister agent on stop** — when `constellation agent stop` is called (or the agent receives SIGTERM), send a deregistration message to the broker so it can immediately mark the agent offline rather than waiting for the heartbeat timeout (~3 minutes by default). Agents that disconnect without deregistering (crash, network loss) continue to rely on the heartbeat timeout.
+- [x] **Deregister agent on stop** — when `constellation agent stop` is called (or the agent receives SIGTERM), send a deregistration message to the broker so it can immediately mark the agent offline rather than waiting for the heartbeat timeout (~3 minutes by default). Agents that disconnect without deregistering (crash, network loss) continue to rely on the heartbeat timeout.
 
 - [ ] **MCP Tasks primitive** — implement Tasks support for long-running tools (`grep_files`, `search_files`, recursive `list_directory`) once the MCP SDK v2.x stable ships. See `packages/broker/implement-tasks.md` for the full implementation plan.
 
