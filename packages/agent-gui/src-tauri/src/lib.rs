@@ -11,6 +11,7 @@ use tauri::{
 mod auth;
 mod commands;
 mod config;
+mod paths;
 mod service;
 
 pub fn refresh_tray(app: &AppHandle) {
@@ -64,7 +65,7 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>, state: &config::AgentState) -> tau
     }
 }
 
-fn open_window(app: &AppHandle, name: &str, title: &str, height: f64) {
+fn open_window(app: &AppHandle, name: &str, title: &str, width: f64, height: f64) {
     if let Some(w) = app.get_webview_window(name) {
         let _ = w.show();
         let _ = w.set_focus();
@@ -73,7 +74,7 @@ fn open_window(app: &AppHandle, name: &str, title: &str, height: f64) {
     let url = format!("index.html?window={name}");
     let _ = WebviewWindowBuilder::new(app, name, WebviewUrl::App(url.into()))
         .title(title)
-        .inner_size(480.0, height)
+        .inner_size(width, height)
         .resizable(false)
         .center()
         .build();
@@ -104,6 +105,7 @@ fn tray_tooltip(state: &config::AgentState, cfg: &config::AgentConfig) -> String
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -119,6 +121,9 @@ pub fn run() {
             service::stop_agent,
             service::restart_agent,
             service::get_logs,
+            paths::get_paths,
+            paths::add_path,
+            paths::remove_path,
         ])
         .setup(|app| {
             let cfg = config::load_agent_config();
@@ -135,10 +140,10 @@ pub fn run() {
                 .on_menu_event(|app, event| {
                     let app = app.clone();
                     match event.id().as_ref() {
-                        "auth" => open_window(&app, "auth", "Connect to Broker", 280.0),
-                        "status" => open_window(&app, "status", "Constellation — Status", 500.0),
-                        "paths" => open_window(&app, "paths", "Constellation — Paths", 420.0),
-                        "settings" => open_window(&app, "settings", "Constellation — Settings", 380.0),
+                        "auth" => open_window(&app, "auth", "Connect to Broker", 480.0, 280.0),
+                        "status" => open_window(&app, "status", "Constellation — Status", 480.0, 500.0),
+                        "paths" => open_window(&app, "paths", "Constellation — Paths", 720.0, 420.0),
+                        "settings" => open_window(&app, "settings", "Constellation — Settings", 480.0, 380.0),
                         "rotate" => {
                             use tauri_plugin_dialog::DialogExt;
                             tauri::async_runtime::spawn(async move {
