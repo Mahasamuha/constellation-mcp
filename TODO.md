@@ -29,3 +29,4 @@
 - [ ] **Agent GUI** — graphical interface for agent management. All functionality accessible via CLI; GUI is a convenience layer.
 
 - [ ] **MCP client connector documentation** — concrete setup examples for claude.ai, Cursor, and GitHub Copilot after further prototyping.
+
