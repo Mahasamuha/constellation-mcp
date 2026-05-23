@@ -47,8 +47,6 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>, state: &config::AgentState) -> tau
         let start = MenuItemBuilder::new("Start Agent").id("start").build(app)?;
         let stop = MenuItemBuilder::new("Stop Agent").id("stop").build(app)?;
         let restart = MenuItemBuilder::new("Restart Agent").id("restart").build(app)?;
-        let rotate = MenuItemBuilder::new("Rotate Token").id("rotate").build(app)?;
-        let deregister = MenuItemBuilder::new("Deregister Agent…").id("deregister").build(app)?;
         MenuBuilder::new(app)
             .item(&status)
             .item(&paths)
@@ -57,9 +55,6 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>, state: &config::AgentState) -> tau
             .item(&start)
             .item(&stop)
             .item(&restart)
-            .item(&PredefinedMenuItem::separator(app)?)
-            .item(&rotate)
-            .item(&deregister)
             .item(&PredefinedMenuItem::separator(app)?)
             .item(&quit)
             .build()
@@ -146,44 +141,6 @@ pub fn run() {
                         "status" => open_window(&app, "status", "Constellation — Status", 480.0, 500.0),
                         "paths" => open_window(&app, "paths", "Constellation — Paths", 720.0, 420.0),
                         "settings" => open_window(&app, "settings", "Constellation — Settings", 480.0, 380.0),
-                        "rotate" => {
-                            use tauri_plugin_dialog::DialogExt;
-                            tauri::async_runtime::spawn(async move {
-                                match service::rotate_token(app.clone()).await {
-                                    Ok(_) => {
-                                        app.dialog()
-                                            .message("Token rotated. Restart the agent service to reconnect.")
-                                            .title("Token Rotated")
-                                            .blocking_show();
-                                    }
-                                    Err(e) => {
-                                        app.dialog()
-                                            .message(format!("Rotation failed: {e}"))
-                                            .title("Error")
-                                            .blocking_show();
-                                    }
-                                }
-                            });
-                        }
-                        "deregister" => {
-                            use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
-                            tauri::async_runtime::spawn(async move {
-                                let confirmed = app
-                                    .dialog()
-                                    .message("This will clear your agent token. You will need to reconnect to use Constellation again.")
-                                    .title("Deregister Agent")
-                                    .kind(MessageDialogKind::Warning)
-                                    .blocking_show();
-                                if confirmed {
-                                    if let Err(e) = service::deregister_agent(app.clone()) {
-                                        app.dialog()
-                                            .message(format!("Failed: {e}"))
-                                            .title("Error")
-                                            .blocking_show();
-                                    }
-                                }
-                            });
-                        }
                         "quit" => app.exit(0),
                         _ => {}
                     }
