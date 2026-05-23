@@ -5,6 +5,7 @@
   "windows": ["main", "auth", "status", "paths", "settings"],
   "permissions": [
     "core:default",
+    "core:window:allow-close",
     "opener:default",
     "dialog:allow-open"
   ]
