@@ -49,6 +49,11 @@ pub fn get_paths() -> Vec<PathEntry> {
 
 #[tauri::command]
 pub async fn add_path(label: String, path: String) -> Result<Vec<PathEntry>, String> {
+    let meta = std::fs::metadata(&path)
+        .map_err(|_| format!("Path '{}' does not exist", path))?;
+    if !meta.is_dir() {
+        return Err(format!("'{}' is not a directory", path));
+    }
     run_cli(&["agent", "paths", "add", &label, &path])?;
     Ok(load_paths())
 }
