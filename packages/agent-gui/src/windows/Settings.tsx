@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import "./Settings.css";
 
 interface AgentConfig {
@@ -72,6 +73,7 @@ export default function Settings() {
     setError("");
     try {
       await invoke("deregister_agent");
+      await getCurrentWindow().close();
     } catch (e) {
       setError(String(e));
       setDeregistering(false);
