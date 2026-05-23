@@ -72,6 +72,125 @@ pub fn deregister_agent(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+const SERVICE_NAME: &str = "constellation-agent";
+
+#[tauri::command]
+pub fn get_service_status() -> String {
+    #[cfg(target_os = "linux")]
+    {
+        run_output("systemctl", &["--user", "is-active", SERVICE_NAME])
+            .map(|s| s.trim().to_string())
+            .unwrap_or_else(|_| "inactive".to_string())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        run_output("launchctl", &["list", "com.constellation.agent"])
+            .map(|s| if s.contains("\"PID\"") { "active".to_string() } else { "inactive".to_string() })
+            .unwrap_or_else(|_| "inactive".to_string())
+    }
+    #[cfg(target_os = "windows")]
+    {
+        run_output("schtasks", &["/Query", "/TN", SERVICE_NAME, "/FO", "LIST"])
+            .map(|s| if s.contains("Running") { "active".to_string() } else { "inactive".to_string() })
+            .unwrap_or_else(|_| "inactive".to_string())
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    "unknown".to_string()
+}
+
+#[tauri::command]
+pub fn start_agent() -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    return run_void("systemctl", &["--user", "start", SERVICE_NAME]);
+    #[cfg(target_os = "macos")]
+    return run_void("launchctl", &["load", &launchd_plist()]);
+    #[cfg(target_os = "windows")]
+    return run_void("schtasks", &["/Run", "/TN", SERVICE_NAME]);
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    Err("Unsupported platform".to_string())
+}
+
+#[tauri::command]
+pub fn stop_agent() -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    return run_void("systemctl", &["--user", "stop", SERVICE_NAME]);
+    #[cfg(target_os = "macos")]
+    return run_void("launchctl", &["unload", &launchd_plist()]);
+    #[cfg(target_os = "windows")]
+    return run_void("schtasks", &["/End", "/TN", SERVICE_NAME]);
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    Err("Unsupported platform".to_string())
+}
+
+#[tauri::command]
+pub fn restart_agent() -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    return run_void("systemctl", &["--user", "restart", SERVICE_NAME]);
+    #[cfg(target_os = "macos")]
+    {
+        run_void("launchctl", &["unload", &launchd_plist()])?;
+        return run_void("launchctl", &["load", &launchd_plist()]);
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let _ = run_void("schtasks", &["/End", "/TN", SERVICE_NAME]);
+        return run_void("schtasks", &["/Run", "/TN", SERVICE_NAME]);
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    Err("Unsupported platform".to_string())
+}
+
+#[tauri::command]
+pub async fn get_logs(lines: u32) -> Result<String, String> {
+    #[cfg(target_os = "linux")]
+    {
+        run_output("journalctl", &[
+            "--user", "-u", SERVICE_NAME,
+            "-n", &lines.to_string(),
+            "--no-pager",
+            "--output=short-iso",
+        ])
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let log_path = dirs::home_dir()
+            .unwrap_or_default()
+            .join("Library/Logs/constellation-agent.log");
+        run_output("tail", &["-n", &lines.to_string(), log_path.to_str().unwrap_or("")])
+    }
+    #[cfg(target_os = "windows")]
+    {
+        Err("Log tailing not supported on Windows".to_string())
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    Err("Unsupported platform".to_string())
+}
+
+fn run_output(cmd: &str, args: &[&str]) -> Result<String, String> {
+    let out = std::process::Command::new(cmd)
+        .args(args)
+        .output()
+        .map_err(|e| e.to_string())?;
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+fn run_void(cmd: &str, args: &[&str]) -> Result<(), String> {
+    std::process::Command::new(cmd)
+        .args(args)
+        .status()
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn launchd_plist() -> String {
+    dirs::home_dir()
+        .unwrap_or_default()
+        .join("Library/LaunchAgents/com.constellation.agent.plist")
+        .to_string_lossy()
+        .into_owned()
+}
+
 fn write_token(token: &str) -> Result<(), String> {
     use std::io::Write;
 

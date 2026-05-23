@@ -114,6 +114,11 @@ pub fn run() {
             auth::poll_device_flow,
             service::rotate_token,
             service::deregister_agent,
+            service::get_service_status,
+            service::start_agent,
+            service::stop_agent,
+            service::restart_agent,
+            service::get_logs,
         ])
         .setup(|app| {
             let cfg = config::load_agent_config();
