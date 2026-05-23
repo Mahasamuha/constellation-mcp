@@ -233,14 +233,6 @@ deviceRouter.post("/activate/confirm", async (req: Request, res: Response) => {
       res.send(consentPage(device_code, entry.scope, user_id, "Host name is required."));
       return;
     }
-    // Check uniqueness for this user.
-    const existing = await prisma.agent.findFirst({
-      where: { userId: user_id, host: resolvedHost },
-    });
-    if (existing) {
-      res.send(consentPage(device_code, entry.scope, user_id, `Host name "${resolvedHost}" is already registered.`));
-      return;
-    }
     entry.hostName = resolvedHost;
   }
 
@@ -302,17 +294,33 @@ export async function handleDeviceCodeGrant(
     const token = generateToken();
     const tokenHash = hashToken(token);
 
-    const agentToken = await prisma.agentToken.create({
-      data: { userId, tokenHash },
-      select: { id: true },
-    });
+    await prisma.$transaction(async (tx) => {
+      // Revoke the existing token if re-registering the same host.
+      const existingAgent = await tx.agent.findFirst({
+        where: { userId, host: entry.hostName! },
+        select: { agentTokenId: true },
+      });
+      if (existingAgent) {
+        await tx.agentToken.update({
+          where: { id: existingAgent.agentTokenId },
+          data: { revokedAt: new Date() },
+        });
+      }
 
-    await prisma.agent.create({
-      data: {
-        userId,
-        agentTokenId: agentToken.id,
-        host: entry.hostName!,
-      },
+      const agentToken = await tx.agentToken.create({
+        data: { userId, tokenHash },
+        select: { id: true },
+      });
+
+      await tx.agent.upsert({
+        where: { userId_host: { userId, host: entry.hostName! } },
+        create: { userId, agentTokenId: agentToken.id, host: entry.hostName! },
+        update: {
+          agentTokenId: agentToken.id,
+          lastHeartbeatAt: null,
+          lastDisconnectReason: null,
+        },
+      });
     });
 
     log.info({ userId, host: entry.hostName }, "Agent registered via device flow");
