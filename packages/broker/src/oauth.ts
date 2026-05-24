@@ -14,6 +14,15 @@ export const oauthRouter: IRouter = Router();
 // /.well-known/oauth-authorization-server
 // ---------------------------------------------------------------------------
 
+oauthRouter.get("/.well-known/oauth-protected-resource", (_req: Request, res: Response) => {
+  const base = requireEnv("BROKER_URL");
+  res.json({
+    resource: base,
+    authorization_servers: [base],
+    bearer_methods_supported: ["header"],
+  });
+});
+
 oauthRouter.get("/.well-known/oauth-authorization-server", (_req: Request, res: Response) => {
   const base = requireEnv("BROKER_URL");
 

@@ -105,12 +105,16 @@ mcpRouter.all("/mcp", async (req: Request, res: Response) => {
   const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
 
   if (!token) {
+    const brokerUrl = process.env["BROKER_URL"] ?? "";
+    res.set("WWW-Authenticate", `Bearer realm="${brokerUrl}", resource_metadata="${brokerUrl}/.well-known/oauth-protected-resource"`);
     res.status(401).json({ error: "unauthorized" });
     return;
   }
 
   const session = await resolveBearerToken(token);
   if (!session) {
+    const brokerUrl = process.env["BROKER_URL"] ?? "";
+    res.set("WWW-Authenticate", `Bearer realm="${brokerUrl}", error="invalid_token"`);
     res.status(401).json({ error: "invalid_token" });
     return;
   }
