@@ -1,4 +1,5 @@
 use crate::config;
+use tauri_plugin_autostart::ManagerExt;
 
 #[tauri::command]
 pub fn get_config() -> config::AgentConfig {
@@ -56,4 +57,18 @@ pub fn save_settings(
     config::write_secure(&path, content.as_bytes())?;
     crate::refresh_tray(&app);
     Ok(())
+}
+
+#[tauri::command]
+pub fn get_autostart(app: tauri::AppHandle) -> bool {
+    app.autolaunch().is_enabled().unwrap_or(false)
+}
+
+#[tauri::command]
+pub fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    if enabled {
+        app.autolaunch().enable().map_err(|e| e.to_string())
+    } else {
+        app.autolaunch().disable().map_err(|e| e.to_string())
+    }
 }

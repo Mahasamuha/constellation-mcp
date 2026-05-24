@@ -22,3 +22,5 @@ dirs = "5"
 reqwest = { version = "0.12", features = ["json"] }
 tokio = { version = "1", features = ["time"] }
 tauri-plugin-dialog = "2"
+tauri-plugin-notification = "2"
+tauri-plugin-autostart = "2"

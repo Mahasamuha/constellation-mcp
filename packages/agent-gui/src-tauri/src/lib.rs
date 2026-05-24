@@ -1,6 +1,7 @@
 // Prevents additional console window on Windows in release
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use std::sync::Mutex;
 use tauri::{
     image::Image,
     menu::{Menu, MenuBuilder, MenuItemBuilder, PredefinedMenuItem},
@@ -15,10 +16,33 @@ mod config;
 mod paths;
 mod service;
 
+/// Tracks the previous tray state so we can detect transitions that warrant
+/// an OS notification. `None` = first poll, no notification fired yet.
+struct PrevState(Mutex<Option<config::AgentState>>);
+
+pub fn notify(app: &AppHandle, title: &str, body: &str) {
+    use tauri_plugin_notification::NotificationExt;
+    let _ = app.notification().builder().title(title).body(body).show();
+}
+
 pub fn refresh_tray(app: &AppHandle) {
     let cfg = config::load_agent_config();
     let info = service::query_status_info();
     let state = config::detect_state(&cfg, &info.service);
+
+    // Fire a notification when the agent transitions into an error state
+    // (unexpected broker disconnect). Skip on the very first poll (prev = None).
+    {
+        let prev_state = app.state::<PrevState>();
+        let mut guard = prev_state.0.lock().unwrap();
+        if let Some(prev) = guard.as_ref() {
+            if state == config::AgentState::Error && *prev != config::AgentState::Error {
+                notify(app, "Constellation", "Disconnected from broker unexpectedly.");
+            }
+        }
+        *guard = Some(state.clone());
+    }
+
     if let Ok(icon) = Image::from_bytes(tray_icon(&state)) {
         let tooltip = tray_tooltip(&state, &cfg);
         if let Some(tray) = app.tray_by_id("main") {
@@ -41,8 +65,14 @@ fn build_menu<R: Runtime>(
     let quit = MenuItemBuilder::new("Quit").id("quit").build(app)?;
 
     if *state == config::AgentState::Unconfigured {
+        let not_set_up = MenuItemBuilder::new("● Not set up")
+            .id("status-info")
+            .enabled(false)
+            .build(app)?;
         let connect = MenuItemBuilder::new("Connect to Broker…").id("auth").build(app)?;
         MenuBuilder::new(app)
+            .item(&not_set_up)
+            .item(&PredefinedMenuItem::separator(app)?)
             .item(&connect)
             .item(&PredefinedMenuItem::separator(app)?)
             .item(&quit)
@@ -147,11 +177,18 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .invoke_handler(tauri::generate_handler![
             commands::get_config,
             commands::get_config_dir,
             commands::save_settings,
             commands::update_tray,
+            commands::get_autostart,
+            commands::set_autostart,
             auth::start_device_flow,
             auth::poll_device_flow,
             service::rotate_token,
@@ -167,6 +204,16 @@ pub fn run() {
             paths::remove_path,
         ])
         .setup(|app| {
+            app.manage(PrevState(Mutex::new(None)));
+
+            // Enable auto-launch on first run; skip if already explicitly configured.
+            {
+                use tauri_plugin_autostart::ManagerExt;
+                if let Ok(false) = app.autolaunch().is_enabled() {
+                    let _ = app.autolaunch().enable();
+                }
+            }
+
             let cfg = config::load_agent_config();
             let info = service::query_status_info();
             let state = config::detect_state(&cfg, &info.service);

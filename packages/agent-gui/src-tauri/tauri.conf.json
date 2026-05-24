@@ -23,6 +23,24 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "category": "Utility",
+    "copyright": "© 2025 Joe Rybka",
+    "shortDescription": "Constellation agent manager",
+    "longDescription": "System tray application for managing the Constellation agent service.",
+    "macOS": {
+      "minimumSystemVersion": "10.15",
+      "entitlements": null
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    },
+    "linux": {
+      "deb": {
+        "depends": []
+      }
+    }
   }
 }

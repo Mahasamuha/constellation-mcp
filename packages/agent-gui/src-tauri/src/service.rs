@@ -50,6 +50,7 @@ pub fn get_agent_broker_info() -> Option<AgentBrokerInfo> {
 pub async fn rotate_token(app: AppHandle) -> Result<(), String> {
     crate::cli::run(&["agent", "rotate"])?;
     crate::refresh_tray(&app);
+    crate::notify(&app, "Constellation", "Agent token rotated successfully.");
     Ok(())
 }
 
