@@ -1,0 +1,55 @@
+<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <title>Constellation</title>
+
+  <!--
+    Hub status — set \-\-hub-inner on :root or override inline to indicate connection state:
+
+      Connected:    #5DCAA5   (teal)
+      Connecting:   #EF9F27   (amber)
+      Disconnected: #E24B4A   (red)
+      Offline:      #888780   (gray)
+
+    To add a rounded-square background (macOS style), insert before all other elements:
+      <rect width="512" height="512" rx="114" fill="#04342C"/>
+
+    To programmatically set state (e.g. in a build script or shell):
+      sed -i 's/\-\-hub-inner: #[0-9A-Fa-f]*/\-\-hub-inner: #E24B4A/' constellation-icon-512.svg
+  -->
+
+  <style>
+    :root {
+      --hub-outer: #085041;
+      --hub-inner: #5DCAA5;
+    }
+    #hub-outer { fill: var(--hub-outer); }
+    #hub-inner { fill: var(--hub-inner); }
+  </style>
+
+  <!-- Connecting lines -->
+  <g stroke="#5DCAA5" stroke-width="6.5" stroke-linecap="round" fill="none" opacity="0.65">
+    <!-- Perimeter ring -->
+    <line x1="50"  y1="245" x2="166" y2="50"/>
+    <line x1="166" y1="50"  x2="356" y2="82"/>
+    <line x1="356" y1="82"  x2="462" y2="230"/>
+    <line x1="462" y1="230" x2="388" y2="409"/>
+    <line x1="388" y1="409" x2="187" y2="462"/>
+    <line x1="187" y1="462" x2="50"  y2="245"/>
+    <!-- Spokes to hub -->
+    <line x1="50"  y1="245" x2="282" y2="240"/>
+    <line x1="166" y1="50"  x2="282" y2="240"/>
+    <line x1="462" y1="230" x2="282" y2="240"/>
+    <line x1="187" y1="462" x2="282" y2="240"/>
+  </g>
+
+  <!-- Outer nodes -->
+  <circle cx="50"  cy="245" r="24" fill="#1D9E75"/>
+  <circle cx="166" cy="50"  r="26" fill="#1D9E75"/>
+  <circle cx="356" cy="82"  r="21" fill="#1D9E75"/>
+  <circle cx="462" cy="230" r="29" fill="#1D9E75"/>
+  <circle cx="388" cy="409" r="21" fill="#1D9E75"/>
+  <circle cx="187" cy="462" r="24" fill="#1D9E75"/>
+
+  <!-- Hub — status indicator -->
+  <circle id="hub-outer" cx="282" cy="240" r="42"/>
+  <circle id="hub-inner" cx="282" cy="240" r="20"/>
+</svg>

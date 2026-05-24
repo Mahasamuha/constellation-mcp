@@ -1,0 +1,52 @@
+<svg width="600" height="140" viewBox="0 0 600 140" xmlns="http://www.w3.org/2000/svg" role="img">
+  <title>Constellation — MCP File Broker</title>
+  <desc>Constellation logo: a network of connected nodes forming a constellation pattern alongside the wordmark.</desc>
+
+  <style>
+    .il { stroke: #5DCAA5; stroke-width: 1.2; fill: none; opacity: 0.7; }
+    .in { fill: #1D9E75; }
+    .in-hub { fill: #085041; }
+    .in-inner { fill: #5DCAA5; }
+    .wm {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+      font-size: 48px;
+      font-weight: 500;
+      fill: #2C2C2A;
+    }
+    .tl {
+      font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+      font-size: 13px;
+      fill: #888780;
+      letter-spacing: 0.18em;
+    }
+  </style>
+
+  <!-- Constellation icon mark -->
+  <g transform="translate(20, 12)">
+    <!-- Connecting lines -->
+    <line x1="14" y1="55" x2="36" y2="18" class="il"/>
+    <line x1="36" y1="18" x2="72" y2="24" class="il"/>
+    <line x1="72" y1="24" x2="92" y2="52" class="il"/>
+    <line x1="92" y1="52" x2="78" y2="86" class="il"/>
+    <line x1="78" y1="86" x2="40" y2="96" class="il"/>
+    <line x1="40" y1="96" x2="14" y2="55" class="il"/>
+    <line x1="36" y1="18" x2="58" y2="54" class="il"/>
+    <line x1="92" y1="52" x2="58" y2="54" class="il"/>
+    <line x1="40" y1="96" x2="58" y2="54" class="il"/>
+    <line x1="14" y1="55" x2="58" y2="54" class="il"/>
+    <!-- Outer nodes -->
+    <circle cx="14" cy="55" r="4.5" class="in"/>
+    <circle cx="36" cy="18" r="5" class="in"/>
+    <circle cx="72" cy="24" r="4" class="in"/>
+    <circle cx="92" cy="52" r="5.5" class="in"/>
+    <circle cx="78" cy="86" r="4" class="in"/>
+    <circle cx="40" cy="96" r="4.5" class="in"/>
+    <!-- Hub node -->
+    <circle cx="58" cy="54" r="6.5" class="in-hub"/>
+    <circle cx="58" cy="54" r="3" class="in-inner"/>
+  </g>
+
+  <!-- Wordmark -->
+  <text x="140" y="82" class="wm">Constellation</text>
+  <text x="142" y="109" class="tl">MCP FILE BROKER</text>
+</svg>

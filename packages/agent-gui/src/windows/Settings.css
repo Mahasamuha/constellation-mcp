@@ -1,0 +1,177 @@
+.settings-container {
+  padding: 1.25rem 1.5rem;
+  font-family: system-ui, sans-serif;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  color: light-dark(#111, #f0f0f0);
+}
+
+.settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.settings-section-label {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: light-dark(#888, #666);
+  margin-bottom: 0.1rem;
+}
+
+.settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.settings-field--inline {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.settings-label {
+  font-size: 0.8rem;
+  color: light-dark(#555, #aaa);
+}
+
+.settings-field--inline .settings-label {
+  white-space: nowrap;
+}
+
+.settings-input {
+  padding: 0.4rem 0.6rem;
+  font-size: 0.875rem;
+  border: 1px solid light-dark(#ccc, #444);
+  border-radius: 5px;
+  background: light-dark(#fff, #1e1e1e);
+  color: light-dark(#111, #f0f0f0);
+  outline: none;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.settings-input--narrow {
+  width: 6rem;
+}
+
+.settings-readonly {
+  font-size: 0.8rem;
+  font-family: monospace;
+  color: light-dark(#666, #888);
+  padding: 0.25rem 0;
+}
+
+.settings-warn {
+  font-size: 0.78rem;
+  color: light-dark(#b45309, #f59e0b);
+  margin: 0;
+}
+
+.settings-error {
+  font-size: 0.8rem;
+  color: #c0392b;
+  margin: 0;
+}
+
+.settings-saved {
+  font-size: 0.8rem;
+  color: light-dark(#1a7f4b, #4ade80);
+  margin: 0;
+}
+
+.settings-actions {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  padding-top: 0.25rem;
+}
+
+.settings-save-btn {
+  padding: 0.4rem 1rem;
+  font-size: 0.875rem;
+  background: #04342C;
+  color: #fff;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.settings-save-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.settings-rotate-btn {
+  padding: 0.4rem 0.75rem;
+  font-size: 0.8rem;
+  border-radius: 5px;
+  border: 1px solid light-dark(#ccc, #444);
+  background: light-dark(#f5f5f5, #2a2a2a);
+  color: light-dark(#333, #ccc);
+  cursor: pointer;
+}
+
+.settings-rotate-btn:hover {
+  background: light-dark(#eaeaea, #363636);
+}
+
+.settings-rotate-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Danger zone */
+.settings-danger-zone {
+  border-top: 1px solid light-dark(#f0f0f0, #2a2a2a);
+  padding-top: 0.75rem;
+  margin-top: 0.25rem;
+}
+
+.settings-danger-toggle {
+  background: none;
+  border: none;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: light-dark(#c0392b, #e07070);
+  cursor: pointer;
+  padding: 0;
+  letter-spacing: 0.02em;
+}
+
+.settings-danger-body {
+  margin-top: 0.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.settings-danger-desc {
+  font-size: 0.8rem;
+  color: light-dark(#666, #888);
+  margin: 0;
+}
+
+.settings-deregister-btn {
+  align-self: flex-start;
+  padding: 0.35rem 0.75rem;
+  font-size: 0.8rem;
+  border-radius: 5px;
+  border: 1px solid light-dark(#e0c0c0, #5a2a2a);
+  background: light-dark(#fdecea, #2a1a1a);
+  color: light-dark(#c0392b, #e07070);
+  cursor: pointer;
+}
+
+.settings-deregister-btn:hover {
+  background: light-dark(#f9d5d3, #3a1a1a);
+}
+
+.settings-deregister-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}

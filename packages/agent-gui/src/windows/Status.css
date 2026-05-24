@@ -1,0 +1,155 @@
+.status-container {
+  padding: 1.25rem 1.5rem;
+  font-family: system-ui, sans-serif;
+  display: flex;
+  flex-direction: column;
+  gap: 1.1rem;
+  color: light-dark(#111, #f0f0f0);
+}
+
+.status-section-label {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: light-dark(#888, #666);
+  margin-bottom: 0.4rem;
+}
+
+/* Service row */
+.status-service-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+}
+
+.status-badge.active {
+  background: light-dark(#e6f4ea, #1a3a1a);
+  color: light-dark(#1e6e2e, #6fcf82);
+}
+
+.status-badge.inactive {
+  background: light-dark(#f0f0f0, #2a2a2a);
+  color: light-dark(#666, #999);
+}
+
+.status-badge.unknown {
+  background: light-dark(#fff8e6, #2e2a1a);
+  color: light-dark(#a06800, #f0c050);
+}
+
+.status-badge.error {
+  background: light-dark(#fdecea, #3a1a1a);
+  color: light-dark(#c0392b, #f08080);
+}
+
+.status-badge-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.status-actions {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.status-btn {
+  padding: 0.3rem 0.7rem;
+  font-size: 0.8rem;
+  border-radius: 5px;
+  border: 1px solid light-dark(#ddd, #444);
+  background: light-dark(#f5f5f5, #2a2a2a);
+  color: light-dark(#333, #ccc);
+  cursor: pointer;
+}
+
+.status-btn:hover {
+  background: light-dark(#eaeaea, #363636);
+}
+
+.status-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* Info grid */
+.status-info-grid {
+  display: grid;
+  grid-template-columns: 6rem 1fr;
+  row-gap: 0.3rem;
+  font-size: 0.875rem;
+}
+
+.status-info-key {
+  color: light-dark(#888, #666);
+}
+
+.status-info-val {
+  font-family: monospace;
+  word-break: break-all;
+}
+
+/* Logs */
+.status-logs-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.4rem;
+}
+
+.status-logs-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  font-size: 0.8rem;
+  color: light-dark(#666, #999);
+}
+
+.status-logs-controls label {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  cursor: pointer;
+}
+
+.status-copy-btn {
+  padding: 0.2rem 0.6rem;
+  font-size: 0.78rem;
+  border-radius: 4px;
+  border: 1px solid light-dark(#ddd, #444);
+  background: light-dark(#f5f5f5, #2a2a2a);
+  color: light-dark(#444, #bbb);
+  cursor: pointer;
+}
+
+.status-logs-box {
+  font-family: monospace;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  background: light-dark(#1a1a1a, #111);
+  color: #c8c8c8;
+  border-radius: 6px;
+  padding: 0.6rem 0.75rem;
+  height: 180px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.status-logs-empty {
+  color: light-dark(#888, #555);
+  font-style: italic;
+}

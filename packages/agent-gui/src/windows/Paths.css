@@ -1,0 +1,138 @@
+.paths-container {
+  padding: 1.25rem 1.5rem;
+  font-family: system-ui, sans-serif;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  color: light-dark(#111, #f0f0f0);
+}
+
+.paths-section-label {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: light-dark(#888, #666);
+  margin-bottom: 0.5rem;
+}
+
+/* Table */
+.paths-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+
+.paths-table th {
+  text-align: left;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: light-dark(#888, #666);
+  padding: 0 0.5rem 0.4rem;
+  border-bottom: 1px solid light-dark(#e0e0e0, #333);
+}
+
+.paths-table td {
+  padding: 0.45rem 0.5rem;
+  border-bottom: 1px solid light-dark(#f0f0f0, #252525);
+  vertical-align: middle;
+}
+
+.paths-table td.label-cell {
+  font-family: monospace;
+  font-weight: 600;
+  width: 8rem;
+}
+
+.paths-table td.path-cell {
+  color: light-dark(#444, #bbb);
+  word-break: break-all;
+}
+
+.paths-remove-btn {
+  padding: 0.2rem 0.5rem;
+  font-size: 0.75rem;
+  border-radius: 4px;
+  border: 1px solid light-dark(#e0e0e0, #444);
+  background: transparent;
+  color: light-dark(#c0392b, #e07070);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.paths-remove-btn:hover {
+  background: light-dark(#fdecea, #2a1a1a);
+}
+
+.paths-empty {
+  font-size: 0.875rem;
+  color: light-dark(#aaa, #555);
+  font-style: italic;
+  padding: 0.5rem 0;
+}
+
+/* Add form */
+.paths-add-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.paths-add-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.paths-input {
+  flex: 1;
+  padding: 0.4rem 0.6rem;
+  font-size: 0.875rem;
+  border: 1px solid light-dark(#ccc, #444);
+  border-radius: 5px;
+  background: light-dark(#fff, #1e1e1e);
+  color: light-dark(#111, #f0f0f0);
+  outline: none;
+}
+
+.paths-input.label-input {
+  flex: 0 0 7rem;
+  font-family: monospace;
+}
+
+.paths-browse-btn {
+  padding: 0.4rem 0.7rem;
+  font-size: 0.8rem;
+  border-radius: 5px;
+  border: 1px solid light-dark(#ccc, #444);
+  background: light-dark(#f5f5f5, #2a2a2a);
+  color: light-dark(#333, #ccc);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.paths-browse-btn:hover {
+  background: light-dark(#eaeaea, #363636);
+}
+
+.paths-add-btn {
+  padding: 0.4rem 1rem;
+  font-size: 0.875rem;
+  background: #04342C;
+  color: #fff;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+  align-self: flex-start;
+}
+
+.paths-add-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.paths-error {
+  font-size: 0.8rem;
+  color: #c0392b;
+  margin: 0;
+}
