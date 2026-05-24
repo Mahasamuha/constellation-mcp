@@ -180,6 +180,13 @@ pub fn run() {
                         "status" => open_window(&app, "status", "Constellation — Status", 480.0, 560.0),
                         "paths" => open_window(&app, "paths", "Constellation — Paths", 720.0, 420.0),
                         "settings" => open_window(&app, "settings", "Constellation — Settings", 480.0, 380.0),
+                        "start" | "stop" | "restart" => {
+                            let cmd = event.id().as_ref().to_string();
+                            std::thread::spawn(move || {
+                                let _ = crate::cli::run(&["agent", &cmd]);
+                                refresh_tray(&app);
+                            });
+                        }
                         "quit" => app.exit(0),
                         _ => {}
                     }
