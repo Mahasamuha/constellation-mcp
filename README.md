@@ -1,4 +1,7 @@
-# Constellation
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/logo/constellation-logo-dark.svg">
+  <img src="assets/logo/constellation-logo.svg" alt="Constellation" width="400">
+</picture>
 
 [![CI / Tests](https://github.com/Mahasamuha/constellation-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/Mahasamuha/constellation-mcp/actions/workflows/ci.yml)
 [![CI / Build](https://github.com/Mahasamuha/constellation-mcp/actions/workflows/build.yml/badge.svg)](https://github.com/Mahasamuha/constellation-mcp/actions/workflows/build.yml)
