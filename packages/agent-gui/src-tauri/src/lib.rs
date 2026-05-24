@@ -74,7 +74,13 @@ fn build_menu<R: Runtime>(
             .enabled(false)
             .build(app)?;
 
-        let status = MenuItemBuilder::new("Status && Logs…").id("status").build(app)?;
+        // GTK and Win32 treat & as a mnemonic indicator; escape with && for a literal &.
+        // macOS NSMenu has no mnemonic convention so & passes through unchanged.
+        #[cfg(target_os = "macos")]
+        let status_label = "Status & Logs…";
+        #[cfg(not(target_os = "macos"))]
+        let status_label = "Status && Logs…";
+        let status = MenuItemBuilder::new(status_label).id("status").build(app)?;
         let paths = MenuItemBuilder::new("Paths…").id("paths").build(app)?;
         let settings = MenuItemBuilder::new("Settings…").id("settings").build(app)?;
         let running = service == "active";
