@@ -40,21 +40,16 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build shared package
-        run: npm run build --workspace=packages/shared
-
-      - name: Build agent TypeScript
-        run: npm run build --workspace=packages/agent
-
-      # Bundle the ESM output to a single CJS file so @yao-pkg/pkg can compile it.
-      # esbuild is a transitive dep of tsup and is available after npm ci.
+      # Single esbuild pass: bundles agent + shared TypeScript directly to CJS.
+      # Avoids workspace symlink resolution issues with tsup in CI.
       - name: Bundle to CJS
         run: >
-          npx esbuild packages/agent/dist/cli.js
+          npx esbuild packages/agent/src/cli.ts
           --bundle
           --platform=node
           --format=cjs
           --external:*.node
+          --alias:@constellation/shared=./packages/shared/src/index.ts
           --outfile=cli-bundle.cjs
 
       - name: Compile to native binary
