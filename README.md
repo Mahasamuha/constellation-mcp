@@ -14,18 +14,27 @@ The agent never opens inbound ports. All traffic flows outbound from the agent t
 
 Deploy a fully functional broker in minutes with built-in HTTPS, Postgres, and local username/password auth. No DNS, no nginx, no OIDC provider.
 
-[![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/new/template)
-
-1. Click **Deploy on Railway** above and follow the prompts
-2. Set `AUTH_MODE=local` and `BROKER_URL` to your Railway-assigned domain
-3. Open the broker URL — the setup wizard creates your admin account
-4. On each machine you want to access, download the agent from [GitHub Releases](https://github.com/Mahasamuha/constellation-mcp/releases/latest) and run:
-   ```sh
-   constellation agent init --broker https://your-app.railway.app
+1. Go to [railway.com](https://railway.com) and create a new **Empty Project**
+2. Click **Create** → **GitHub Repo** and select this repository
+3. Add Postgres: click **Create** → **Database** → **Add PostgreSQL**
+4. In the broker service **Variables** tab, add:
    ```
-5. Add the broker URL to your MCP client:
+   AUTH_MODE=local
+   TRUST_PROXY_PRESET=railway
+   DATABASE_URL=${{Postgres.DATABASE_URL}}
+   BROKER_URL=https://<your-app>.up.railway.app
+   ```
+   Set `BROKER_URL` after step 5 once you have the domain.
+5. Generate a public URL: in the broker service, go to **Settings** → **Networking** → **Generate Domain**. Use that URL as your `BROKER_URL`.
+6. Deploy — Railway detects `railway.toml` at the repo root and builds using the broker Dockerfile automatically
+7. Open the broker URL — the setup wizard creates your admin account
+8. On each machine you want to access, download the agent from [GitHub Releases](https://github.com/Mahasamuha/constellation-mcp/releases/latest) and run:
+   ```sh
+   constellation agent init --broker https://<your-app>.up.railway.app
+   ```
+9. Add the broker URL to your MCP client:
    ```json
-   { "mcpServers": { "constellation": { "type": "http", "url": "https://your-app.railway.app/mcp" } } }
+   { "mcpServers": { "constellation": { "type": "http", "url": "https://<your-app>.up.railway.app/mcp" } } }
    ```
 
 For self-hosted options see [Self-hosted with Cloudflare Tunnel](docs/self-hosted-cloudflare-tunnel.md) or the full self-hosted setup below.
