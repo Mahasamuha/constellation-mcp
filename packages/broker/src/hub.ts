@@ -245,6 +245,13 @@ async function handleConnection(ws: WebSocket, meta: {
     connections.set(agentId, conn);
     tokenIndex.set(tokenId, agentId);
 
+    // Record connection time immediately so list_hosts shows the agent as online
+    // before the first heartbeat pong arrives (up to HEARTBEAT_INTERVAL_MS away).
+    prisma.agent.update({
+      where: { id: agentId },
+      data: { lastHeartbeatAt: new Date() },
+    }).catch((err) => log.error({ err, agentId }, "Failed to set initial lastHeartbeatAt"));
+
     log.info({ agentId, host, userId }, "Agent connected");
 
     ws.on("pong", () => {
