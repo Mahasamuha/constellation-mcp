@@ -7,7 +7,9 @@ To update: edit the `states` array in that file, then re-run this script.
 Usage:
     python3 assets/logo/generate_tray_icons.py
 
-Output: packages/agent-gui/src-tauri/icons/tray/{state}.png (32x32 RGBA PNG)
+Output:
+  packages/agent-gui/src-tauri/icons/tray/{state}.png      — Win/Linux (dark bg)
+  packages/agent-gui/src-tauri/icons/tray/mac/{state}.png  — macOS (transparent bg)
 """
 
 import re
@@ -18,7 +20,8 @@ from PIL import Image, ImageDraw
 SCRIPT_DIR = Path(__file__).parent
 REPO_ROOT = SCRIPT_DIR.parent.parent
 SPEC_FILE = SCRIPT_DIR / "hub_state_colors.html"
-OUT_DIR = REPO_ROOT / "packages/agent-gui/src-tauri/icons/tray"
+OUT_DIR     = REPO_ROOT / "packages/agent-gui/src-tauri/icons/tray"
+MAC_OUT_DIR = OUT_DIR / "mac"
 
 # Maps the color-label in hub_state_colors.html to the tray icon filename.
 # Order must stay consistent with AgentState in config.rs.
@@ -118,10 +121,73 @@ def make_icon(outer_hex: str, inner_hex: str) -> Image.Image:
     return img.resize((FINAL_SIZE, FINAL_SIZE), Image.LANCZOS)
 
 
+def make_mac_icon(outer_hex: str, inner_hex: str) -> Image.Image:
+    """macOS variant: transparent background, monochrome graph, colored hub.
+
+    Graph elements are rendered in black at partial opacity so they read
+    clearly against the light menu bar (light mode) and remain visible in
+    dark mode.  The hub keeps its full state color since template mode is
+    not used — macOS template rendering would discard the color entirely.
+    """
+    s = FINAL_SIZE * RENDER_SCALE
+    img = Image.new("RGBA", (s, s), (0, 0, 0, 0))  # transparent
+    d = ImageDraw.Draw(img)
+
+    # Geometry from the 32px favicon SVG — all coords in the 32×32 px space
+    outer_nodes = [        # (x, y) — left, top-left, top-right, right, bottom-right, bottom-left
+        ( 5, 17),
+        (12,  5),
+        (24,  7),
+        (28, 16),
+        (24, 25),
+        (13, 28),
+    ]
+    hub = (18, 16)         # (x, y)
+    ring = [               # (x1, y1, x2, y2) — perimeter edges
+        ( 5, 17, 12,  5),
+        (12,  5, 24,  7),
+        (24,  7, 28, 16),
+        (28, 16, 24, 25),
+        (24, 25, 13, 28),
+        (13, 28,  5, 17),
+    ]
+    spokes = [             # (x1, y1, x2, y2) — outer node → hub
+        ( 5, 17, 18, 16),
+        (12,  5, 18, 16),
+        (28, 16, 18, 16),
+        (13, 28, 18, 16),
+    ]
+    outer_radii = [2.0, 2.0, 1.5, 2.5, 1.5, 2.0]  # r per node, same order as outer_nodes
+    hub_r_outer = 6   # r of the colored hub ring
+    hub_r_inner = 3.5   # r of the center status dot
+
+    line_color = (0, 0, 0, int(255 * 0.55))   # black 55% — lines
+    node_color = (0, 0, 0, int(255 * 0.65))   # black 65% — outer nodes
+    lw = max(2, round(1.4 * RENDER_SCALE * 0.7))
+
+    for x1, y1, x2, y2 in ring + spokes:
+        d.line([(x1 * RENDER_SCALE, y1 * RENDER_SCALE), (x2 * RENDER_SCALE, y2 * RENDER_SCALE)],
+               fill=line_color, width=lw)
+
+    for (nx, ny), r in zip(outer_nodes, outer_radii):
+        rs = r * RENDER_SCALE
+        d.ellipse([(nx*RENDER_SCALE - rs, ny*RENDER_SCALE - rs),
+                   (nx*RENDER_SCALE + rs, ny*RENDER_SCALE + rs)], fill=node_color)
+
+    # Hub: fully opaque state colors
+    hx, hy = hub[0] * RENDER_SCALE, hub[1] * RENDER_SCALE
+    for r, color in ((hub_r_outer, hex_rgba(outer_hex)), (hub_r_inner, hex_rgba(inner_hex))):
+        rs = r * RENDER_SCALE
+        d.ellipse([(hx - rs, hy - rs), (hx + rs, hy + rs)], fill=color)
+
+    return img.resize((FINAL_SIZE, FINAL_SIZE), Image.LANCZOS)
+
+
 def main():
     html = SPEC_FILE.read_text()
     rows = parse_states(html)
     OUT_DIR.mkdir(parents=True, exist_ok=True)
+    MAC_OUT_DIR.mkdir(parents=True, exist_ok=True)
 
     generated = []
     for label, outer, inner in rows:
@@ -129,13 +195,14 @@ def main():
         if states is None:
             print(f"  skip unknown label '{label}'")
             continue
-        icon = make_icon(outer, inner)
+        icon     = make_icon(outer, inner)
+        mac_icon = make_mac_icon(outer, inner)
         for state in states:
-            path = OUT_DIR / f"{state}.png"
-            icon.save(path, "PNG")
+            icon.save(OUT_DIR / f"{state}.png", "PNG")
+            mac_icon.save(MAC_OUT_DIR / f"{state}.png", "PNG")
             generated.append(f"  {state}.png  ({label}: outer={outer} inner={inner})")
 
-    print("Generated tray icons:")
+    print("Generated tray icons (standard + mac):")
     for line in generated:
         print(line)
 

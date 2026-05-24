@@ -149,12 +149,26 @@ fn open_window(app: &AppHandle, name: &str, title: &str, width: f64, height: f64
         .build();
 }
 
+// macOS: transparent-background icons so the hub color reads against the
+// menu bar without the dark-green box that looks out of place in light mode.
+#[cfg(target_os = "macos")]
 fn tray_icon(state: &config::AgentState) -> &'static [u8] {
     match state {
-        config::AgentState::Connected => include_bytes!("../icons/tray/connected.png"),
-        config::AgentState::Connecting => include_bytes!("../icons/tray/connecting.png"),
+        config::AgentState::Connected    => include_bytes!("../icons/tray/mac/connected.png"),
+        config::AgentState::Connecting   => include_bytes!("../icons/tray/mac/connecting.png"),
+        config::AgentState::Disconnected => include_bytes!("../icons/tray/mac/disconnected.png"),
+        config::AgentState::Error        => include_bytes!("../icons/tray/mac/error.png"),
+        config::AgentState::Unconfigured => include_bytes!("../icons/tray/mac/unconfigured.png"),
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn tray_icon(state: &config::AgentState) -> &'static [u8] {
+    match state {
+        config::AgentState::Connected    => include_bytes!("../icons/tray/connected.png"),
+        config::AgentState::Connecting   => include_bytes!("../icons/tray/connecting.png"),
         config::AgentState::Disconnected => include_bytes!("../icons/tray/disconnected.png"),
-        config::AgentState::Error => include_bytes!("../icons/tray/error.png"),
+        config::AgentState::Error        => include_bytes!("../icons/tray/error.png"),
         config::AgentState::Unconfigured => include_bytes!("../icons/tray/unconfigured.png"),
     }
 }
