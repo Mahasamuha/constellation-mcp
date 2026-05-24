@@ -15,7 +15,7 @@
     To programmatically set state (e.g. in a build script or shell):
       sed -i 's/\-\-hub-inner: #[0-9A-Fa-f]*/\-\-hub-inner: #E24B4A/' constellation-icon-512.svg
   -->
-
+  <rect width="512" height="512" rx="114" fill="#1A1A2E"/>
   <!-- Connecting lines -->
   <g stroke="#5DCAA5" stroke-width="6.5" stroke-linecap="round" fill="none" opacity="0.65">
     <!-- Perimeter ring -->
@@ -33,14 +33,14 @@
   </g>
 
   <!-- Outer nodes -->
-  <circle cx="50"  cy="245" r="24" fill="#1D9E75"/>
-  <circle cx="166" cy="50"  r="26" fill="#1D9E75"/>
-  <circle cx="356" cy="82"  r="21" fill="#1D9E75"/>
-  <circle cx="462" cy="230" r="29" fill="#1D9E75"/>
-  <circle cx="388" cy="409" r="21" fill="#1D9E75"/>
-  <circle cx="187" cy="462" r="24" fill="#1D9E75"/>
+  <circle cx="50"  cy="245" r="24" fill="#5DCAA5"/>
+  <circle cx="166" cy="50"  r="26" fill="#5DCAA5"/>
+  <circle cx="356" cy="82"  r="21" fill="#5DCAA5"/>
+  <circle cx="462" cy="230" r="29" fill="#5DCAA5"/>
+  <circle cx="388" cy="409" r="21" fill="#5DCAA5"/>
+  <circle cx="187" cy="462" r="24" fill="#5DCAA5"/>
 
   <!-- Hub — status indicator -->
-  <circle cx="282" cy="240" r="42" fill="#085041"/>
-  <circle cx="282" cy="240" r="20" fill="#5DCAA5"/>
+  <circle cx="282" cy="240" r="42" fill="#5DCAA5"/>
+  <circle cx="282" cy="240" r="20" fill="#2A6B58"/>
 </svg>
