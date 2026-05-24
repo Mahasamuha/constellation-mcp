@@ -1,6 +1,6 @@
 <svg width="600" height="140" viewBox="0 0 600 140" xmlns="http://www.w3.org/2000/svg" role="img">
   <title>Constellation — MCP File Broker</title>
-  <desc>Constellation logo: a network of connected nodes forming a constellation pattern alongside the wordmark.</desc>
+  <desc>Constellation logo dark variant: a network of connected nodes forming a constellation pattern alongside the wordmark.</desc>
 
   <style>
     .il { stroke: #5DCAA5; stroke-width: 1.2; fill: none; opacity: 0.7; }
@@ -11,7 +11,7 @@
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
       font-size: 48px;
       font-weight: 500;
-      fill: #2C2C2A;
+      fill: #FFFFFF;
     }
     .tl {
       font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
