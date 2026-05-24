@@ -1,4 +1,4 @@
-import micromatch from "micromatch";
+import picomatch from "picomatch";
 import { randomBytes } from "node:crypto";
 import { prisma } from "./db.js";
 import { dispatchRpc, getConnection, type RpcEnvelope, type RpcError } from "./hub.js";
@@ -124,7 +124,7 @@ async function isPathFiltered(
 
   for (const filter of filters) {
     if (filter.patternType === "glob") {
-      if (micromatch.isMatch(resolvedPath, filter.pattern)) return true;
+      if (picomatch.isMatch(resolvedPath, filter.pattern)) return true;
     } else {
       const re = new RegExp(filter.pattern);
       if (re.test(resolvedPath)) return true;
