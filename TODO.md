@@ -8,7 +8,7 @@
 
 - [x] **Deregister agent on stop** — when `constellation agent stop` is called (or the agent receives SIGTERM), send a deregistration message to the broker so it can immediately mark the agent offline rather than waiting for the heartbeat timeout (~3 minutes by default). Agents that disconnect without deregistering (crash, network loss) continue to rely on the heartbeat timeout.
 
-- [ ] **MCP Tasks primitive** — implement Tasks support for long-running tools (`grep_files`, `search_files`, recursive `list_directory`) once the MCP SDK v2.x stable ships. See `packages/broker/implement-tasks.md` for the full implementation plan.
+- [ ] **MCP Tasks primitive** — implement Tasks support for long-running tools (`grep_files`, `search_files`, recursive `list_directory`) once the MCP SDK v2.x stable ships. See `plans/implement-tasks.md` for the full implementation plan.
 
 ## Broker
 
@@ -26,7 +26,7 @@
 
 - [ ] **Multi-user shared agent** — a privileged parent agent spawns per-user sub-agents on shared machines (NAS, dev server). Parent receives RPC, looks up OS user via `user_mappings` config (OIDC sub → local username), spawns child under that user. Linux uses uid/gid spawn options; Windows uses S4U2Self token impersonation. macOS out of scope for this pattern.
 
-- [ ] **Agent GUI** — graphical interface for agent management. All functionality accessible via CLI; GUI is a convenience layer.
+- [ ] **Agent GUI** — graphical interface for agent management (`packages/agent-gui`). Tauri app shell, system tray, and build pipeline exist; full management UI not yet implemented.
 
 - [ ] **MCP client connector documentation** — concrete setup examples for claude.ai, Cursor, and GitHub Copilot after further prototyping.
 
