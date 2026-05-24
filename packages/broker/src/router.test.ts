@@ -29,7 +29,7 @@ import { getConnection, dispatchRpc } from "./hub.js";
 import { routeToolCall } from "./router.js";
 
 // Typed access to mocked functions
-const db = prisma as {
+const db = prisma as unknown as {
   pathLabel: { findFirst: ReturnType<typeof vi.fn> };
   brokerPathFilter: { findMany: ReturnType<typeof vi.fn> };
   agent: { findFirst: ReturnType<typeof vi.fn> };
@@ -45,7 +45,7 @@ function stubLabel(agentId = "agent-1", agentHost = "home-server") {
   });
   db.brokerPathFilter.findMany.mockResolvedValue([]);
   mockGetConnection.mockReturnValue({ ws: {}, agentId } as ReturnType<typeof getConnection>);
-  mockDispatchRpc.mockResolvedValue({ result: { ok: true } });
+  mockDispatchRpc.mockResolvedValue({ request_id: "", result: { ok: true } });
 }
 
 let uidSeq = 0;
@@ -240,7 +240,7 @@ describe("cross-host routing", () => {
     });
     db.brokerPathFilter.findMany.mockResolvedValue([]);
     mockGetConnection.mockReturnValue({ ws: {}, agentId: "agent-1" } as ReturnType<typeof getConnection>);
-    mockDispatchRpc.mockResolvedValue({ result: { ok: true } });
+    mockDispatchRpc.mockResolvedValue({ request_id: "", result: { ok: true } });
 
     const result = await routeToolCall(uid(), "copy", "src-label", {
       src_relative_path: "a.txt",
