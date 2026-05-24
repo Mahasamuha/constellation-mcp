@@ -3,6 +3,25 @@ use tauri::AppHandle;
 
 use crate::config;
 
+pub struct AgentStatusInfo {
+    pub service: String,
+    pub path_count: usize,
+}
+
+pub fn query_status_info() -> AgentStatusInfo {
+    crate::cli::output(&["agent", "status", "--json"])
+        .ok()
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        .map(|v| AgentStatusInfo {
+            service: v["service"].as_str().unwrap_or("unknown").to_string(),
+            path_count: v["labels"].as_array().map(|a| a.len()).unwrap_or(0),
+        })
+        .unwrap_or_else(|| AgentStatusInfo {
+            service: "unknown".to_string(),
+            path_count: 0,
+        })
+}
+
 #[tauri::command]
 pub async fn rotate_token(app: AppHandle) -> Result<(), String> {
     crate::cli::run(&["agent", "rotate"])?;

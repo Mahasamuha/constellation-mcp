@@ -17,20 +17,27 @@ mod service;
 
 pub fn refresh_tray(app: &AppHandle) {
     let cfg = config::load_agent_config();
-    let state = config::detect_state(&cfg);
+    let info = service::query_status_info();
+    let state = config::detect_state(&cfg, &info.service);
     if let Ok(icon) = Image::from_bytes(tray_icon(&state)) {
         let tooltip = tray_tooltip(&state, &cfg);
         if let Some(tray) = app.tray_by_id("main") {
             let _ = tray.set_icon(Some(icon));
             let _ = tray.set_tooltip(Some(&tooltip));
-            if let Ok(menu) = build_menu(app, &state) {
+            if let Ok(menu) = build_menu(app, &state, &cfg, &info.service, info.path_count) {
                 let _ = tray.set_menu(Some(menu));
             }
         }
     }
 }
 
-fn build_menu<R: Runtime>(app: &AppHandle<R>, state: &config::AgentState) -> tauri::Result<Menu<R>> {
+fn build_menu<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &config::AgentState,
+    cfg: &config::AgentConfig,
+    service: &str,
+    path_count: usize,
+) -> tauri::Result<Menu<R>> {
     let quit = MenuItemBuilder::new("Quit").id("quit").build(app)?;
 
     if *state == config::AgentState::Unconfigured {
@@ -41,13 +48,43 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>, state: &config::AgentState) -> tau
             .item(&quit)
             .build()
     } else {
+        let status_text = match state {
+            config::AgentState::Connected => format!(
+                "● Connected to {}",
+                cfg.broker_url.as_deref().unwrap_or("broker")
+            ),
+            config::AgentState::Connecting => "● Connecting…".to_string(),
+            config::AgentState::Disconnected => "● Stopped".to_string(),
+            config::AgentState::Error => "● Disconnected".to_string(),
+            config::AgentState::Unconfigured => unreachable!(),
+        };
+        let paths_label = if path_count == 1 { "1 path" } else { &format!("{path_count} paths") };
+        let detail_text = format!(
+            "  agent: {} · {}",
+            cfg.host.as_deref().unwrap_or("—"),
+            paths_label,
+        );
+
+        let status_line = MenuItemBuilder::new(status_text)
+            .id("status-info")
+            .enabled(false)
+            .build(app)?;
+        let detail_line = MenuItemBuilder::new(detail_text)
+            .id("detail-info")
+            .enabled(false)
+            .build(app)?;
+
         let status = MenuItemBuilder::new("Status & Logs…").id("status").build(app)?;
         let paths = MenuItemBuilder::new("Paths…").id("paths").build(app)?;
         let settings = MenuItemBuilder::new("Settings…").id("settings").build(app)?;
-        let start = MenuItemBuilder::new("Start Agent").id("start").build(app)?;
-        let stop = MenuItemBuilder::new("Stop Agent").id("stop").build(app)?;
+        let running = service == "active";
+        let start = MenuItemBuilder::new("Start Agent").id("start").enabled(!running).build(app)?;
+        let stop = MenuItemBuilder::new("Stop Agent").id("stop").enabled(running).build(app)?;
         let restart = MenuItemBuilder::new("Restart Agent").id("restart").build(app)?;
         MenuBuilder::new(app)
+            .item(&status_line)
+            .item(&detail_line)
+            .item(&PredefinedMenuItem::separator(app)?)
             .item(&status)
             .item(&paths)
             .item(&settings)
@@ -124,11 +161,12 @@ pub fn run() {
         ])
         .setup(|app| {
             let cfg = config::load_agent_config();
-            let state = config::detect_state(&cfg);
+            let info = service::query_status_info();
+            let state = config::detect_state(&cfg, &info.service);
 
             let icon = Image::from_bytes(tray_icon(&state))?;
             let tooltip = tray_tooltip(&state, &cfg);
-            let menu = build_menu(app.handle(), &state)?;
+            let menu = build_menu(app.handle(), &state, &cfg, &info.service, info.path_count)?;
 
             TrayIconBuilder::with_id("main")
                 .icon(icon)
@@ -146,6 +184,12 @@ pub fn run() {
                     }
                 })
                 .build(app)?;
+
+            let poll_handle = app.handle().clone();
+            std::thread::spawn(move || loop {
+                std::thread::sleep(std::time::Duration::from_secs(5));
+                refresh_tray(&poll_handle);
+            });
 
             Ok(())
         })

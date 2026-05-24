@@ -47,10 +47,13 @@ pub fn write_secure(path: &std::path::Path, data: &[u8]) -> Result<(), String> {
     file.write_all(data).map_err(|e| e.to_string())
 }
 
-pub fn detect_state(config: &AgentConfig) -> AgentState {
+pub fn detect_state(config: &AgentConfig, service: &str) -> AgentState {
     if config.broker_url.is_none() || config.agent_token.is_none() {
         return AgentState::Unconfigured;
     }
-    // Phase 3 will wire up real service status; for now assume disconnected when configured
-    AgentState::Disconnected
+    match service {
+        "active" => AgentState::Connected,
+        "inactive" => AgentState::Disconnected,
+        _ => AgentState::Error,
+    }
 }
