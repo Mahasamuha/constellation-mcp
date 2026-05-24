@@ -211,7 +211,7 @@ export async function routeToolCall(
 
   if (await isPathFiltered(userId, agentId, candidatePath)) {
     log.info({ userId, agentId, tool, candidatePath }, "Path blocked by broker filter");
-    return { code: "path_filtered", message: "Path rejected by agent" };
+    return { code: "path_filtered", message: `Path blocked by broker filter: ${candidatePath}` };
   }
 
   if (!getConnection(agentId)) {
