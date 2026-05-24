@@ -40,6 +40,10 @@ jobs:
             libdbus-1-dev \
             patchelf
 
+      - name: Install system dependencies (macOS)
+        if: matrix.os == 'macos-latest'
+        run: brew install create-dmg
+
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
