@@ -74,7 +74,7 @@ fn build_menu<R: Runtime>(
             .enabled(false)
             .build(app)?;
 
-        let status = MenuItemBuilder::new("Status & Logs…").id("status").build(app)?;
+        let status = MenuItemBuilder::new("Status && Logs…").id("status").build(app)?;
         let paths = MenuItemBuilder::new("Paths…").id("paths").build(app)?;
         let settings = MenuItemBuilder::new("Settings…").id("settings").build(app)?;
         let running = service == "active";
