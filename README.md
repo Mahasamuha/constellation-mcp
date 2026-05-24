@@ -285,3 +285,9 @@ constellation broker users add <username>
 constellation broker users remove <username>
 constellation broker users reset-password <username>
 ```
+
+---
+
+## License
+
+[PolyForm Noncommercial License 1.0.0](LICENSE) — free for personal and noncommercial use. Commercial use requires a separate license.
