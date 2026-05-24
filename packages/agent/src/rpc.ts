@@ -1,5 +1,5 @@
 import { promises as fs } from "node:fs";
-import { join } from "node:path";
+import { join, dirname, relative } from "node:path";
 import { createLogger } from "@constellation/shared";
 import type { AgentConfig, PathEntry } from "./config.js";
 import {
@@ -273,8 +273,7 @@ async function safeRealpath(path: string, boundaryRoot: string): Promise<string>
   try {
     return await fs.realpath(path);
   } catch {
-    const { dirname: dirnameF, relative: relativeF, join: joinF } = await import("node:path");
-    const parent = dirnameF(path);
+    const parent = dirname(path);
     if (parent === path) throw new Error("Cannot resolve path");
 
     // Resolve the parent first, then verify it's still inside the boundary.
@@ -284,6 +283,6 @@ async function safeRealpath(path: string, boundaryRoot: string): Promise<string>
     if (!resolvedParent.startsWith(boundaryRoot + "/") && resolvedParent !== boundaryRoot) {
       throw new Error("Cannot resolve path");
     }
-    return joinF(resolvedParent, relativeF(parent, path));
+    return join(resolvedParent, relative(parent, path));
   }
 }
