@@ -9,8 +9,8 @@ datasource db {
 
 model User {
   id            String    @id @default(cuid())
-  oidcSub       String    @map("oidc_sub")
-  oidcIssuer    String    @map("oidc_issuer")
+  oidcSub       String?   @map("oidc_sub")
+  oidcIssuer    String?   @map("oidc_issuer")
   email         String
   createdAt     DateTime  @default(now()) @map("created_at")
   deactivatedAt DateTime? @map("deactivated_at")
@@ -20,9 +20,24 @@ model User {
   pathLabels      PathLabel[]
   brokerFilters   BrokerPathFilter[]
   oauthSessions   OauthSession[]
+  localUser       LocalUser?
 
   @@unique([oidcSub, oidcIssuer])
   @@map("users")
+}
+
+model LocalUser {
+  id           String    @id @default(cuid())
+  username     String    @unique
+  passwordHash String    @map("password_hash")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  lastLoginAt  DateTime? @map("last_login_at")
+  isActive     Boolean   @default(true) @map("is_active")
+  userId       String    @unique @map("user_id")
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@map("local_users")
 }
 
 model AgentToken {

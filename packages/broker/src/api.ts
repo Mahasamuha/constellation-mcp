@@ -3,6 +3,7 @@ import { prisma } from "./db.js";
 import { requireBrokerManage, AuthenticatedRequest } from "./middleware.js";
 import { getConnection } from "./hub.js";
 import { createLogger } from "@constellation/shared";
+import { createLocalUser } from "./local-auth.js";
 
 const log = createLogger("api");
 
@@ -275,6 +276,129 @@ apiRouter.delete("/api/sessions/:id", async (req: Request, res: Response) => {
   });
 
   log.info({ sessionId, userId: uid }, "OAuth session revoked");
+  res.status(204).end();
+});
+
+// ---------------------------------------------------------------------------
+// User management — AUTH_MODE=local only
+// ---------------------------------------------------------------------------
+
+function requireLocalMode(res: Response): boolean {
+  if (process.env["AUTH_MODE"] !== "local") {
+    res.status(404).json({ error: "not_found", error_description: "User management is only available in AUTH_MODE=local" });
+    return false;
+  }
+  return true;
+}
+
+apiRouter.get("/api/users", async (req: Request, res: Response) => {
+  if (!requireLocalMode(res)) return;
+
+  const users = await prisma.localUser.findMany({
+    orderBy: { createdAt: "asc" },
+    select: { id: true, username: true, isActive: true, createdAt: true, lastLoginAt: true },
+  });
+
+  res.json(users.map((u) => ({
+    id: u.id,
+    username: u.username,
+    is_active: u.isActive,
+    created_at: u.createdAt.toISOString(),
+    last_login_at: u.lastLoginAt?.toISOString() ?? null,
+  })));
+});
+
+apiRouter.post("/api/users", async (req: Request, res: Response) => {
+  if (!requireLocalMode(res)) return;
+
+  const body = req.body as Record<string, unknown>;
+  const username = typeof body["username"] === "string" ? body["username"].trim() : "";
+  const password = typeof body["password"] === "string" ? body["password"] : "";
+
+  if (!username) {
+    res.status(400).json({ error: "invalid_request", error_description: "username is required" });
+    return;
+  }
+
+  if (password.length < 12) {
+    res.status(400).json({ error: "invalid_request", error_description: "password must be at least 12 characters" });
+    return;
+  }
+
+  try {
+    const userId = await createLocalUser(username, password);
+    const localUser = await prisma.localUser.findUnique({ where: { userId }, select: { id: true, username: true, createdAt: true } });
+    log.info({ username }, "Local user created via API");
+    res.status(201).json({ id: localUser!.id, username: localUser!.username, created_at: localUser!.createdAt.toISOString() });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Failed to create user";
+    if (msg.toLowerCase().includes("unique")) {
+      res.status(409).json({ error: "conflict", error_description: "Username already taken" });
+    } else {
+      res.status(400).json({ error: "invalid_request", error_description: msg });
+    }
+  }
+});
+
+apiRouter.delete("/api/users/:username", async (req: Request, res: Response) => {
+  if (!requireLocalMode(res)) return;
+
+  const username = req.params["username"] as string;
+
+  const localUser = await prisma.localUser.findUnique({
+    where: { username },
+    include: { user: { select: { id: true } } },
+  });
+
+  if (!localUser) {
+    res.status(404).json({ error: "not_found" });
+    return;
+  }
+
+  await prisma.$transaction([
+    prisma.localUser.update({ where: { username }, data: { isActive: false } }),
+    prisma.user.update({ where: { id: localUser.user.id }, data: { deactivatedAt: new Date() } }),
+  ]);
+
+  log.info({ username }, "Local user deactivated");
+  res.status(204).end();
+});
+
+apiRouter.post("/api/users/:username/reset-password", async (req: Request, res: Response) => {
+  if (!requireLocalMode(res)) return;
+
+  const username = req.params["username"] as string;
+  const body = req.body as Record<string, unknown>;
+  const password = typeof body["password"] === "string" ? body["password"] : "";
+
+  if (password.length < 12) {
+    res.status(400).json({ error: "invalid_request", error_description: "password must be at least 12 characters" });
+    return;
+  }
+
+  const localUser = await prisma.localUser.findUnique({
+    where: { username },
+    include: { user: { select: { id: true } } },
+  });
+
+  if (!localUser) {
+    res.status(404).json({ error: "not_found" });
+    return;
+  }
+
+  const bcrypt = await import("bcryptjs");
+  const passwordHash = await bcrypt.hash(password, 12);
+
+  // Invalidate all existing OAuth sessions for this user, then update hash.
+  await prisma.$transaction([
+    prisma.oauthSession.updateMany({
+      where: { userId: localUser.user.id },
+      data: { expiresAt: new Date(), refreshTokenExpiresAt: new Date() },
+    }),
+    prisma.localUser.update({ where: { username }, data: { passwordHash } }),
+  ]);
+
+  log.info({ username }, "Local user password reset");
   res.status(204).end();
 });
 

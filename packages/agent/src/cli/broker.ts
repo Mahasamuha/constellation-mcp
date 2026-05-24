@@ -430,6 +430,70 @@ export function registerBrokerCommands(program: Command, getConfigDir: () => str
     });
 
   // -------------------------------------------------------------------------
+  // users (AUTH_MODE=local only)
+  // -------------------------------------------------------------------------
+
+  const users = broker.command("users").description("Manage local broker users (requires AUTH_MODE=local on broker)");
+
+  users
+    .command("list")
+    .description("List all local users")
+    .option("--json", "Output as JSON")
+    .action(async (opts: { json?: boolean }) => {
+      const session = await getValidSession(cfgDir);
+      const data = await apiGet<Array<{
+        id: string; username: string; is_active: boolean;
+        created_at: string; last_login_at: string | null;
+      }>>(session, "/api/users");
+      if (opts.json) { console.log(JSON.stringify(data, null, 2)); return; }
+      for (const u of data) {
+        const status = u.is_active ? "active" : "deactivated";
+        const last = u.last_login_at ? `  last login: ${u.last_login_at}` : "";
+        console.log(`${u.username}  [${status}]${last}`);
+      }
+    });
+
+  users
+    .command("add")
+    .argument("<username>", "Username for the new user")
+    .description("Create a new local user (prompts for password)")
+    .action(async (username: string) => {
+      const password = await promptPassword("Password (min 12 chars): ");
+      const confirm = await promptPassword("Confirm password: ");
+      if (password !== confirm) { console.error("Passwords do not match."); process.exit(1); }
+      if (password.length < 12) { console.error("Password must be at least 12 characters."); process.exit(1); }
+      const session = await getValidSession(cfgDir);
+      await apiPost(session, "/api/users", { username, password });
+      console.log(`User '${username}' created.`);
+    });
+
+  users
+    .command("remove")
+    .argument("<username>", "Username to deactivate")
+    .description("Deactivate a local user (soft delete)")
+    .action(async (username: string) => {
+      const ok = await confirm(`Deactivate user '${username}'? Their sessions will become invalid.`);
+      if (!ok) { console.log("Cancelled."); return; }
+      const session = await getValidSession(cfgDir);
+      await apiDelete(session, `/api/users/${encodeURIComponent(username)}`);
+      console.log(`User '${username}' deactivated.`);
+    });
+
+  users
+    .command("reset-password")
+    .argument("<username>", "Username to update")
+    .description("Reset a local user's password and invalidate their sessions")
+    .action(async (username: string) => {
+      const password = await promptPassword("New password (min 12 chars): ");
+      const confirm = await promptPassword("Confirm new password: ");
+      if (password !== confirm) { console.error("Passwords do not match."); process.exit(1); }
+      if (password.length < 12) { console.error("Password must be at least 12 characters."); process.exit(1); }
+      const session = await getValidSession(cfgDir);
+      await apiPost(session, `/api/users/${encodeURIComponent(username)}/reset-password`, { password });
+      console.log(`Password reset for '${username}'. All existing sessions have been invalidated.`);
+    });
+
+  // -------------------------------------------------------------------------
   // account
   // -------------------------------------------------------------------------
 
@@ -453,6 +517,34 @@ export function registerBrokerCommands(program: Command, getConfigDir: () => str
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+function promptPassword(prompt: string): Promise<string> {
+  return new Promise((resolve) => {
+    process.stdout.write(prompt);
+    process.stdin.setRawMode?.(true);
+    process.stdin.resume();
+    process.stdin.setEncoding("utf8");
+
+    let input = "";
+    const onData = (char: string) => {
+      if (char === "\r" || char === "\n") {
+        process.stdout.write("\n");
+        process.stdin.setRawMode?.(false);
+        process.stdin.pause();
+        process.stdin.off("data", onData);
+        resolve(input);
+      } else if (char === "") {
+        process.stdout.write("\n");
+        process.exit(1);
+      } else if (char === "") {
+        if (input.length > 0) input = input.slice(0, -1);
+      } else {
+        input += char;
+      }
+    };
+    process.stdin.on("data", onData);
+  });
+}
 
 function formatUptime(seconds: number): string {
   const d = Math.floor(seconds / 86400);

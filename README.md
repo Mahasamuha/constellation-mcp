@@ -10,71 +10,59 @@ The agent never opens inbound ports. All traffic flows outbound from the agent t
 
 ---
 
-## Requirements
+## Quick start — Railway (no server required)
+
+Deploy a fully functional broker in minutes with built-in HTTPS, Postgres, and local username/password auth. No DNS, no nginx, no OIDC provider.
+
+[![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/new/template)
+
+1. Click **Deploy on Railway** above and follow the prompts
+2. Set `AUTH_MODE=local` and `BROKER_URL` to your Railway-assigned domain
+3. Open the broker URL — the setup wizard creates your admin account
+4. On each machine you want to access, download the agent from [GitHub Releases](https://github.com/Mahasamuha/constellation-mcp/releases/latest) and run:
+   ```sh
+   constellation agent init --broker https://your-app.railway.app
+   ```
+5. Add the broker URL to your MCP client:
+   ```json
+   { "mcpServers": { "constellation": { "type": "http", "url": "https://your-app.railway.app/mcp" } } }
+   ```
+
+For self-hosted options see [Self-hosted with Cloudflare Tunnel](docs/self-hosted-cloudflare-tunnel.md) or the full self-hosted setup below.
+
+---
+
+## Requirements (self-hosted)
 
 - Docker and Docker Compose (broker)
-- Node.js 20+ or a standalone `constellation` binary (agent)
-- An OIDC provider (Google, Azure AD, or self-hosted Authentik)
+- A reverse proxy for TLS, **or** a Cloudflare account (free) for the tunnel option
 
 ---
 
 ## 1. Deploy the broker
 
-### Configure environment
+### Choose a deployment style
 
-Copy the example and fill in the required values:
+Pick the folder that matches how you want to run the broker. Each has a self-contained `docker-compose.yml` and `.env.example`.
 
-```sh
-cp packages/broker/.env.example packages/broker/.env
-```
-
-`packages/broker/.env` is shared by both the broker and the Postgres container. Set `POSTGRES_USER`, `POSTGRES_PASSWORD`, and `POSTGRES_DB` there, and make sure `DATABASE_URL` uses the same credentials.
-
-Required variables:
-
-| Variable | Description |
+| Folder | What it does |
 |---|---|
-| `DATABASE_URL` | Postgres connection string |
-| `OIDC_ISSUER` | OIDC provider issuer URL |
-| `OIDC_CLIENT_ID` | Client ID from your OIDC provider |
-| `OIDC_CLIENT_SECRET` | Client secret from your OIDC provider |
-| `OIDC_CALLBACK_URL` | `https://your-broker.example.com/oauth/callback` |
-| `BROKER_URL` | Public URL of the broker, e.g. `https://your-broker.example.com` |
+| [`docker/standard/`](docker/standard/) | Broker + Postgres. Port 3000 exposed — add a reverse proxy (Caddy, nginx) in front for TLS. |
+| [`docker/cloudflare-tunnel/`](docker/cloudflare-tunnel/) | Broker + Postgres + Cloudflare Tunnel. No open ports or reverse proxy needed. |
 
-### OIDC provider setup
-
-The broker works with any OIDC-compliant provider. Register an OAuth application and add both redirect/callback URLs:
-- `https://your-broker.example.com/oauth/callback` — used by MCP clients (Claude, Cursor)
-- `https://your-broker.example.com/activate/callback` — used by the agent and broker CLI device flows
-
-**Google (simplest for personal use)**
-
-1. Go to [Google Cloud Console → APIs & Services → Credentials](https://console.cloud.google.com/apis/credentials)
-2. Create an OAuth 2.0 Client ID (Web application)
-3. Add both redirect URIs as authorized redirect URIs
-4. Set `OIDC_ISSUER=https://accounts.google.com`
-
-**Azure Active Directory**
-
-1. Register an app in [Azure Portal → App registrations](https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps)
-2. Add both redirect URIs
-3. Set `OIDC_ISSUER=https://login.microsoftonline.com/<tenant-id>/v2.0`
-
-**Authentik (self-hosted)**
-
-1. Create an OAuth2/OpenID Provider in Authentik
-2. Add both redirect URIs to the provider
-3. Set `OIDC_ISSUER=https://your-authentik.example.com/application/o/<slug>/`
-
-### Start with Docker Compose
+### Configure and start
 
 ```sh
+# Example: standard deployment
+cd docker/standard
+cp .env.example .env
+# Edit .env — set BROKER_URL and any auth variables
 docker compose up -d
 ```
 
-On first start the broker automatically applies any pending database migrations before accepting connections. Subsequent deploys do the same — no manual migration step required.
+On first start the broker automatically applies pending database migrations. Subsequent deploys do the same — no manual migration step required.
 
-Add a reverse proxy (Caddy or nginx) in front for TLS. Example Caddyfile:
+**For the standard deployment**, add a reverse proxy in front for TLS. Example Caddyfile:
 
 ```
 your-broker.example.com {
@@ -82,15 +70,63 @@ your-broker.example.com {
 }
 ```
 
+**For the Cloudflare Tunnel deployment**, see [docs/self-hosted-cloudflare-tunnel.md](docs/self-hosted-cloudflare-tunnel.md) for the full setup walkthrough.
+
+### Environment variables
+
+**`AUTH_MODE=local` (default — no OIDC provider needed)**
+
+| Variable | Description |
+|---|---|
+| `DATABASE_URL` | Postgres connection string |
+| `BROKER_URL` | Public URL of the broker, e.g. `https://your-broker.example.com` |
+| `TRUST_PROXY` or `TRUST_PROXY_PRESET` | See the `.env.example` in your chosen deployment folder |
+
+On first visit the setup wizard creates your admin account. Additional users: `constellation broker users add <username>`.
+
+**`AUTH_MODE=oidc` (external provider)**
+
+| Variable | Description |
+|---|---|
+| `DATABASE_URL` | Postgres connection string |
+| `OIDC_ISSUER` | OIDC provider issuer URL |
+| `OIDC_CLIENT_ID` | Client ID from your OIDC provider |
+| `OIDC_CLIENT_SECRET` | Client secret from your OIDC provider |
+| `BROKER_URL` | Public URL of the broker, e.g. `https://your-broker.example.com` |
+
+Register an OAuth application with your provider and add these redirect URIs:
+- `https://your-broker.example.com/oauth/callback` — MCP clients (Claude, Cursor)
+- `https://your-broker.example.com/activate/callback` — agent and broker CLI device flows
+
+**Google:** set `OIDC_ISSUER=https://accounts.google.com` and create a Web application client ID in [Google Cloud Console](https://console.cloud.google.com/apis/credentials).
+
+**Azure AD:** set `OIDC_ISSUER=https://login.microsoftonline.com/<tenant-id>/v2.0` and register an app in [Azure Portal](https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps).
+
+**Authentik:** set `OIDC_ISSUER=https://your-authentik.example.com/application/o/<slug>/` and create an OAuth2/OpenID Provider.
+
 ---
 
 ## 2. Install the agent
 
-### Via npm
+Download the latest release from [GitHub Releases](https://github.com/Mahasamuha/constellation-mcp/releases/latest). Two options:
 
-```sh
-npm install -g @mahasamuha/constellation-agent
-```
+### CLI (recommended for servers and headless machines)
+
+| Platform | File | Install |
+|---|---|---|
+| Linux | `constellation-agent_*_amd64.deb` | `sudo dpkg -i constellation-agent_*_amd64.deb` |
+| macOS | `constellation-agent_*_macos-arm64.tar.gz` | Extract, then `sudo mv constellation /usr/local/bin/` |
+| Windows | `constellation-agent_*_windows-x64.zip` | Extract and add to `PATH` |
+
+### GUI (desktop machines)
+
+A system tray app that manages the agent. Requires the CLI to also be installed — the GUI locates it from `PATH`.
+
+| Platform | File |
+|---|---|
+| macOS | `Constellation Agent GUI_*.dmg` |
+| Linux | `Constellation Agent GUI_*.AppImage` or `constellation-agent-gui_*.deb` |
+| Windows | `Constellation Agent GUI_*.exe` |
 
 ### Initialize
 
@@ -100,7 +136,7 @@ Run this on the machine whose filesystem you want to expose:
 constellation agent init --broker https://your-broker.example.com
 ```
 
-This opens a browser, authenticates you via your OIDC provider, and writes credentials to `~/.config/constellation/agent.yaml` (Linux/macOS) or `%APPDATA%\constellation\agent.yaml` (Windows).
+This opens a browser, authenticates you, and writes credentials to `~/.config/constellation/agent.yaml` (Linux/macOS) or `%APPDATA%\constellation\agent.yaml` (Windows).
 
 **Set config file permissions** (Linux/macOS):
 
@@ -227,4 +263,10 @@ constellation broker filters remove <id>
 constellation broker sessions list      # Active MCP client sessions
 constellation broker sessions revoke <id>
 constellation broker account deactivate
+
+# User management (AUTH_MODE=local only)
+constellation broker users list
+constellation broker users add <username>
+constellation broker users remove <username>
+constellation broker users reset-password <username>
 ```

@@ -3,6 +3,7 @@ import { app } from "./app.js";
 import { attachHub, pruneReconnectTimestamps } from "./hub.js";
 import { pruneDeviceCodes } from "./device.js";
 import { pruneRateLimits } from "./router.js";
+import { pruneLoginFailures } from "./local-auth.js";
 import { createLogger } from "@constellation/shared";
 
 const log = createLogger("broker");
@@ -17,6 +18,7 @@ setInterval(() => {
   pruneDeviceCodes();
   pruneRateLimits();
   pruneReconnectTimestamps();
+  pruneLoginFailures();
 }, 5 * 60 * 1000).unref();
 
 server.listen(port, () => {

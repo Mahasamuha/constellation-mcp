@@ -3,8 +3,9 @@ services:
     image: ghcr.io/mahasamuha/constellation-broker:latest
     ports:
       - "3000:3000"
-    env_file:
-      - packages/broker/.env
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
     depends_on:
       postgres:
         condition: service_healthy
@@ -14,16 +15,13 @@ services:
     image: postgres:16
     volumes:
       - pgdata:/var/lib/postgresql/data
-    env_file:
-      - packages/broker/.env
+    env_file: .env
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
       interval: 5s
       timeout: 5s
       retries: 5
     restart: unless-stopped
-    ports:
-      - "5432:5432"
 
 volumes:
   pgdata:

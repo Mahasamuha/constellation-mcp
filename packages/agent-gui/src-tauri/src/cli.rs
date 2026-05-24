@@ -88,7 +88,7 @@ fn resolve() -> Result<PathBuf, String> {
         }
     }
 
-    Err("constellation CLI not found. Make sure @mahasamuha/constellation-agent is installed globally.".to_string())
+    Err("constellation CLI not found. Download and install it from https://github.com/Mahasamuha/constellation-mcp/releases/latest".to_string())
 }
 
 fn bin() -> Result<&'static PathBuf, String> {

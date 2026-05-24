@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import { prisma } from "./db.js";
 import { buildAuthorizationUrl, exchangeCodeAndUpsertUser } from "./oidc.js";
 import { generateToken, hashToken, createLogger } from "@constellation/shared";
+import { checkBruteForce, recordFailure, validateLocalUser } from "./local-auth.js";
 
 const log = createLogger("device");
 
@@ -102,7 +103,6 @@ deviceRouter.post("/oauth/device/code", (req: Request, res: Response) => {
 deviceRouter.get("/activate", async (req: Request, res: Response) => {
   const userCode = typeof req.query["user_code"] === "string" ? req.query["user_code"] : undefined;
 
-  // If no code in query, show the entry form.
   if (!userCode) {
     res.send(activateEntryPage());
     return;
@@ -121,7 +121,12 @@ deviceRouter.get("/activate", async (req: Request, res: Response) => {
     return;
   }
 
-  // Start OIDC flow. Store device context in cookie so callback can complete it.
+  if (process.env["AUTH_MODE"] === "local") {
+    res.send(localActivateLoginPage(deviceCode));
+    return;
+  }
+
+  // OIDC mode: start OIDC flow and store device context in cookie.
   const callbackUrl = `${requireEnv("BROKER_URL")}/activate/callback`;
   const { url, state, codeVerifier } = await buildAuthorizationUrl(callbackUrl, false);
 
@@ -136,6 +141,41 @@ deviceRouter.get("/activate", async (req: Request, res: Response) => {
 
   url.searchParams.set("state", `${state}:${pendingId}`);
   res.redirect(url.toString());
+});
+
+// ---------------------------------------------------------------------------
+// POST /activate/login — local auth credential validation for device flow
+// ---------------------------------------------------------------------------
+
+deviceRouter.post("/activate/login", async (req: Request, res: Response) => {
+  const body = req.body as Record<string, string>;
+  const deviceCode = (body["device_code"] ?? "").trim();
+  const username = (body["username"] ?? "").trim();
+  const password = body["password"] ?? "";
+
+  const ip = req.ip ?? "unknown";
+  if (!checkBruteForce(ip)) {
+    res.status(429).send(localActivateLoginPage(deviceCode, "Too many failed attempts. Please wait 15 minutes."));
+    return;
+  }
+
+  const entry = deviceCodes.get(deviceCode);
+  if (!entry || entry.status !== "pending" || entry.expiresAt < Date.now()) {
+    res.send(activateEntryPage("This code has already been used or has expired."));
+    return;
+  }
+
+  let userId: string;
+  try {
+    userId = await validateLocalUser(username, password);
+  } catch {
+    recordFailure(ip);
+    res.send(localActivateLoginPage(deviceCode, "Invalid username or password."));
+    return;
+  }
+
+  entry.pendingUserId = userId;
+  res.send(consentPage(deviceCode, entry.scope));
 });
 
 // ---------------------------------------------------------------------------
@@ -392,6 +432,27 @@ async function ensureBrokerClient(): Promise<string> {
 // ---------------------------------------------------------------------------
 // HTML helpers
 // ---------------------------------------------------------------------------
+
+function localActivateLoginPage(deviceCode: string, error?: string): string {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Constellation — Sign in</title>${pageStyle()}</head>
+<body>
+  <div class="card">
+    <h1>Sign in to activate</h1>
+    ${error ? `<p class="error">${escHtml(error)}</p>` : ""}
+    <form method="POST" action="/activate/login">
+      <input type="hidden" name="device_code" value="${escHtml(deviceCode)}">
+      <label for="username">Username</label>
+      <input id="username" name="username" type="text" autocomplete="username" autofocus required>
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required>
+      <button type="submit">Sign in</button>
+    </form>
+  </div>
+</body>
+</html>`;
+}
 
 function activateEntryPage(error?: string): string {
   return `<!DOCTYPE html>

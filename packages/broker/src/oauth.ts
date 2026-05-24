@@ -4,6 +4,7 @@ import { prisma } from "./db.js";
 import { buildAuthorizationUrl, exchangeCodeAndUpsertUser } from "./oidc.js";
 import { handleDeviceCodeGrant } from "./device.js";
 import { generateToken, hashToken, createLogger } from "@constellation/shared";
+import { checkBruteForce, recordFailure, validateLocalUser } from "./local-auth.js";
 
 const log = createLogger("oauth");
 
@@ -96,7 +97,7 @@ oauthRouter.post("/oauth/register", async (req: Request, res: Response) => {
 });
 
 // ---------------------------------------------------------------------------
-// GET /oauth/authorize — redirect to upstream OIDC provider
+// GET /oauth/authorize
 // ---------------------------------------------------------------------------
 
 oauthRouter.get("/oauth/authorize", async (req: Request, res: Response) => {
@@ -128,7 +129,27 @@ oauthRouter.get("/oauth/authorize", async (req: Request, res: Response) => {
     return;
   }
 
-  // PKCE is used when the client sends a code_challenge; use plain redirect otherwise
+  if (process.env["AUTH_MODE"] === "local") {
+    // Store OAuth params in a cookie; redirect to the local login form.
+    const pendingId = randomBytes(16).toString("hex");
+    res.cookie(`login_pending_${pendingId}`, JSON.stringify({
+      clientId: client_id,
+      redirectUri: redirect_uri,
+      downstreamCodeChallenge: req.query["code_challenge"],
+      downstreamCodeChallengeMethod: req.query["code_challenge_method"],
+      downstreamState: req.query["state"],
+    }), {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      maxAge: 10 * 60 * 1000,
+      sameSite: "lax",
+    });
+    log.info({ clientId: client_id }, "Authorization redirected to local login");
+    res.redirect(`/auth/login?pending=${pendingId}`);
+    return;
+  }
+
+  // OIDC mode: redirect to upstream provider
   const usePkce = !!code_challenge;
   const callbackUrl = `${requireEnv("BROKER_URL")}/oauth/callback`;
   const { url, state, codeVerifier } = await buildAuthorizationUrl(callbackUrl, usePkce);
@@ -159,6 +180,84 @@ oauthRouter.get("/oauth/authorize", async (req: Request, res: Response) => {
 
   log.info({ clientId: client_id }, "Authorization redirected to upstream OIDC");
   res.redirect(url.toString());
+});
+
+// ---------------------------------------------------------------------------
+// GET /auth/login — local auth login form
+// ---------------------------------------------------------------------------
+
+oauthRouter.get("/auth/login", (req: Request, res: Response) => {
+  const pendingId = typeof req.query["pending"] === "string" ? req.query["pending"] : "";
+  res.send(loginPage(pendingId));
+});
+
+// ---------------------------------------------------------------------------
+// POST /auth/login — local auth credential validation
+// ---------------------------------------------------------------------------
+
+interface LoginPending {
+  clientId: string;
+  redirectUri: string;
+  downstreamCodeChallenge?: string;
+  downstreamCodeChallengeMethod?: string;
+  downstreamState?: string;
+}
+
+oauthRouter.post("/auth/login", async (req: Request, res: Response) => {
+  const body = req.body as Record<string, string>;
+  const pendingId = (body["pending"] ?? "").trim();
+  const username = (body["username"] ?? "").trim();
+  const password = body["password"] ?? "";
+
+  const ip = req.ip ?? "unknown";
+  if (!checkBruteForce(ip)) {
+    res.status(429).send(loginPage(pendingId, "Too many failed attempts. Please wait 15 minutes."));
+    return;
+  }
+
+  const cookieName = `login_pending_${pendingId}`;
+  const cookieVal = (req.cookies as Record<string, string>)[cookieName];
+  if (!cookieVal) {
+    res.status(400).send(loginPage("", "Login session expired. Please try again."));
+    return;
+  }
+
+  let pending: LoginPending;
+  try {
+    pending = JSON.parse(cookieVal) as LoginPending;
+  } catch {
+    res.status(400).send(loginPage("", "Malformed login session."));
+    return;
+  }
+
+  let userId: string;
+  try {
+    userId = await validateLocalUser(username, password);
+  } catch {
+    recordFailure(ip);
+    res.send(loginPage(pendingId, "Invalid username or password."));
+    return;
+  }
+
+  res.clearCookie(cookieName);
+
+  const code = generateToken();
+  const codeExpiresAt = Date.now() + 10 * 60 * 1000;
+  authCodes.set(code, {
+    userId,
+    clientId: pending.clientId,
+    redirectUri: pending.redirectUri,
+    codeChallenge: pending.downstreamCodeChallenge,
+    codeChallengeMethod: pending.downstreamCodeChallengeMethod,
+    expiresAt: codeExpiresAt,
+  });
+  setTimeout(() => authCodes.delete(code), 10 * 60 * 1000);
+
+  const redirectParams = new URLSearchParams({ code });
+  if (pending.downstreamState) redirectParams.set("state", pending.downstreamState);
+
+  log.info({ userId, clientId: pending.clientId }, "Authorization code issued (local auth)");
+  res.redirect(`${pending.redirectUri}?${redirectParams.toString()}`);
 });
 
 // ---------------------------------------------------------------------------
@@ -424,6 +523,41 @@ async function handleRefreshTokenGrant(
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
+
+function loginPage(pendingId: string, error?: string): string {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Constellation — Sign in</title>
+<style>
+  body { font-family: system-ui, sans-serif; background: #f5f5f5; display: flex; justify-content: center; padding: 4rem 1rem; }
+  .card { background: #fff; border-radius: 8px; padding: 2rem; max-width: 380px; width: 100%; box-shadow: 0 2px 8px rgba(0,0,0,.1); }
+  h1 { margin-top: 0; font-size: 1.4rem; }
+  label { display: block; margin: 1rem 0 .4rem; font-weight: 500; }
+  input { width: 100%; box-sizing: border-box; padding: .5rem; font-size: 1rem; border: 1px solid #ccc; border-radius: 4px; }
+  button { margin-top: 1.2rem; padding: .6rem 1.4rem; font-size: 1rem; border: none; border-radius: 4px; cursor: pointer; background: #2563eb; color: #fff; }
+  .error { color: #dc2626; background: #fee2e2; padding: .6rem; border-radius: 4px; margin-bottom: .5rem; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1>Sign in</h1>
+    ${error ? `<p class="error">${escHtml(error)}</p>` : ""}
+    <form method="POST" action="/auth/login">
+      <input type="hidden" name="pending" value="${escHtml(pendingId)}">
+      <label for="username">Username</label>
+      <input id="username" name="username" type="text" autocomplete="username" autofocus required>
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required>
+      <button type="submit">Sign in</button>
+    </form>
+  </div>
+</body>
+</html>`;
+}
+
+function escHtml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
 
 function asStringArray(val: unknown): string[] {
   if (Array.isArray(val)) return val.filter((v): v is string => typeof v === "string");
