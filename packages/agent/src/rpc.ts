@@ -1,5 +1,5 @@
 import { promises as fs } from "node:fs";
-import { join, dirname, relative } from "node:path";
+import { join, dirname, basename, sep } from "node:path";
 import { createLogger } from "@constellation/shared";
 import type { AgentConfig, PathEntry } from "./config.js";
 import {
@@ -106,8 +106,8 @@ export async function handleRpc(
     try {
       // Use realpath on the parent for paths that may not exist yet (write/mkdir).
       resolved = await safeRealpath(candidate, resolvedRoot);
-    } catch {
-      log.warn({ tool, resolvedRoot, relativePath }, "Path rejected by agent — safeRealpath failed");
+    } catch (err) {
+      log.warn({ tool, resolvedRoot, relativePath, err }, "Path rejected by agent — safeRealpath failed");
       return { request_id, error: { message: "Path rejected by agent" } };
     }
     if (!resolved.startsWith(resolvedRoot + "/") && resolved !== resolvedRoot) {
@@ -272,7 +272,11 @@ function arr(env: RpcEnvelope, key: string): string[] | undefined {
 async function safeRealpath(path: string, boundaryRoot: string): Promise<string> {
   try {
     return await fs.realpath(path);
-  } catch {
+  } catch (err) {
+    // Only walk up for ENOENT (path doesn't exist yet). Any other error
+    // (EACCES, ELOOP, runtime error, etc.) should propagate immediately.
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+
     const parent = dirname(path);
     if (parent === path) throw new Error("Cannot resolve path");
 
@@ -280,9 +284,9 @@ async function safeRealpath(path: string, boundaryRoot: string): Promise<string>
     // Using string startsWith on the unresolved parent is insufficient because
     // a path like /root/../outside passes the prefix check before resolution.
     const resolvedParent = await safeRealpath(parent, boundaryRoot);
-    if (!resolvedParent.startsWith(boundaryRoot + "/") && resolvedParent !== boundaryRoot) {
+    if (!resolvedParent.startsWith(boundaryRoot + sep) && resolvedParent !== boundaryRoot) {
       throw new Error("Cannot resolve path");
     }
-    return join(resolvedParent, relative(parent, path));
+    return join(resolvedParent, basename(path));
   }
 }
