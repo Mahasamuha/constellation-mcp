@@ -5,7 +5,7 @@ import {
 } from "node:fs";
 import { createInterface } from "node:readline";
 import { join, dirname, relative } from "node:path";
-import micromatch from "micromatch";
+import picomatch from "picomatch";
 import { createPatch } from "diff";
 
 // ---------------------------------------------------------------------------
@@ -55,7 +55,7 @@ export async function listDirectory(
     for (const entry of entries) {
       if (limitReached) break;
 
-      if (exclude.length > 0 && micromatch.isMatch(entry.name, exclude)) continue;
+      if (exclude.length > 0 && picomatch.isMatch(entry.name, exclude)) continue;
 
       const fullPath = join(dir, entry.name);
       const relPath = relative(root, fullPath);
@@ -150,7 +150,7 @@ export async function findFiles(
 
       const matched = re
         ? re.test(entry.name)
-        : micromatch.isMatch(entry.name, params.pattern);
+        : picomatch.isMatch(entry.name, params.pattern);
 
       if (matched) {
         matches.push(relPath);
@@ -351,7 +351,7 @@ export async function grepFiles(
         if (entry.isDirectory()) {
           await walk(fullPath);
         } else if (entry.isFile()) {
-          if (params.file_glob && !micromatch.isMatch(entry.name, params.file_glob)) continue;
+          if (params.file_glob && !picomatch.isMatch(entry.name, params.file_glob)) continue;
           await searchInFile(fullPath);
         }
       }
