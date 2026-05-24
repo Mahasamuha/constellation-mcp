@@ -30,6 +30,7 @@
   },
   "devDependencies": {
     "@constellation/shared": "*",
+    "@yao-pkg/pkg": "^5.0.0",
     "@types/diff": "^8.0.0",
     "@types/js-yaml": "^4.0.9",
     "@types/micromatch": "^4.0.10",

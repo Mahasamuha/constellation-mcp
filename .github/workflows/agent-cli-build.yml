@@ -1,0 +1,136 @@
+name: Build constellation-agent CLI
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'agent/v*'
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            pkg_target: node22-linux-x64
+            binary: constellation
+            arch: amd64
+          - os: macos-latest
+            pkg_target: node22-macos-arm64
+            binary: constellation
+            arch: arm64
+          - os: windows-latest
+            pkg_target: node22-win-x64
+            binary: constellation.exe
+            arch: x64
+
+    runs-on: ${{ matrix.os }}
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Node 22 to match the pkg compilation target.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build agent TypeScript
+        run: npm run build --workspace=packages/agent
+
+      # Bundle the ESM output to a single CJS file so @yao-pkg/pkg can compile it.
+      # esbuild is a transitive dep of tsup and is available after npm ci.
+      - name: Bundle to CJS
+        run: >
+          npx esbuild packages/agent/dist/cli.js
+          --bundle
+          --platform=node
+          --format=cjs
+          --external:*.node
+          --outfile=cli-bundle.cjs
+
+      - name: Compile to native binary
+        run: npx @yao-pkg/pkg cli-bundle.cjs --target ${{ matrix.pkg_target }} --output ${{ matrix.binary }}
+
+      # ── Linux: package as .deb ────────────────────────────────────────────────
+
+      - name: Package as deb (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          VERSION=$(node -p "require('./packages/agent/package.json').version")
+          mkdir -p pkg-root/usr/local/bin
+          mkdir -p pkg-root/DEBIAN
+          cp constellation pkg-root/usr/local/bin/constellation
+          chmod 755 pkg-root/usr/local/bin/constellation
+          cat > pkg-root/DEBIAN/control <<EOF
+          Package: constellation-agent
+          Version: ${VERSION}
+          Architecture: amd64
+          Maintainer: Joe Rybka <joe@joerybka.com>
+          Description: Constellation agent CLI
+           Connects your development tools to the Constellation broker.
+          EOF
+          dpkg-deb --build pkg-root "constellation-agent_${VERSION}_amd64.deb"
+
+      - name: Upload artifact (Linux)
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: constellation-agent-linux
+          path: constellation-agent_*_amd64.deb
+
+      # ── macOS: package as .tar.gz ─────────────────────────────────────────────
+
+      - name: Package as tar.gz (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          VERSION=$(node -p "require('./packages/agent/package.json').version")
+          tar -czf "constellation-agent_${VERSION}_macos-arm64.tar.gz" constellation
+
+      - name: Upload artifact (macOS)
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: constellation-agent-macos
+          path: constellation-agent_*_macos-arm64.tar.gz
+
+      # ── Windows: package as .zip ──────────────────────────────────────────────
+
+      - name: Package as zip (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $VERSION = node -p "require('./packages/agent/package.json').version"
+          Compress-Archive -Path constellation.exe -DestinationPath "constellation-agent_${VERSION}_windows-x64.zip"
+
+      - name: Upload artifact (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: constellation-agent-windows
+          path: constellation-agent_*_windows-x64.zip
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: false
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: artifacts/**/*

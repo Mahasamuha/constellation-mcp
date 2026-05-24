@@ -4,13 +4,37 @@ use std::sync::OnceLock;
 static BIN: OnceLock<Result<PathBuf, String>> = OnceLock::new();
 
 fn resolve() -> Result<PathBuf, String> {
-    // Try whatever is in the current process PATH first.
-    let in_path = std::process::Command::new("which")
+    // Login-shell lookup: sources ~/.profile so NVM/volta/fnm/custom npm prefixes
+    // are visible even when the process was started by a desktop session manager
+    // that provides only a minimal PATH.
+    #[cfg(unix)]
+    {
+        let shell_path = std::process::Command::new("bash")
+            .args(["-lc", "command -v constellation 2>/dev/null"])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| PathBuf::from(String::from_utf8_lossy(&o.stdout).trim().to_string()));
+
+        if let Some(p) = shell_path {
+            if p.exists() {
+                return Ok(p);
+            }
+        }
+    }
+
+    // Fallback: try whatever is in the current process PATH.
+    #[cfg(unix)]
+    let which_cmd = "which";
+    #[cfg(windows)]
+    let which_cmd = "where";
+
+    let in_path = std::process::Command::new(which_cmd)
         .arg("constellation")
         .output()
         .ok()
         .filter(|o| o.status.success())
-        .map(|o| PathBuf::from(String::from_utf8_lossy(&o.stdout).trim()));
+        .map(|o| PathBuf::from(String::from_utf8_lossy(&o.stdout).lines().next().unwrap_or("").trim().to_string()));
 
     if let Some(p) = in_path {
         if p.exists() {
