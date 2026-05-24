@@ -1,4 +1,5 @@
 import { Router, Request, Response, IRouter } from "express";
+import { randomBytes } from "node:crypto";
 import { prisma } from "./db.js";
 import { buildAuthorizationUrl, exchangeCodeAndUpsertUser } from "./oidc.js";
 import { generateToken, hashToken, createLogger } from "@constellation/shared";
@@ -22,6 +23,8 @@ interface DeviceEntry {
   userId?: string;
   /** Confirmed host name, set for agent:register scope */
   hostName?: string;
+  /** OIDC-verified user id set server-side during /activate/callback — not from form body */
+  pendingUserId?: string;
 }
 
 const deviceCodes = new Map<string, DeviceEntry>();
@@ -46,9 +49,10 @@ function findByUserCode(userCode: string): [string, DeviceEntry] | undefined {
 function generateUserCode(): string {
   // Omit visually ambiguous characters: 0, O, 1, I, L
   const chars = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
-  const pick = () => chars[Math.floor(Math.random() * chars.length)];
-  const half = () => Array.from({ length: 4 }, pick).join("");
-  return `${half()}-${half()}`;
+  const bytes = randomBytes(8);
+  const pick = (b: number) => chars[b % chars.length]!;
+  const half = (start: number) => [0, 1, 2, 3].map(i => pick(bytes[start + i]!)).join("");
+  return `${half(0)}-${half(4)}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -95,15 +99,6 @@ deviceRouter.post("/oauth/device/code", (req: Request, res: Response) => {
 // GET /activate — consent page (browser-facing)
 // ---------------------------------------------------------------------------
 
-// Pending activate sessions: maps a pendingId (embedded in OIDC state cookie)
-// back to the device code being authorized.
-interface ActivatePending {
-  state: string;
-  deviceCode: string;
-}
-
-const activatePending = new Map<string, ActivatePending>();
-
 deviceRouter.get("/activate", async (req: Request, res: Response) => {
   const userCode = typeof req.query["user_code"] === "string" ? req.query["user_code"] : undefined;
 
@@ -131,8 +126,6 @@ deviceRouter.get("/activate", async (req: Request, res: Response) => {
   const { url, state, codeVerifier } = await buildAuthorizationUrl(callbackUrl, false);
 
   const pendingId = generateToken().slice(0, 32);
-  activatePending.set(pendingId, { state, deviceCode });
-  setTimeout(() => activatePending.delete(pendingId), 10 * 60 * 1000);
 
   res.cookie(`activate_pending_${pendingId}`, JSON.stringify({ state, codeVerifier, deviceCode }), {
     httpOnly: true,
@@ -202,8 +195,10 @@ deviceRouter.get("/activate/callback", async (req: Request, res: Response) => {
     return;
   }
 
-  // Show the consent form.
-  res.send(consentPage(stored.deviceCode, entry.scope, userId));
+  // Store the OIDC-verified userId server-side before showing the consent page.
+  entry.pendingUserId = userId;
+
+  res.send(consentPage(stored.deviceCode, entry.scope));
 });
 
 // ---------------------------------------------------------------------------
@@ -212,7 +207,7 @@ deviceRouter.get("/activate/callback", async (req: Request, res: Response) => {
 
 deviceRouter.post("/activate/confirm", async (req: Request, res: Response) => {
   const body = req.body as Record<string, string>;
-  const { device_code, user_id, host_name, action } = body;
+  const { device_code, host_name, action } = body;
 
   if (action === "deny") {
     const entry = deviceCodes.get(device_code);
@@ -227,19 +222,26 @@ deviceRouter.post("/activate/confirm", async (req: Request, res: Response) => {
     return;
   }
 
+  // Use the server-side verified userId set during OIDC — never trust the form body.
+  const verifiedUserId = entry.pendingUserId;
+  if (!verifiedUserId) {
+    res.status(400).send("Authentication session expired — please start again.");
+    return;
+  }
+
   if (entry.scope === "agent:register") {
     const resolvedHost = (host_name ?? "").trim();
     if (!resolvedHost) {
-      res.send(consentPage(device_code, entry.scope, user_id, "Host name is required."));
+      res.send(consentPage(device_code, entry.scope, "Host name is required."));
       return;
     }
     entry.hostName = resolvedHost;
   }
 
-  entry.userId = user_id;
+  entry.userId = verifiedUserId;
   entry.status = "approved";
 
-  log.info({ scope: entry.scope, userId: user_id }, "Device consent approved");
+  log.info({ scope: entry.scope, userId: verifiedUserId }, "Device consent approved");
   res.send(activateDonePage("Access granted. You can close this tab."));
 });
 
@@ -409,7 +411,7 @@ function activateEntryPage(error?: string): string {
 </html>`;
 }
 
-function consentPage(deviceCode: string, scope: DeviceScope, userId: string, error?: string): string {
+function consentPage(deviceCode: string, scope: DeviceScope, error?: string): string {
   const isAgent = scope === "agent:register";
   const title = isAgent ? "Register Agent" : "Authorize Management Access";
   const description = isAgent
@@ -426,7 +428,6 @@ function consentPage(deviceCode: string, scope: DeviceScope, userId: string, err
     ${error ? `<p class="error">${escHtml(error)}</p>` : ""}
     <form method="POST" action="/activate/confirm">
       <input type="hidden" name="device_code" value="${escHtml(deviceCode)}">
-      <input type="hidden" name="user_id" value="${escHtml(userId)}">
       ${isAgent ? `
       <label for="host_name">Host name for this machine:</label>
       <input id="host_name" name="host_name" type="text" placeholder="e.g. home-server" autocomplete="off" autofocus required>

@@ -93,6 +93,7 @@ function startHeartbeatLoop(): void {
         conn.ws.terminate();
         connections.delete(agentId);
         tokenIndex.delete(conn.tokenId);
+        rejectAgentRpcs(agentId);
         continue;
       }
 
@@ -278,14 +279,18 @@ async function handleConnection(ws: WebSocket, meta: {
 
     ws.on("close", () => {
       const reason = conn.disconnectReason ?? "clean";
-      connections.delete(agentId);
-      tokenIndex.delete(tokenId);
-      rejectAgentRpcs(agentId);
-      prisma.agent.update({
-        where: { id: agentId },
-        data: { lastHeartbeatAt: null, lastDisconnectReason: reason },
-      }).catch((err) => log.error({ err, agentId }, "Failed to update disconnect state"));
-      log.info({ agentId, host, userId, reason }, "Agent disconnected");
+      // Guard against the race where a reconnecting agent registers a new connection
+      // before this close event fires — avoid clobbering the live entry.
+      if (connections.get(agentId) === conn) {
+        connections.delete(agentId);
+        tokenIndex.delete(tokenId);
+        rejectAgentRpcs(agentId);
+        prisma.agent.update({
+          where: { id: agentId },
+          data: { lastHeartbeatAt: null, lastDisconnectReason: reason },
+        }).catch((err) => log.error({ err, agentId }, "Failed to update disconnect state"));
+        log.info({ agentId, host, userId, reason }, "Agent disconnected");
+      }
     });
 
     ws.on("error", (err) => {

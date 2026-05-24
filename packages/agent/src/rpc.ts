@@ -94,24 +94,47 @@ export async function handleRpc(
     return { request_id, error: { message: "Path rejected by agent" } };
   }
 
-  // For operations that take a relative_path, validate the resolved final path
-  // doesn't escape the root (traversal + symlink escape check).
-  const relativePath = typeof envelope["relative_path"] === "string"
-    ? envelope["relative_path"]
-    : undefined;
-
-  if (relativePath) {
-    const candidate = join(resolvedRoot, relativePath);
-    let resolved: string;
-    try {
-      // Use realpath on the parent for paths that may not exist yet (write/mkdir).
-      resolved = await safeRealpath(candidate, resolvedRoot);
-    } catch (err) {
-      log.warn({ tool, resolvedRoot, relativePath, err }, "Path rejected by agent — safeRealpath failed");
+  // For cross-label ops, validate dst_root against the allowlist and resolve it.
+  let resolvedDstRoot: string | undefined;
+  if (typeof envelope["dst_root"] === "string") {
+    const dstRoot = envelope["dst_root"];
+    const dstAllowed = paths.find((p) => p.path === dstRoot);
+    if (!dstAllowed) {
+      log.warn({ tool, dstRoot }, "dst_root rejected by agent — not in allowlist");
       return { request_id, error: { message: "Path rejected by agent" } };
     }
-    if (!resolved.startsWith(resolvedRoot + "/") && resolved !== resolvedRoot) {
-      log.warn({ tool, resolvedRoot, resolved }, "Path traversal attempt rejected");
+    try {
+      resolvedDstRoot = await fs.realpath(dstRoot);
+    } catch {
+      log.warn({ tool, dstRoot }, "dst_root rejected by agent — realpath failed");
+      return { request_id, error: { message: "Path rejected by agent" } };
+    }
+  }
+
+  // Validate all relative-path fields to prevent directory traversal and symlink escapes.
+  const pathsToValidate: Array<{ field: string; relPath: string; boundaryRoot: string }> = [];
+
+  if (typeof envelope["relative_path"] === "string") {
+    pathsToValidate.push({ field: "relative_path", relPath: envelope["relative_path"], boundaryRoot: resolvedRoot });
+  }
+  if (typeof envelope["src_relative_path"] === "string") {
+    pathsToValidate.push({ field: "src_relative_path", relPath: envelope["src_relative_path"], boundaryRoot: resolvedRoot });
+  }
+  if (typeof envelope["dst_relative_path"] === "string") {
+    pathsToValidate.push({ field: "dst_relative_path", relPath: envelope["dst_relative_path"], boundaryRoot: resolvedDstRoot ?? resolvedRoot });
+  }
+
+  for (const { field, relPath, boundaryRoot } of pathsToValidate) {
+    const candidate = join(boundaryRoot, relPath);
+    let resolved: string;
+    try {
+      resolved = await safeRealpath(candidate, boundaryRoot);
+    } catch (err) {
+      log.warn({ tool, boundaryRoot, relPath, field, err }, "Path rejected by agent — safeRealpath failed");
+      return { request_id, error: { message: "Path rejected by agent" } };
+    }
+    if (!resolved.startsWith(boundaryRoot + sep) && resolved !== boundaryRoot) {
+      log.warn({ tool, boundaryRoot, resolved, field }, "Path traversal attempt rejected");
       return { request_id, error: { message: "Path rejected by agent" } };
     }
   }

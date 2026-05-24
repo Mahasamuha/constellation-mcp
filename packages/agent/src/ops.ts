@@ -45,14 +45,15 @@ export async function listDirectory(
 
   const nodes: DirNode[] = [];
   let truncated = false;
+  let limitReached = false;
   let truncatedBy: "limit" | "max_depth" | undefined;
 
   async function walk(dir: string, depth: number): Promise<void> {
-    if (truncated) return;
+    if (limitReached) return;
     const entries = await fs.readdir(dir, { withFileTypes: true });
 
     for (const entry of entries) {
-      if (truncated) break;
+      if (limitReached) break;
 
       if (exclude.length > 0 && micromatch.isMatch(entry.name, exclude)) continue;
 
@@ -63,6 +64,7 @@ export async function listDirectory(
       nodes.push({ path: relPath, type });
 
       if (nodes.length >= limit) {
+        limitReached = true;
         truncated = true;
         truncatedBy = "limit";
         break;
@@ -71,8 +73,8 @@ export async function listDirectory(
       if (recursive && type === "directory") {
         if (maxDepth !== undefined && depth + 1 > maxDepth) {
           truncated = true;
-          truncatedBy = "max_depth";
-          break;
+          if (!truncatedBy) truncatedBy = "max_depth";
+          continue; // skip recursion into this dir but keep processing siblings
         }
         await walk(fullPath, depth + 1);
       }
@@ -311,6 +313,7 @@ export async function grepFiles(
 
   const matchCap = 50;
   const sizeCap = 100 * 1024;
+  const fileSizeCap = 10 * 1024 * 1024; // skip individual files larger than 10 MB
   let totalMatches = 0;
   let totalSize = 0;
   let truncated = false;
@@ -320,6 +323,8 @@ export async function grepFiles(
   async function searchInFile(filePath: string): Promise<void> {
     if (truncated) return;
     const relPath = relative(root, filePath);
+    const fstat = await fs.stat(filePath);
+    if (fstat.size > fileSizeCap) return;
     const content = await fs.readFile(filePath, "utf8");
     const lines = content.split("\n");
 
@@ -437,7 +442,7 @@ export async function editFile(root: string, params: EditFileParams): Promise<Ed
         { code: "EDIT_AMBIGUOUS", edit_index: i, match_count: count }
       );
     }
-    content = content.replace(edit.old_text, edit.new_text);
+    content = content.replace(edit.old_text, () => edit.new_text);
   }
 
   const diff = createPatch(params.relative_path, original, content);

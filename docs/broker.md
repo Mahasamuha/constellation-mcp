@@ -455,7 +455,13 @@ Requests time out after `RPC_TIMEOUT_MS` milliseconds. When an agent disconnects
 
 Path filters are broker-side deny rules applied before an RPC is dispatched. They let you block specific paths from being accessible, even if the agent would otherwise allow them.
 
-Filters are evaluated against the **resolved absolute path**: `absolute_root + "/" + relative_path` (or just `absolute_root` if no `relative_path` is given).
+Filters are evaluated against every path field in the tool call:
+
+- `relative_path` — used by most tools; falls back to `absolute_root` alone when absent.
+- `src_relative_path` — evaluated against the source label root for `copy` and `move`.
+- `dst_relative_path` — evaluated against the destination label root for `copy` and `move` (uses `dst_root` for cross-label operations).
+
+A call is blocked if **any** of its candidate paths matches a filter.
 
 ### Pattern types
 

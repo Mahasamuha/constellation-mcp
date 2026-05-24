@@ -295,6 +295,7 @@ async function handleAuthorizationCodeGrant(
   }
 
   if (entry.clientId !== client_id || entry.redirectUri !== redirect_uri) {
+    authCodes.delete(code);
     res.status(400).json({ error: "invalid_grant", error_description: "client_id or redirect_uri mismatch" });
     return;
   }

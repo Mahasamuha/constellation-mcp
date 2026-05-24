@@ -205,13 +205,23 @@ export async function routeToolCall(
     effectiveParams = { ...params, dst_root: dstResolved.absoluteRoot };
   }
 
-  // Apply broker-side deny filters against the resolved root path.
-  const relativePath = typeof effectiveParams["relative_path"] === "string" ? effectiveParams["relative_path"] : "";
-  const candidatePath = relativePath ? `${absoluteRoot}/${relativePath}` : absoluteRoot;
+  // Apply broker-side deny filters — check every path field supplied for this call.
+  const pathsToFilter: string[] = [];
+  const relPath = typeof effectiveParams["relative_path"] === "string" ? effectiveParams["relative_path"] : "";
+  pathsToFilter.push(relPath ? `${absoluteRoot}/${relPath}` : absoluteRoot);
+  const srcRelPath = typeof effectiveParams["src_relative_path"] === "string" ? effectiveParams["src_relative_path"] : "";
+  if (srcRelPath) pathsToFilter.push(`${absoluteRoot}/${srcRelPath}`);
+  const dstRelPath = typeof effectiveParams["dst_relative_path"] === "string" ? effectiveParams["dst_relative_path"] : "";
+  if (dstRelPath) {
+    const dstRoot = typeof effectiveParams["dst_root"] === "string" ? effectiveParams["dst_root"] : absoluteRoot;
+    pathsToFilter.push(`${dstRoot}/${dstRelPath}`);
+  }
 
-  if (await isPathFiltered(userId, agentId, candidatePath)) {
-    log.info({ userId, agentId, tool, candidatePath }, "Path blocked by broker filter");
-    return { code: "path_filtered", message: `Path blocked by broker filter: ${candidatePath}` };
+  for (const candidatePath of pathsToFilter) {
+    if (await isPathFiltered(userId, agentId, candidatePath)) {
+      log.info({ userId, agentId, tool, candidatePath }, "Path blocked by broker filter");
+      return { code: "path_filtered", message: `Path blocked by broker filter: ${candidatePath}` };
+    }
   }
 
   if (!getConnection(agentId)) {

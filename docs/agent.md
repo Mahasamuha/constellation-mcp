@@ -109,7 +109,9 @@ The broker resolves a label to an `absolute_root` and includes it in the RPC env
 
 **2. Traversal and symlink check**
 
-For operations that take a `relative_path`, the agent resolves the final path via `fs.realpath` (follows symlinks, canonicalises `..`). If the resolved path doesn't have the resolved root as a prefix, the request is rejected. This prevents both `../` traversal and symlink escapes that point outside the label root.
+For every path field in the RPC envelope — `relative_path`, `src_relative_path`, `dst_relative_path` — the agent resolves the final path via `fs.realpath` (follows symlinks, canonicalises `..`). If the resolved path doesn't have the resolved root as a prefix, the request is rejected. This prevents both `../` traversal and symlink escapes that point outside the label root.
+
+For cross-label copy/move operations the broker also supplies `dst_root` (the destination label's absolute path). The agent validates `dst_root` against the local `paths.yaml` allowlist and uses it as the boundary for the `dst_relative_path` check.
 
 For write targets that don't exist yet, the nearest existing parent is resolved and the suffix is reconstructed — so new files can be created within the root without bypassing the check.
 
@@ -123,7 +125,7 @@ Enforced by the agent, independent of broker settings:
 |---|---|
 | `list_directory` | Default 2,000 nodes per call; hard cap 10,000. Set `limit` to override (capped at 10,000). Returns `truncated: true` and `truncated_by` when hit. |
 | `search_files` | 200 results; returns `truncated: true` when hit. |
-| `grep_files` | 50 total matches or 100 KB of output, whichever comes first; returns `truncated: true`. |
+| `grep_files` | 50 total matches or 100 KB of output, whichever comes first; returns `truncated: true`. Individual files larger than 10 MB are skipped silently. |
 | `read_file` | `max_file_size_kb` from `agent.yaml` (default 100 KB). Applies to both full reads and range reads — each call returns at most that many KB. Use `start_line`/`end_line` to page through a large file across multiple calls. `total_lines` in the response tells you the file's full line count so you know when to stop. |
 | `copy` / `move` | Fails if the destination already exists. Cross-device `move` falls back to copy + delete automatically. |
 | `delete` (directory) | Without `recursive: true`, returns a summary (`size_bytes`, `file_count`) and `requires_confirmation: true` instead of deleting. Re-call with `recursive: true` to proceed. |
