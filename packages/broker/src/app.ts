@@ -1,5 +1,6 @@
 import express, { Express, Request, Response } from "express";
 import cookieParser from "cookie-parser";
+import cors from "cors";
 import { rateLimit } from "express-rate-limit";
 import { oauthRouter } from "./oauth.js";
 import { deviceRouter } from "./device.js";
@@ -24,6 +25,16 @@ if (preset === "railway") {
   }
   app.set("trust proxy", trustProxyRaw);
 }
+
+// MCP and OAuth endpoints must be reachable from browser-based MCP clients
+// (Claude.ai, Cursor web, etc.) which send CORS preflight requests.
+app.use(cors({
+  origin: true,
+  methods: ["GET", "POST", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", "Mcp-Session-Id"],
+  exposedHeaders: ["Mcp-Session-Id"],
+  credentials: true,
+}));
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
