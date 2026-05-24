@@ -49,6 +49,11 @@
   color: light-dark(#a06800, #f0c050);
 }
 
+.status-badge.error {
+  background: light-dark(#fdecea, #3a1a1a);
+  color: light-dark(#c0392b, #f08080);
+}
+
 .status-badge-dot {
   width: 7px;
   height: 7px;

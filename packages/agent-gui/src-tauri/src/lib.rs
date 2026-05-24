@@ -151,6 +151,7 @@ pub fn run() {
             service::rotate_token,
             service::deregister_agent,
             service::get_service_status,
+            service::get_agent_broker_info,
             service::start_agent,
             service::stop_agent,
             service::restart_agent,
@@ -176,7 +177,7 @@ pub fn run() {
                     let app = app.clone();
                     match event.id().as_ref() {
                         "auth" => open_window(&app, "auth", "Connect to Broker", 480.0, 280.0),
-                        "status" => open_window(&app, "status", "Constellation — Status", 480.0, 500.0),
+                        "status" => open_window(&app, "status", "Constellation — Status", 480.0, 560.0),
                         "paths" => open_window(&app, "paths", "Constellation — Paths", 720.0, 420.0),
                         "settings" => open_window(&app, "settings", "Constellation — Settings", 480.0, 380.0),
                         "quit" => app.exit(0),

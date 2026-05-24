@@ -5,34 +5,88 @@ import "./Status.css";
 interface AgentConfig {
   broker_url?: string;
   host?: string;
-  max_file_size_kb?: number;
+}
+
+interface AgentBrokerInfo {
+  connected: boolean;
+  last_heartbeat_at: string | null;
+  last_disconnect_reason: string | null;
+  registered_at: string | null;
+  token_last_used_at: string | null;
 }
 
 type ServiceState = "active" | "inactive" | "unknown" | "loading";
+type ConnectionState = "connected" | "connecting" | "disconnected" | "error";
+
+function getConnectionState(service: ServiceState, bi: AgentBrokerInfo | null): ConnectionState {
+  if (bi) {
+    if (bi.connected) return "connected";
+    const r = bi.last_disconnect_reason;
+    if (r === "error" || r === "timeout") return "error";
+    if (service === "active") return "connecting";
+    return "disconnected";
+  }
+  return service === "active" ? "connected" : "disconnected";
+}
+
+function timeAgo(iso: string, now: number): string {
+  const diff = Math.floor((now - new Date(iso).getTime()) / 1000);
+  if (diff < 60) return `${diff}s ago`;
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  return `${Math.floor(diff / 3600)}h ago`;
+}
+
+function fmtDate(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  return new Date(iso).toLocaleString();
+}
+
+const CONN_CLASS: Record<ConnectionState, string> = {
+  connected: "active",
+  connecting: "unknown",
+  disconnected: "inactive",
+  error: "error",
+};
+
+const CONN_LABEL: Record<ConnectionState, string> = {
+  connected: "Connected",
+  connecting: "Connecting…",
+  disconnected: "Disconnected",
+  error: "Disconnected (error)",
+};
 
 export default function Status() {
   const [serviceState, setServiceState] = useState<ServiceState>("loading");
   const [config, setConfig] = useState<AgentConfig>({});
+  const [brokerInfo, setBrokerInfo] = useState<AgentBrokerInfo | null>(null);
   const [logs, setLogs] = useState("");
   const [follow, setFollow] = useState(true);
   const [logsCopied, setLogsCopied] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
+  const [now, setNow] = useState(Date.now());
   const logsRef = useRef<HTMLDivElement>(null);
 
   async function refresh() {
-    const [cfg, state, logText] = await Promise.all([
+    const [cfg, state, logText, bi] = await Promise.all([
       invoke<AgentConfig>("get_config").catch(() => ({})),
       invoke<string>("get_service_status").catch(() => "unknown"),
       invoke<string>("get_logs", { lines: 50 }).catch(() => ""),
+      invoke<AgentBrokerInfo | null>("get_agent_broker_info").catch(() => null),
     ]);
     setConfig(cfg);
     setServiceState(state as ServiceState);
     setLogs(logText);
+    setBrokerInfo(bi);
   }
 
   useEffect(() => {
     refresh();
     const id = setInterval(refresh, 5000);
+    return () => clearInterval(id);
+  }, []);
+
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
   }, []);
 
@@ -59,25 +113,68 @@ export default function Status() {
     setTimeout(() => setLogsCopied(false), 2000);
   }
 
-  const badgeClass =
-    serviceState === "active" ? "active" :
-    serviceState === "inactive" ? "inactive" : "unknown";
+  const connState = getConnectionState(serviceState, brokerInfo);
+  const showDisconnect =
+    brokerInfo?.last_disconnect_reason &&
+    connState !== "connected" &&
+    connState !== "connecting";
 
-  const badgeLabel =
-    serviceState === "loading" ? "Checking…" :
-    serviceState === "active" ? "Running" :
-    serviceState === "inactive" ? "Stopped" : "Unknown";
+  const svcClass = serviceState === "active" ? "active"
+    : serviceState === "inactive" ? "inactive" : "unknown";
+  const svcLabel = serviceState === "loading" ? "Checking…"
+    : serviceState === "active" ? "Running"
+    : serviceState === "inactive" ? "Stopped" : "Unknown";
 
   return (
     <div className="status-container">
+
+      {/* Connection */}
+      <div>
+        <div className="status-section-label">Connection</div>
+        <div className="status-service-row">
+          <span className={`status-badge ${CONN_CLASS[connState]}`}>
+            <span className="status-badge-dot" />
+            {CONN_LABEL[connState]}
+          </span>
+        </div>
+        <div className="status-info-grid" style={{ marginTop: "0.5rem" }}>
+          <span className="status-info-key">Broker</span>
+          <span className="status-info-val">{config.broker_url ?? "—"}</span>
+          {brokerInfo?.last_heartbeat_at && (
+            <>
+              <span className="status-info-key">Last seen</span>
+              <span className="status-info-val">{timeAgo(brokerInfo.last_heartbeat_at, now)}</span>
+            </>
+          )}
+          {showDisconnect && (
+            <>
+              <span className="status-info-key">Disconnect</span>
+              <span className="status-info-val">{brokerInfo!.last_disconnect_reason}</span>
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* Agent */}
+      <div>
+        <div className="status-section-label">Agent</div>
+        <div className="status-info-grid">
+          <span className="status-info-key">Host</span>
+          <span className="status-info-val">{config.host ?? "—"}</span>
+          <span className="status-info-key">Registered</span>
+          <span className="status-info-val">{fmtDate(brokerInfo?.registered_at)}</span>
+          <span className="status-info-key">Token used</span>
+          <span className="status-info-val">{fmtDate(brokerInfo?.token_last_used_at)}</span>
+        </div>
+      </div>
 
       {/* Service */}
       <div>
         <div className="status-section-label">Service</div>
         <div className="status-service-row">
-          <span className={`status-badge ${badgeClass}`}>
+          <span className={`status-badge ${svcClass}`}>
             <span className="status-badge-dot" />
-            {badgeLabel}
+            {svcLabel}
           </span>
           <div className="status-actions">
             <button
@@ -96,19 +193,6 @@ export default function Status() {
               onClick={() => serviceAction("restart")}
             >Restart</button>
           </div>
-        </div>
-      </div>
-
-      {/* Agent info */}
-      <div>
-        <div className="status-section-label">Agent</div>
-        <div className="status-info-grid">
-          <span className="status-info-key">Host</span>
-          <span className="status-info-val">{config.host ?? "—"}</span>
-          <span className="status-info-key">Broker</span>
-          <span className="status-info-val">{config.broker_url ?? "—"}</span>
-          <span className="status-info-key">Max file</span>
-          <span className="status-info-val">{config.max_file_size_kb ?? 100} KB</span>
         </div>
       </div>
 
@@ -131,10 +215,7 @@ export default function Status() {
           </div>
         </div>
         <div className="status-logs-box" ref={logsRef}>
-          {logs
-            ? logs
-            : <span className="status-logs-empty">No log output.</span>
-          }
+          {logs ? logs : <span className="status-logs-empty">No log output.</span>}
         </div>
       </div>
 
