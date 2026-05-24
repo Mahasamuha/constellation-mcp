@@ -143,7 +143,7 @@ mcpRouter.all("/mcp", async (req: Request, res: Response) => {
 // MCP server factory
 // ---------------------------------------------------------------------------
 
-function buildMcpServer(): McpServer {
+export function buildMcpServer(): McpServer {
   const server = new McpServer({ name: "constellation", version: "0.1.0" });
 
   registerListHosts(server);
