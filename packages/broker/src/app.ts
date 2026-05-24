@@ -11,7 +11,7 @@ export const app: Express = express();
 
 const preset = process.env["TRUST_PROXY_PRESET"];
 if (preset === "railway") {
-  app.set("trust proxy", true);
+  app.set("trust proxy", 1);
 } else if (preset === "fly") {
   app.set("trust proxy", 1);
 } else if (preset === "cloudflare-tunnel") {
