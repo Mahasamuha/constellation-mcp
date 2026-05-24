@@ -16,15 +16,6 @@
       sed -i 's/\-\-hub-inner: #[0-9A-Fa-f]*/\-\-hub-inner: #E24B4A/' constellation-icon-512.svg
   -->
 
-  <style>
-    :root {
-      --hub-outer: #085041;
-      --hub-inner: #5DCAA5;
-    }
-    #hub-outer { fill: var(--hub-outer); }
-    #hub-inner { fill: var(--hub-inner); }
-  </style>
-
   <!-- Connecting lines -->
   <g stroke="#5DCAA5" stroke-width="6.5" stroke-linecap="round" fill="none" opacity="0.65">
     <!-- Perimeter ring -->
@@ -50,6 +41,6 @@
   <circle cx="187" cy="462" r="24" fill="#1D9E75"/>
 
   <!-- Hub — status indicator -->
-  <circle id="hub-outer" cx="282" cy="240" r="42"/>
-  <circle id="hub-inner" cx="282" cy="240" r="20"/>
+  <circle cx="282" cy="240" r="42" fill="#085041"/>
+  <circle cx="282" cy="240" r="20" fill="#5DCAA5"/>
 </svg>
