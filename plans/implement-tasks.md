@@ -6,7 +6,7 @@ The MCP spec version `2025-11-25` introduced an experimental **Tasks primitive**
 
 This is the closest thing in the current spec to the "streaming response" model discussed earlier. True partial-result streaming (like Ollama token streaming) is still on the 2026 spec roadmap but not yet available.
 
-**Why it matters here:** `grep_files`, `search_files`, and recursive `list_directory` can take multiple seconds on large trees. Today they block the MCP connection for up to `RPC_TIMEOUT_MS` (30s default). With Tasks, the client gets a handle immediately and polls — no long-held connection, no timeout cliff, and progress notifications give feedback while waiting.
+**Why it matters here:** `grep_files`, `find_files`, and recursive `list_directory` can take multiple seconds on large trees. Today they block the MCP connection for up to `RPC_TIMEOUT_MS` (30s default). With Tasks, the client gets a handle immediately and polls — no long-held connection, no timeout cliff, and progress notifications give feedback while waiting.
 
 ---
 
@@ -30,7 +30,7 @@ If only alpha versions exist, decide whether to pin to the latest alpha or wait.
 
 Add Tasks support to the broker for the three expensive tools:
 - `grep_files`
-- `search_files`
+- `find_files`
 - `list_directory` (recursive only — non-recursive is fast enough to stay synchronous)
 
 All other tools remain synchronous (direct response, no task handle).

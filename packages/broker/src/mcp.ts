@@ -42,7 +42,7 @@ const FileInfoOutput = {
   target: z.string().optional(),
 };
 
-const SearchFilesOutput = {
+const FindFilesOutput = {
   matches: z.array(z.string()),
   truncated: z.boolean(),
 };
@@ -150,7 +150,7 @@ function buildMcpServer(): McpServer {
   registerListLabels(server);
   registerListDirectory(server);
   registerFileInfo(server);
-  registerSearchFiles(server);
+  registerFindFiles(server);
   registerReadFile(server);
   registerGrepFiles(server);
   registerWriteFile(server);
@@ -315,14 +315,14 @@ function registerFileInfo(server: McpServer): void {
 }
 
 // ---------------------------------------------------------------------------
-// search_files
+// find_files
 // ---------------------------------------------------------------------------
 
-function registerSearchFiles(server: McpServer): void {
+function registerFindFiles(server: McpServer): void {
   server.registerTool(
-    "search_files",
+    "find_files",
     {
-      title: "Search Files",
+      title: "Find Files",
       description: "Find files by name using glob or regex. Use when you know part of a filename or extension. Matches filenames and paths only — does not read or search file contents. type:\"glob\" (default, micromatch syntax) or \"regex\". Capped at 200 results.",
       inputSchema: {
         label: z.string(),
@@ -331,10 +331,10 @@ function registerSearchFiles(server: McpServer): void {
         type: z.enum(["glob", "regex"]).optional(),
         host: z.string().optional(),
       },
-      outputSchema: SearchFilesOutput,
+      outputSchema: FindFilesOutput,
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    async ({ label, host, ...params }, extra) => dispatch(userId(extra), "search_files", label, params, host)
+    async ({ label, host, ...params }, extra) => dispatch(userId(extra), "find_files", label, params, host)
   );
 }
 

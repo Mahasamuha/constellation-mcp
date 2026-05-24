@@ -116,27 +116,26 @@ export async function fileInfo(root: string, relativePath: string): Promise<File
 }
 
 // ---------------------------------------------------------------------------
-// search_files
+// find_files
 // ---------------------------------------------------------------------------
 
-export interface SearchFilesParams {
+export interface FindFilesParams {
   pattern: string;
   relative_path?: string;
   type?: "glob" | "regex";
 }
 
-export interface SearchFilesResult {
+export interface FindFilesResult {
   matches: string[];
   truncated: boolean;
 }
 
-export async function searchFiles(
+export async function findFiles(
   root: string,
-  params: SearchFilesParams
-): Promise<SearchFilesResult> {
+  params: FindFilesParams
+): Promise<FindFilesResult> {
   const base = params.relative_path ? join(root, params.relative_path) : root;
-  const isRegex = params.type === "regex";
-  const re = isRegex ? new RegExp(params.pattern) : null;
+  const re = params.type === "regex" ? new RegExp(params.pattern) : null;
   const cap = 200;
   const matches: string[] = [];
   let truncated = false;
@@ -186,8 +185,8 @@ export async function readFile(
   root: string,
   params: ReadFileParams
 ): Promise<ReadFileResult> {
-  const full = join(root, params.relative_path);
-  const stat = await fs.stat(full);
+  const fullPath = join(root, params.relative_path);
+  const stat = await fs.stat(fullPath);
   const capBytes = params.max_file_size_kb * 1024;
   const isRangeRead = params.start_line !== undefined || params.end_line !== undefined;
 
@@ -201,10 +200,10 @@ export async function readFile(
   // For range reads on files larger than the cap, stream line-by-line to avoid
   // loading the entire file into memory.
   if (isRangeRead && stat.size > capBytes) {
-    return readRangeStreamed(full, params, capBytes);
+    return readRangeStreamed(fullPath, params, capBytes);
   }
 
-  const raw = await fs.readFile(full, "utf8");
+  const raw = await fs.readFile(fullPath, "utf8");
   const lines = raw.split("\n");
   const totalLines = lines.length;
 
@@ -235,44 +234,30 @@ async function readRangeStreamed(
   const startLine = Math.max(0, (params.start_line ?? 1) - 1); // convert to 0-indexed
   const endLine = params.end_line; // 1-indexed inclusive; undefined = EOF
 
-  return new Promise((resolve, reject) => {
-    const rl = createInterface({ input: createReadStream(filePath), crlfDelay: Infinity });
-    const rangeLines: string[] = [];
-    let lineNum = 0;
-    let totalLines = 0;
-    let byteCount = 0;
-    let overCap = false;
+  const rl = createInterface({ input: createReadStream(filePath), crlfDelay: Infinity });
+  const rangeLines: string[] = [];
+  let lineNum = 0;
+  let totalLines = 0;
+  let byteCount = 0;
 
-    rl.on("line", (line) => {
-      const current = lineNum++;
-      totalLines++;
+  for await (const line of rl) {
+    const current = lineNum++;
+    totalLines++;
 
-      if (overCap) return;
+    const inRange = current >= startLine && (endLine === undefined || current < endLine);
+    if (!inRange) continue;
 
-      const inRange = current >= startLine && (endLine === undefined || current < endLine);
-      if (!inRange) return;
+    byteCount += Buffer.byteLength(line, "utf8") + 1; // +1 for newline
+    if (byteCount > capBytes) {
+      throw Object.assign(
+        new Error(`Requested range exceeds ${Math.round(capBytes / 1024)}KB — reduce the line range`),
+        { code: "READ_TOO_LARGE", read_size_kb: Math.round(byteCount / 1024), max_file_size_kb: Math.round(capBytes / 1024) }
+      );
+    }
+    rangeLines.push(line);
+  }
 
-      byteCount += Buffer.byteLength(line, "utf8") + 1; // +1 for newline
-      if (byteCount > capBytes) {
-        overCap = true;
-        return;
-      }
-      rangeLines.push(line);
-    });
-
-    rl.on("close", () => {
-      if (overCap) {
-        reject(Object.assign(
-          new Error(`Requested range exceeds ${Math.round(capBytes / 1024)}KB — reduce the line range`),
-          { code: "READ_TOO_LARGE", read_size_kb: Math.round(byteCount / 1024), max_file_size_kb: Math.round(capBytes / 1024) }
-        ));
-        return;
-      }
-      resolve({ content: rangeLines.join("\n"), total_lines: totalLines });
-    });
-
-    rl.on("error", reject);
-  });
+  return { content: rangeLines.join("\n"), total_lines: totalLines };
 }
 
 // ---------------------------------------------------------------------------

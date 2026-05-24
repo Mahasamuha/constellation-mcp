@@ -240,7 +240,7 @@ Labels are the primary routing key (unique per user across all hosts). Host is a
 | `list_labels` | `host?` | Returns labels, optionally filtered by host |
 | `list_directory` | `label, relative_path?, recursive?, max_depth?, limit?, exclude?` | Lists label root or subdirectory. `recursive: true` traverses subdirectories. `max_depth` caps traversal depth (default: unlimited when `recursive` is true). `limit` caps total nodes returned (default: 2,000; set to `0` for no limit). `truncated: true` in the response can be triggered by either `limit` or `max_depth` — the response includes `truncated_by: "limit" | "max_depth"` so the caller knows which bound was hit and can adjust accordingly. Callers that need a complete tree should re-call with `limit: 0` and no `max_depth`. Agent enforces a hard maximum of 10,000 nodes regardless of `limit` to prevent runaway traversals. `exclude` is an optional array of glob patterns applied to names (e.g. `["node_modules", ".git", "dist"]`). Non-recursive behavior is unchanged. |
 | `file_info` | `label, relative_path` | Returns size, mtime, and type (file/directory/symlink); use before `read_file` to avoid a round-trip size error |
-| `search_files` | `label, pattern, relative_path?, type?` | Filename search across a directory tree; `type`: `"glob"` (default, micromatch syntax) or `"regex"` (JavaScript-compatible); rooted at label root or optional subdirectory; returns matching paths; capped at 200 results — if truncated, response includes `truncated: true` and suggests narrowing the pattern or scoping to a subdirectory |
+| `find_files` | `label, pattern, relative_path?, type?` | Filename search across a directory tree; `type`: `"glob"` (default, micromatch syntax) or `"regex"` (JavaScript-compatible); rooted at label root or optional subdirectory; returns matching paths; capped at 200 results — if truncated, response includes `truncated: true` and suggests narrowing the pattern or scoping to a subdirectory |
 | `read_file` | `label, relative_path, start_line?, end_line?` | Returns full file or specified line range; includes `total_lines` in response; returns size error if full read exceeds cap — use with range params to page |
 | `grep_files` | `label, pattern, relative_path?, file_glob?, type?` | Content search; `type`: `"literal"` (default) or `"regex"` (JavaScript-compatible); `relative_path` can be a file (single-file search) or directory (recursive); optional `file_glob` scopes recursive search (e.g. `*.ts`); returns matches with line numbers, always grouped by file regardless of scope; capped at 50 matches and 100KB total output — if truncated, response includes `truncated: true` and suggests a more specific pattern, `file_glob`, or subdirectory scope |
 | `write_file` | `label, relative_path, content, mode?` | `mode`: `"overwrite"` (default) or `"append"` |
@@ -258,7 +258,7 @@ MCP tool annotations signal behavioral hints to clients that support them. Set t
 
 | Tool(s) | Annotations |
 |---|---|
-| `list_hosts`, `list_labels`, `list_directory`, `file_info`, `search_files`, `grep_files`, `read_file` | `readOnlyHint: true` |
+| `list_hosts`, `list_labels`, `list_directory`, `file_info`, `find_files`, `grep_files`, `read_file` | `readOnlyHint: true` |
 | `write_file`, `create_directory` | `idempotentHint: true` |
 | `write_file`, `edit_file`, `delete` | `destructiveHint: true` |
 | `edit_file`, `delete` | `idempotentHint: false` |
@@ -272,7 +272,7 @@ Annotations are advisory — clients that don't support them fall back to the de
 - "On my home server" → `list_labels(host="home-server")` to orient, then label-based ops
 - "What hosts do I have?" → `list_hosts()`
 - Large file encountered → `file_info` to check size, then `read_file` with range params or `grep_files`
-- "Find all .env files" → `search_files(label="projects", pattern="**/.env*")`
+- "Find all .env files" → `find_files(label="projects", pattern="**/.env*")`
 - "Where is the auth logic?" → `grep_files(label="projects", pattern="authenticate", file_glob="*.ts")`
 - "Search just this file" → `grep_files(label="projects", relative_path="src/auth.ts", pattern="authenticate")`
 - "Fix this function" → `read_file` to get context, then `edit_file` with `old_text` set to the current function body and `new_text` set to the replacement; use `dry_run: true` first if the change is large
@@ -298,7 +298,7 @@ Annotations are advisory — clients that don't support them fall back to the de
 | Timeout | "No response from 'home-server' within 30s" |
 | edit_file: old_text not found | Structured error: `{ edit_index, match_count: 0, message: "No match found for edit 2 — fetch current file content and retry" }` |
 | edit_file: old_text matches multiple times | Structured error: `{ edit_index, match_count: N, message: "N matches found for edit 2 — expand old_text to include more surrounding context" }` |
-| list_directory: hard node cap reached | Structured error with count reached; instructs caller to scope to a subdirectory or use search_files instead |
+| list_directory: hard node cap reached | Structured error with count reached; instructs caller to scope to a subdirectory or use find_files instead |
 
 ---
 
@@ -429,7 +429,7 @@ Pure TypeScript with no native addons — the npm package is cross-platform with
   | Surface | Default limit | Parameter |
   |---|---|---|
   | MCP tool calls | 60 requests/minute per user | `RATE_LIMIT_TOOL_CALLS_PER_MIN` |
-  | Expensive tools (`grep_files`, `search_files`, `list_directory` with `recursive: true`) | 20 requests/minute per user | `RATE_LIMIT_EXPENSIVE_TOOLS_PER_MIN` |
+  | Expensive tools (`grep_files`, `find_files`, `list_directory` with `recursive: true`) | 20 requests/minute per user | `RATE_LIMIT_EXPENSIVE_TOOLS_PER_MIN` |
   | OAuth endpoints (`/oauth/token`, `/oauth/register`) | 10 requests/15 minutes per IP | `RATE_LIMIT_OAUTH_PER_15MIN` |
   | Agent WebSocket reconnections | 10 reconnects/minute per agent token | `RATE_LIMIT_WS_RECONNECT_PER_MIN` |
 
@@ -451,7 +451,7 @@ Pure TypeScript with no native addons — the npm package is cross-platform with
 - **Horizontal scaling**: the in-memory WebSocket map means the broker can't scale beyond one instance without a shared connection layer (e.g., Redis pub/sub). Single instance is correct for v1; isolate the connection map so it's replaceable later.
 - **Dynamic client registration**: Support DCR as the primary path — most MCP clients (Claude, Cursor, GitHub Copilot) attempt it automatically. Also support pre-registered static clients for operators who want to restrict client access. Known callback URLs are documented in the OAuth Layer section.
 - **Large file operations**: `read_file` enforces a configurable size cap (default 100KB). When exceeded, returns a structured error with file size and instruction to use `read_file` with range params or `grep_files`. Cap is defined in agent local config. `edit_file` avoids the problem for edits — only the matched `old_text` and replacement `new_text` are transmitted, not the full file.
-- **Search result limits**: `search_files` caps at 200 paths; `grep_files` caps at 50 matches and 100KB total output; `list_directory` (recursive) defaults to 2,000 nodes with a hard agent-side ceiling of 10,000. All return `truncated: true` with a refinement hint when the cap is hit. Caps are enforced at the agent.
+- **Search result limits**: `find_files` caps at 200 paths; `grep_files` caps at 50 matches and 100KB total output; `list_directory` (recursive) defaults to 2,000 nodes with a hard agent-side ceiling of 10,000. All return `truncated: true` with a refinement hint when the cap is hit. Caps are enforced at the agent.
 - **edit_file exact matching**: each `old_text` must match exactly once. Zero matches → error. Two or more matches → error. Both cases abort before any write; the error includes `edit_index` and `match_count` so the caller knows which edit failed and why. For the multiple-match case, the fix is to expand `old_text` to include enough surrounding context (additional lines above or below) to make it unique. The model should fetch context via `read_file` if unsure of the exact current content before constructing edits. Validation runs across all edits before any write, so a failure on edit N never leaves the file partially modified.
 - **Agent config integrity**: if the local config file is writable by other processes, the path allowlist can be tampered with outside the agent's control. Document `chmod 600` as a hard requirement.
 

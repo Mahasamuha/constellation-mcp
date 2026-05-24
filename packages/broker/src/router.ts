@@ -29,7 +29,7 @@ export interface RouterError {
 const toolCallTimestamps = new Map<string, number[]>();
 const expensiveToolTimestamps = new Map<string, number[]>();
 
-const EXPENSIVE_TOOLS = new Set(["grep_files", "search_files"]);
+const EXPENSIVE_TOOLS = new Set(["grep_files", "find_files"]);
 
 function isExpensive(tool: string, params: Record<string, unknown>): boolean {
   if (EXPENSIVE_TOOLS.has(tool)) return true;

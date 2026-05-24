@@ -5,7 +5,7 @@ import type { AgentConfig, PathEntry } from "./config.js";
 import {
   listDirectory,
   fileInfo,
-  searchFiles,
+  findFiles,
   readFile,
   grepFiles,
   writeFile,
@@ -177,8 +177,8 @@ async function dispatch(
     case "file_info":
       return fileInfo(root, req(env, "relative_path"));
 
-    case "search_files":
-      return searchFiles(root, {
+    case "find_files":
+      return findFiles(root, {
         pattern: req(env, "pattern"),
         relative_path: s(env, "relative_path"),
         type: (env["type"] as "glob" | "regex" | undefined),

@@ -224,7 +224,7 @@ Once connected, the model can use these tools:
 | `file_info` | Check file size and type before reading |
 | `read_file` | Read a file, with optional line range |
 | `grep_files` | Search file contents by literal string or regex |
-| `search_files` | Find files by name pattern |
+| `find_files` | Find files by name pattern |
 | `write_file` | Write or append to a file |
 | `edit_file` | Apply exact-match text substitutions |
 | `copy` | Copy a file or directory |
@@ -235,7 +235,7 @@ Once connected, the model can use these tools:
 Example prompts:
 - *"What machines do I have connected?"* → `list_hosts`
 - *"Show me the structure of my projects directory"* → `list_directory` with `recursive: true`
-- *"Find all .env files in projects"* → `search_files`
+- *"Find all .env files in projects"* → `find_files`
 - *"Fix the bug in src/auth.ts"* → `read_file`, then `edit_file`
 
 ---

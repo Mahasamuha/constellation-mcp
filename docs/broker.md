@@ -60,7 +60,7 @@ All values are read from `packages/broker/.env`. This file is shared by both the
 | `HEARTBEAT_INTERVAL_SECONDS` | `60` | How often the broker pings each connected agent |
 | `HEARTBEAT_MAX_MISSED` | `3` | Consecutive missed pongs before the agent connection is terminated |
 | `RATE_LIMIT_TOOL_CALLS_PER_MIN` | `60` | Standard tool call limit per user per 60-second sliding window |
-| `RATE_LIMIT_EXPENSIVE_TOOLS_PER_MIN` | `20` | Limit for expensive tools (`grep_files`, `search_files`, recursive `list_directory`) per user per 60-second window |
+| `RATE_LIMIT_EXPENSIVE_TOOLS_PER_MIN` | `20` | Limit for expensive tools (`grep_files`, `find_files`, recursive `list_directory`) per user per 60-second window |
 | `RATE_LIMIT_OAUTH_PER_15MIN` | `10` | Requests to `/oauth/token` and `/oauth/register` per IP per 15 minutes |
 | `RATE_LIMIT_WS_RECONNECT_PER_MIN` | `10` | WebSocket reconnect attempts per agent token per 60-second window |
 
