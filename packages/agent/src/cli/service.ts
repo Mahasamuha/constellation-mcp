@@ -27,14 +27,21 @@ export function install(executablePath: string): void {
   }
 }
 
+// When compiled with @yao-pkg/pkg, process.execPath is the self-contained
+// binary and should be invoked directly.  When running as a plain Node.js
+// script, prepend the node executable.
+function execPrefix(): string[] {
+  if ((process as any).pkg !== undefined) {
+    return [process.execPath];
+  }
+  return [process.execPath, process.argv[1]!];
+}
+
 function installSystemd(_exec: string): void {
   const unitDir = join(homedir(), ".config", "systemd", "user");
   mkdirSync(unitDir, { recursive: true });
 
-  // Use absolute paths for node and the CLI script so the unit never depends
-  // on PATH being set in the systemd environment.
-  const nodePath = process.execPath;
-  const scriptPath = process.argv[1]!;
+  const execLine = execPrefix().join(" ");
 
   const unitPath = join(unitDir, `${SERVICE_NAME}.service`);
   const unit = `[Unit]
@@ -43,7 +50,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=${nodePath} ${scriptPath} agent start --foreground
+ExecStart=${execLine} agent start --foreground
 Restart=on-failure
 RestartSec=5
 
@@ -60,11 +67,12 @@ function installLaunchd(_exec: string): void {
   const plistDir = join(homedir(), "Library", "LaunchAgents");
   mkdirSync(plistDir, { recursive: true });
 
-  const nodePath = process.execPath;
-  const scriptPath = process.argv[1]!;
-
   const label = `com.constellation.agent`;
   const plistPath = join(plistDir, `${label}.plist`);
+  const programArgs = execPrefix()
+    .concat(["agent", "start", "--foreground"])
+    .map((a) => `    <string>${a}</string>`)
+    .join("\n");
   const plist = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -73,11 +81,7 @@ function installLaunchd(_exec: string): void {
   <string>${label}</string>
   <key>ProgramArguments</key>
   <array>
-    <string>${nodePath}</string>
-    <string>${scriptPath}</string>
-    <string>agent</string>
-    <string>start</string>
-    <string>--foreground</string>
+${programArgs}
   </array>
   <key>KeepAlive</key>
   <true/>
@@ -96,8 +100,9 @@ function installLaunchd(_exec: string): void {
 }
 
 function installTaskScheduler(_exec: string): void {
-  const nodePath = process.execPath;
-  const scriptPath = process.argv[1]!;
+  const prefix = execPrefix();
+  const command = prefix[0]!;
+  const args = prefix.slice(1).concat(["agent", "start", "--foreground"]).join(" ");
   const xml = `<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <Triggers>
@@ -105,8 +110,8 @@ function installTaskScheduler(_exec: string): void {
   </Triggers>
   <Actions Context="Author">
     <Exec>
-      <Command>${nodePath}</Command>
-      <Arguments>${scriptPath} agent start --foreground</Arguments>
+      <Command>${command}</Command>
+      <Arguments>${args}</Arguments>
     </Exec>
   </Actions>
   <Settings>
