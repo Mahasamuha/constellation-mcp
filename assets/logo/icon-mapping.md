@@ -15,7 +15,7 @@ using the same constellation graph geometry — no change needed for those.
 
 | Step | Action |
 |------|--------|
-| 1 | Add `<rect width="512" height="512" rx="114" fill="#04342C"/>` as the first child of `constellation-icon-512.svg` (commented out in SVG, macOS-style background) |
+| 1 | Add `<rect width="512" height="512" rx="114" fill="#888780"/>` as the first child of `constellation-icon-512.svg` (macOS-style rounded-square background) |
 | 2 | Rasterize to `icon-source-1024.png` at 1024×1024 via `rsvg-convert -w 1024 -h 1024 constellation-icon-512.svg -o icon-source-1024.png` |
 | 3 | Run `npx tauri icon icon-source-1024.png` from the repo root — Tauri auto-generates all targets below |
 | 4 | Delete the temp `icon-source-1024.png` |
