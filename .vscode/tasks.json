@@ -1,0 +1,22 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "agent: build (watch)",
+      "type": "shell",
+      "command": "npm run dev",
+      "options": { "cwd": "${workspaceFolder}/packages/agent" },
+      "isBackground": true,
+      "problemMatcher": {
+        "owner": "tsup",
+        "pattern": { "regexp": "^(ERROR.*)$", "message": 1 },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "^CLI Building entry",
+          "endsPattern": "^CLI Build success"
+        }
+      },
+      "group": "build"
+    }
+  ]
+}

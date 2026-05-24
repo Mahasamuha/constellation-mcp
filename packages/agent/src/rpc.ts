@@ -90,6 +90,7 @@ export async function handleRpc(
   try {
     resolvedRoot = await fs.realpath(absolute_root);
   } catch {
+    log.warn({ tool, absolute_root }, "Path rejected by agent — realpath failed");
     return { request_id, error: { message: "Path rejected by agent" } };
   }
 
@@ -106,6 +107,7 @@ export async function handleRpc(
       // Use realpath on the parent for paths that may not exist yet (write/mkdir).
       resolved = await safeRealpath(candidate, resolvedRoot);
     } catch {
+      log.warn({ tool, resolvedRoot, relativePath }, "Path rejected by agent — safeRealpath failed");
       return { request_id, error: { message: "Path rejected by agent" } };
     }
     if (!resolved.startsWith(resolvedRoot + "/") && resolved !== resolvedRoot) {
