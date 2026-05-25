@@ -57,6 +57,10 @@ jobs:
       - name: Install Node dependencies
         run: npm ci
 
+      - name: Install agent-gui optional dependencies
+        run: npm install
+        working-directory: packages/agent-gui
+
       - name: Build
         run: npm run tauri build
         working-directory: packages/agent-gui
