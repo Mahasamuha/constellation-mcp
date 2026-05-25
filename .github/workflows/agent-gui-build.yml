@@ -57,9 +57,11 @@ jobs:
       - name: Install Node dependencies
         run: npm ci
 
-      - name: Install agent-gui optional dependencies
-        run: npm install
-        working-directory: packages/agent-gui
+      - name: Reinstall Tauri CLI with platform bindings
+        if: matrix.os != 'ubuntu-22.04'
+        run: |
+          rm -rf node_modules/@tauri-apps/cli node_modules/@tauri-apps/cli-*
+          npm install --no-save @tauri-apps/cli
 
       - name: Build
         run: npm run tauri build
