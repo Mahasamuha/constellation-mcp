@@ -200,6 +200,10 @@ apiRouter.post("/api/filters", async (req: Request, res: Response) => {
     res.status(400).json({ error: "invalid_request", error_description: "pattern is required" });
     return;
   }
+  if (pattern.length > 1000) {
+    res.status(400).json({ error: "invalid_request", error_description: "pattern must be 1000 characters or fewer" });
+    return;
+  }
 
   const patternType = body["pattern_type"];
   if (patternType !== "glob" && patternType !== "regex") {
@@ -351,18 +355,29 @@ function requireLocalMode(res: Response): boolean {
 apiRouter.get("/api/users", async (req: Request, res: Response) => {
   if (!requireLocalMode(res)) return;
 
-  const users = await prisma.localUser.findMany({
-    orderBy: { createdAt: "asc" },
-    select: { id: true, username: true, isActive: true, createdAt: true, lastLoginAt: true },
-  });
+  const { limit, offset } = parsePagination(req);
+  const [users, total] = await Promise.all([
+    prisma.localUser.findMany({
+      orderBy: { createdAt: "asc" },
+      select: { id: true, username: true, isActive: true, createdAt: true, lastLoginAt: true },
+      take: limit,
+      skip: offset,
+    }),
+    prisma.localUser.count(),
+  ]);
 
-  res.json(users.map((u) => ({
-    id: u.id,
-    username: u.username,
-    is_active: u.isActive,
-    created_at: u.createdAt.toISOString(),
-    last_login_at: u.lastLoginAt?.toISOString() ?? null,
-  })));
+  res.json({
+    data: users.map((u) => ({
+      id: u.id,
+      username: u.username,
+      is_active: u.isActive,
+      created_at: u.createdAt.toISOString(),
+      last_login_at: u.lastLoginAt?.toISOString() ?? null,
+    })),
+    total,
+    limit,
+    offset,
+  });
 });
 
 apiRouter.post("/api/users", async (req: Request, res: Response) => {

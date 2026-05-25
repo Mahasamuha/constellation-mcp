@@ -228,7 +228,10 @@ async function handleConnection(ws: WebSocket, meta: {
 
     // Complete a pending token rotation: atomically update agentTokenId and revoke the old token,
     // then cancel the expiry timer.
-    if (pendingRotation) {
+    // Guard against concurrent reconnects with the same new token: only the first handleConnection
+    // to run (before any await) will find the entry still in the map and proceed; the second
+    // treats the connection as a normal reconnect since rotation is already done.
+    if (pendingRotation && pendingRotations.has(tokenId)) {
       clearTimeout(pendingRotation.timer);
       pendingRotations.delete(tokenId);
       try {
@@ -303,9 +306,13 @@ async function handleConnection(ws: WebSocket, meta: {
         log.warn({ agentId }, "Received non-JSON message from agent");
         return;
       }
-      handleAgentMessage(conn, msg).catch((err) =>
-        log.error({ err, agentId }, "Error handling agent message")
-      );
+      handleAgentMessage(conn, msg).catch((err) => {
+        log.error({ err, agentId }, "Error handling agent message");
+        // Best-effort: send a typed error back so the agent doesn't wait indefinitely.
+        const type = typeof msg["type"] === "string" ? msg["type"] : undefined;
+        if (type === "config_update") send(conn.ws, { type: "config_update_error", error: "Internal error" });
+        else if (type === "update_host") send(conn.ws, { type: "update_host_error", error: "Internal error" });
+      });
     });
 
     ws.on("close", () => {
