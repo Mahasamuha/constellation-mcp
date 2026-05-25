@@ -5,6 +5,7 @@ import { prisma } from "./db.js";
 import { buildAuthorizationUrl, exchangeCodeAndUpsertUser } from "./oidc.js";
 import { generateToken, hashToken, createLogger } from "@constellation/shared";
 import { checkBruteForce, recordFailure, validateLocalUser } from "./local-auth.js";
+import { verifyCsrfToken } from "./middleware.js";
 
 const log = createLogger("device");
 
@@ -257,8 +258,7 @@ deviceRouter.post("/activate/confirm", async (req: Request, res: Response) => {
   const body = req.body as Record<string, string>;
   const { device_code, host_name, action } = body;
 
-  const csrfCookie = (req.cookies as Record<string, string>)["csrf_activate"];
-  if (!csrfCookie || csrfCookie !== body["csrf_token"]) {
+  if (!verifyCsrfToken(req, "csrf_activate")) {
     res.status(403).send("Invalid or missing CSRF token. Please go back and try again.");
     return;
   }

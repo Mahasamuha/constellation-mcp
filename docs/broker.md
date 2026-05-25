@@ -62,7 +62,8 @@ All values are read from `packages/broker/.env`. This file is shared by both the
 | `ALLOWED_ORIGINS` | — | Comma-separated list of origins permitted to make cross-origin requests (e.g. `https://claude.ai,https://cursor.com`). Required for browser-based MCP clients. Defaults to no cross-origin access if unset. |
 | `RATE_LIMIT_TOOL_CALLS_PER_MIN` | `60` | Standard tool call limit per user per 60-second sliding window |
 | `RATE_LIMIT_EXPENSIVE_TOOLS_PER_MIN` | `20` | Limit for expensive tools (`grep_files`, `find_files`, recursive `list_directory`) per user per 60-second window |
-| `RATE_LIMIT_OAUTH_PER_15MIN` | `10` | Requests to `/oauth/token`, `/oauth/register`, `/setup`, and `/auth/login` per IP per 15 minutes |
+| `LOG_LEVEL` | `warn` | Pino log level (`trace`, `debug`, `info`, `warn`, `error`, `fatal`). Set to `info` for verbose output during development. |
+| `RATE_LIMIT_OAUTH_PER_15MIN` | `10` | Requests to `/oauth/token`, `/oauth/register`, `/oauth/device/code`, `/setup`, and `/auth/login` per IP per 15 minutes |
 | `RATE_LIMIT_DEVICE_POLL_PER_15MIN` | `200` | Requests to `/oauth/token` with `grant_type=device_code` per IP per 15 minutes. Device flow clients poll every 5 seconds for up to 15 minutes (≈180 requests); this limit must exceed that. |
 | `RATE_LIMIT_WS_RECONNECT_PER_MIN` | `10` | WebSocket reconnect attempts per agent token per 60-second window |
 

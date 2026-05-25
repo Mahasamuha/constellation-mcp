@@ -1,6 +1,18 @@
 import { Request, Response, NextFunction } from "express";
 import { prisma } from "./db.js";
-import { hashToken } from "@constellation/shared";
+import { hashToken, safeEqual } from "@constellation/shared";
+
+/**
+ * Validates the CSRF token in the request body against the named cookie.
+ * Returns true if valid, false if missing or mismatched.
+ * Caller is responsible for clearing the cookie on success.
+ */
+export function verifyCsrfToken(req: Request, cookieName: string): boolean {
+  const cookie = (req.cookies as Record<string, string>)[cookieName];
+  const body = (req.body as Record<string, string>)["csrf_token"] ?? "";
+  if (!cookie) return false;
+  return safeEqual(cookie, body);
+}
 
 export interface AuthenticatedRequest extends Request {
   userId: string;

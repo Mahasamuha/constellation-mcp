@@ -258,13 +258,13 @@ export async function routeToolCall(
 
     return { result: response.result, error: response.error };
   } catch (err) {
-    const isTimeout = err instanceof Error && err.message === "timeout";
-    if (isTimeout) {
+    if (err instanceof Error && err.message === "agent_disconnected") {
+      log.warn({ userId, agentId, tool, requestId }, "RPC failed — agent disconnected");
+      return { code: "agent_offline", message: `'${agentHost}' disconnected before responding` };
+    }
+    if (err instanceof Error && err.message === "timeout") {
       log.warn({ userId, agentId, tool, requestId }, "RPC timed out");
-      return {
-        code: "timeout",
-        message: `No response from '${agentHost}' within ${timeoutMs / 1000}s`,
-      };
+      return { code: "timeout", message: `No response from '${agentHost}' within ${timeoutMs / 1000}s` };
     }
     throw err;
   }

@@ -57,6 +57,8 @@ max_file_size_kb: 100
 | `host` | Display name for this machine, set during `agent init` |
 | `max_file_size_kb` | Maximum file size for a full `read_file` call (default: `100`). Range reads (`start_line`/`end_line`) are not subject to this cap. |
 
+The agent daemon also respects the `LOG_LEVEL` environment variable (`trace`, `debug`, `info`, `warn`, `error`, `fatal`; default `warn`). Set it in the service environment if you need verbose output.
+
 ### `paths.yaml`
 
 Edited manually or via `constellation agent paths add/remove`. Changes take effect on the next `constellation agent sync` or agent restart.

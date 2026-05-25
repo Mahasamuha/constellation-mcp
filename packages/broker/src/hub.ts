@@ -540,7 +540,7 @@ export function rejectAgentRpcs(agentId: string): void {
     if (pending.agentId === agentId) {
       clearTimeout(pending.timer);
       pendingRpcs.delete(requestId);
-      pending.reject(new Error("timeout"));
+      pending.reject(new Error("agent_disconnected"));
     }
   }
 }

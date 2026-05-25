@@ -4,7 +4,7 @@ import { randomBytes, createHash } from "node:crypto";
 import { prisma } from "./db.js";
 import { buildAuthorizationUrl, exchangeCodeAndUpsertUser } from "./oidc.js";
 import { handleDeviceCodeGrant } from "./device.js";
-import { generateToken, hashToken, createLogger } from "@constellation/shared";
+import { generateToken, hashToken, safeEqual, createLogger } from "@constellation/shared";
 import { checkBruteForce, recordFailure, validateLocalUser } from "./local-auth.js";
 
 const log = createLogger("oauth");
@@ -443,7 +443,7 @@ async function handleAuthorizationCodeGrant(
 
   if (oauthClient.clientSecretHash !== null) {
     const { client_secret } = body;
-    if (!client_secret || hashToken(client_secret) !== oauthClient.clientSecretHash) {
+    if (!client_secret || !safeEqual(hashToken(client_secret), oauthClient.clientSecretHash)) {
       res.status(401).json({ error: "invalid_client", error_description: "client_secret required for confidential clients" });
       return;
     }

@@ -2,6 +2,7 @@ import { Router, Request, Response, NextFunction, IRouter } from "express";
 import escHtml from "escape-html";
 import { prisma } from "./db.js";
 import { createLocalUser } from "./local-auth.js";
+import { verifyCsrfToken } from "./middleware.js";
 import { generateToken, createLogger } from "@constellation/shared";
 
 const log = createLogger("setup");
@@ -80,8 +81,7 @@ setupRouter.post("/setup", async (req: Request, res: Response) => {
   }
 
   const body = req.body as Record<string, string>;
-  const csrfCookie = (req.cookies as Record<string, string>)["csrf_setup"];
-  if (!csrfCookie || csrfCookie !== body["csrf_token"]) {
+  if (!verifyCsrfToken(req, "csrf_setup")) {
     res.status(403).send(setupFormPage("Invalid or missing CSRF token. Please reload and try again."));
     return;
   }

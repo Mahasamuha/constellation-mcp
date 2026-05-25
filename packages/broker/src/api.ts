@@ -379,6 +379,11 @@ apiRouter.post("/api/users", async (req: Request, res: Response) => {
     return;
   }
 
+  if (username.length > 64) {
+    res.status(400).json({ error: "invalid_request", error_description: "username must be 64 characters or fewer" });
+    return;
+  }
+
   if (password.length < 12) {
     res.status(400).json({ error: "invalid_request", error_description: "password must be at least 12 characters" });
     return;
