@@ -56,7 +56,10 @@ oauthRouter.post("/oauth/register", async (req: Request, res: Response) => {
     return;
   }
 
-  const grantTypes = asStringArray(body["grant_types"]) || ["authorization_code"];
+  // broker:manage is reserved for the first-party CLI client issued via the
+  // device flow — strip it from any dynamically registered client.
+  const grantTypes = (asStringArray(body["grant_types"]) || ["authorization_code"])
+    .filter((g) => g !== "broker:manage");
   const tokenEndpointAuthMethod = typeof body["token_endpoint_auth_method"] === "string"
     ? body["token_endpoint_auth_method"]
     : "client_secret_basic";
