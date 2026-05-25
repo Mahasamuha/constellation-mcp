@@ -1,4 +1,5 @@
 import picomatch from "picomatch";
+import RE2 from "re2";
 import { randomBytes } from "node:crypto";
 import { prisma } from "./db.js";
 import { dispatchRpc, getConnection, type RpcEnvelope, type RpcError } from "./hub.js";
@@ -126,7 +127,7 @@ async function isPathFiltered(
     if (filter.patternType === "glob") {
       if (picomatch.isMatch(resolvedPath, filter.pattern)) return true;
     } else {
-      const re = new RegExp(filter.pattern);
+      const re = new RE2(filter.pattern);
       if (re.test(resolvedPath)) return true;
     }
   }

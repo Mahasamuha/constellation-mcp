@@ -264,7 +264,20 @@ async function handleConnection(ws: WebSocket, meta: {
       }).catch((err) => log.error({ err, agentId }, "Failed to update last_heartbeat_at"));
     });
 
+    const MAX_MESSAGE_BYTES = parseInt(process.env["WS_MAX_MESSAGE_BYTES"] ?? "10485760", 10); // 10 MiB
+
     ws.on("message", (data) => {
+      const byteLength = Buffer.isBuffer(data)
+        ? data.length
+        : Array.isArray(data)
+          ? data.reduce((sum, b) => sum + b.length, 0)
+          : data.byteLength;
+      if (byteLength > MAX_MESSAGE_BYTES) {
+        log.warn({ agentId, size: byteLength, limit: MAX_MESSAGE_BYTES }, "Agent message exceeds size limit — terminating");
+        conn.disconnectReason = "error";
+        ws.terminate();
+        return;
+      }
       let msg: Record<string, unknown>;
       try {
         msg = JSON.parse(data.toString()) as Record<string, unknown>;

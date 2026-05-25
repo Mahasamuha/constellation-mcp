@@ -1,9 +1,12 @@
+import { createRequire } from "node:module";
 import { Router, Request, Response, IRouter } from "express";
 import { prisma } from "./db.js";
 import { requireBrokerManage, AuthenticatedRequest } from "./middleware.js";
 import { getConnection } from "./hub.js";
 import { createLogger } from "@constellation/shared";
 import { createLocalUser } from "./local-auth.js";
+
+const { version } = createRequire(import.meta.url)("../package.json") as { version: string };
 
 const log = createLogger("api");
 
@@ -31,7 +34,7 @@ apiRouter.get("/api/status", (_req: Request, res: Response) => {
   res.json({
     status: "ok",
     uptime_seconds: Math.floor((Date.now() - startedAt.getTime()) / 1000),
-    version: "0.1.0",
+    version,
   });
 });
 
@@ -282,6 +285,12 @@ apiRouter.delete("/api/sessions/:id", async (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 // User management — AUTH_MODE=local only
 // ---------------------------------------------------------------------------
+//
+// Any broker:manage token grants full user-management access (list, create,
+// deactivate, reset password). There is no separate admin role. This is
+// intentional for single-user/small-team deployments where every operator is
+// effectively an admin. A role-based access model would be needed if the broker
+// were to support mixed-trust users with delegated management.
 
 function requireLocalMode(res: Response): boolean {
   if (process.env["AUTH_MODE"] !== "local") {
