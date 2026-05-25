@@ -5,23 +5,37 @@ import { randomBytes } from "node:crypto";
 
 const log = createLogger("oidc");
 
+const DISCOVERY_TTL_MS = 24 * 60 * 60 * 1000;
+
 let _config: client.Configuration | null = null;
+let _configFetchedAt = 0;
 
 /**
  * Returns a cached OIDC client configuration, discovering the upstream provider
- * on first call. Requires OIDC_ISSUER, OIDC_CLIENT_ID, and OIDC_CLIENT_SECRET
- * environment variables.
+ * on first call and refreshing every 24 hours. Falls back to a stale config if
+ * re-discovery fails so transient provider outages don't break in-flight flows.
+ * Requires OIDC_ISSUER, OIDC_CLIENT_ID, and OIDC_CLIENT_SECRET env vars.
  */
 export async function getOidcConfig(): Promise<client.Configuration> {
-  if (_config) return _config;
+  if (_config && Date.now() - _configFetchedAt < DISCOVERY_TTL_MS) return _config;
 
   const issuer = requireEnv("OIDC_ISSUER");
   const clientId = requireEnv("OIDC_CLIENT_ID");
   const clientSecret = requireEnv("OIDC_CLIENT_SECRET");
 
-  _config = await client.discovery(new URL(issuer), clientId, clientSecret);
-  log.info({ issuer }, "OIDC provider discovered");
-  return _config;
+  try {
+    _config = await client.discovery(new URL(issuer), clientId, clientSecret);
+    _configFetchedAt = Date.now();
+    log.info({ issuer }, "OIDC provider discovered");
+  } catch (err) {
+    if (_config) {
+      log.warn({ err, issuer }, "OIDC re-discovery failed, using stale config");
+    } else {
+      throw err;
+    }
+  }
+
+  return _config!;
 }
 
 /**
