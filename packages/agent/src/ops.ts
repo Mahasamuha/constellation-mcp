@@ -7,6 +7,7 @@ import { createInterface } from "node:readline";
 import { join, dirname, relative } from "node:path";
 import picomatch from "picomatch";
 import { createPatch } from "diff";
+import safeRegex from "safe-regex2";
 
 // ---------------------------------------------------------------------------
 // list_directory
@@ -135,6 +136,9 @@ export async function findFiles(
   params: FindFilesParams
 ): Promise<FindFilesResult> {
   const base = params.relative_path ? join(root, params.relative_path) : root;
+  if (params.type === "regex" && !safeRegex(params.pattern)) {
+    throw new Error("Pattern rejected: potential ReDoS vulnerability");
+  }
   const re = params.type === "regex" ? new RegExp(params.pattern) : null;
   const cap = 200;
   const matches: string[] = [];
@@ -292,6 +296,9 @@ export async function grepFiles(
 ): Promise<GrepFilesResult> {
   const base = params.relative_path ? join(root, params.relative_path) : root;
   const isRegex = params.type === "regex";
+  if (isRegex && !safeRegex(params.pattern)) {
+    throw new Error("Pattern rejected: potential ReDoS vulnerability");
+  }
   const re = isRegex
     ? new RegExp(params.pattern, "g")
     : null;

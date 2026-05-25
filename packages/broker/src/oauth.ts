@@ -1,9 +1,10 @@
 import { Router, Request, Response, IRouter } from "express";
+import escHtml from "escape-html";
 import { randomBytes, createHash } from "node:crypto";
 import { prisma } from "./db.js";
 import { buildAuthorizationUrl, exchangeCodeAndUpsertUser } from "./oidc.js";
 import { handleDeviceCodeGrant } from "./device.js";
-import { generateToken, hashToken, createLogger } from "@constellation/shared";
+import { generateToken, hashToken, safeEqual, createLogger, requireEnv } from "@constellation/shared";
 import { checkBruteForce, recordFailure, validateLocalUser } from "./local-auth.js";
 
 const log = createLogger("oauth");
@@ -54,6 +55,13 @@ oauthRouter.post("/oauth/register", async (req: Request, res: Response) => {
   if (redirectUris.length === 0) {
     res.status(400).json({ error: "invalid_client_metadata", error_description: "redirect_uris is required" });
     return;
+  }
+
+  for (const uri of redirectUris) {
+    if (!isAllowedRedirectUri(uri)) {
+      res.status(400).json({ error: "invalid_client_metadata", error_description: `redirect_uri not allowed: ${uri}` });
+      return;
+    }
   }
 
   // broker:manage is reserved for the first-party CLI client issued via the
@@ -154,7 +162,7 @@ oauthRouter.get("/oauth/authorize", async (req: Request, res: Response) => {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
       maxAge: 10 * 60 * 1000,
-      sameSite: "lax",
+      sameSite: "strict",
     });
     log.info({ clientId: client_id }, "Authorization redirected to local login");
     res.redirect(`/auth/login?pending=${pendingId}`);
@@ -222,7 +230,7 @@ oauthRouter.post("/auth/login", async (req: Request, res: Response) => {
   const password = body["password"] ?? "";
 
   const ip = req.ip ?? "unknown";
-  if (!checkBruteForce(ip)) {
+  if (!await checkBruteForce(ip)) {
     res.status(429).send(loginPage(pendingId, "Too many failed attempts. Please wait 15 minutes."));
     return;
   }
@@ -246,7 +254,7 @@ oauthRouter.post("/auth/login", async (req: Request, res: Response) => {
   try {
     userId = await validateLocalUser(username, password);
   } catch {
-    recordFailure(ip);
+    await recordFailure(ip);
     res.send(loginPage(pendingId, "Invalid username or password."));
     return;
   }
@@ -254,16 +262,17 @@ oauthRouter.post("/auth/login", async (req: Request, res: Response) => {
   res.clearCookie(cookieName);
 
   const code = generateToken();
-  const codeExpiresAt = Date.now() + 10 * 60 * 1000;
-  authCodes.set(code, {
-    userId,
-    clientId: pending.clientId,
-    redirectUri: pending.redirectUri,
-    codeChallenge: pending.downstreamCodeChallenge,
-    codeChallengeMethod: pending.downstreamCodeChallengeMethod,
-    expiresAt: codeExpiresAt,
+  await prisma.authCode.create({
+    data: {
+      codeHash: hashToken(code),
+      userId,
+      clientId: pending.clientId,
+      redirectUri: pending.redirectUri,
+      codeChallenge: pending.downstreamCodeChallenge ?? null,
+      codeChallengeMethod: pending.downstreamCodeChallengeMethod ?? null,
+      expiresAt: new Date(Date.now() + 10 * 60 * 1000),
+    },
   });
-  setTimeout(() => authCodes.delete(code), 10 * 60 * 1000);
 
   const redirectParams = new URLSearchParams({ code });
   if (pending.downstreamState) redirectParams.set("state", pending.downstreamState);
@@ -286,17 +295,10 @@ interface PendingOidc {
   downstreamState?: string;
 }
 
-interface AuthCodeEntry {
-  userId: string;
-  clientId: string;
-  redirectUri: string;
-  codeChallenge?: string;
-  codeChallengeMethod?: string;
-  expiresAt: number;
+/** Removes expired auth code rows. Called periodically from index.ts. */
+export async function pruneAuthCodes(): Promise<void> {
+  await prisma.authCode.deleteMany({ where: { expiresAt: { lt: new Date() } } });
 }
-
-// In-memory store for short-lived authorization codes (10 min TTL).
-const authCodes = new Map<string, AuthCodeEntry>();
 
 oauthRouter.get("/oauth/callback", async (req: Request, res: Response) => {
   const rawState = typeof req.query["state"] === "string" ? req.query["state"] : "";
@@ -350,16 +352,17 @@ oauthRouter.get("/oauth/callback", async (req: Request, res: Response) => {
 
   // Issue a short-lived authorization code to hand back to the MCP client.
   const code = generateToken();
-  const codeExpiresAt = Date.now() + 10 * 60 * 1000;
-  authCodes.set(code, {
-    userId,
-    clientId: pending.clientId,
-    redirectUri: pending.redirectUri,
-    codeChallenge: pending.downstreamCodeChallenge,
-    codeChallengeMethod: pending.downstreamCodeChallengeMethod,
-    expiresAt: codeExpiresAt,
+  await prisma.authCode.create({
+    data: {
+      codeHash: hashToken(code),
+      userId,
+      clientId: pending.clientId,
+      redirectUri: pending.redirectUri,
+      codeChallenge: pending.downstreamCodeChallenge ?? null,
+      codeChallengeMethod: pending.downstreamCodeChallengeMethod ?? null,
+      expiresAt: new Date(Date.now() + 10 * 60 * 1000),
+    },
   });
-  setTimeout(() => authCodes.delete(code), 10 * 60 * 1000);
 
   const redirectParams = new URLSearchParams({ code });
   if (pending.downstreamState) redirectParams.set("state", pending.downstreamState);
@@ -398,15 +401,16 @@ async function handleAuthorizationCodeGrant(
     return;
   }
 
-  const entry = authCodes.get(code);
-  if (!entry || entry.expiresAt < Date.now()) {
-    authCodes.delete(code);
+  const codeHash = hashToken(code);
+  const entry = await prisma.authCode.findUnique({ where: { codeHash } });
+  if (!entry || entry.expiresAt < new Date()) {
+    if (entry) await prisma.authCode.delete({ where: { codeHash } });
     res.status(400).json({ error: "invalid_grant", error_description: "Authorization code invalid or expired" });
     return;
   }
 
   if (entry.clientId !== client_id || entry.redirectUri !== redirect_uri) {
-    authCodes.delete(code);
+    await prisma.authCode.delete({ where: { codeHash } });
     res.status(400).json({ error: "invalid_grant", error_description: "client_id or redirect_uri mismatch" });
     return;
   }
@@ -429,12 +433,20 @@ async function handleAuthorizationCodeGrant(
     }
   }
 
-  authCodes.delete(code);
+  await prisma.authCode.delete({ where: { codeHash } });
 
   const oauthClient = await prisma.oauthClient.findUnique({ where: { id: client_id } });
   if (!oauthClient) {
     res.status(400).json({ error: "invalid_client" });
     return;
+  }
+
+  if (oauthClient.clientSecretHash !== null) {
+    const { client_secret } = body;
+    if (!client_secret || !safeEqual(hashToken(client_secret), oauthClient.clientSecretHash)) {
+      res.status(401).json({ error: "invalid_client", error_description: "client_secret required for confidential clients" });
+      return;
+    }
   }
 
   const accessToken = generateToken();
@@ -567,8 +579,26 @@ function loginPage(pendingId: string, error?: string): string {
 </html>`;
 }
 
-function escHtml(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+
+/**
+ * Rejects javascript:, data:, and vbscript: URIs. Allows https:, custom schemes
+ * (native app callbacks), and http: only for loopback addresses.
+ */
+function isAllowedRedirectUri(uri: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(uri);
+  } catch {
+    return false;
+  }
+  const scheme = parsed.protocol;
+  if (scheme === "javascript:" || scheme === "data:" || scheme === "vbscript:") return false;
+  if (scheme === "http:") {
+    // Allow http only for loopback — native app dev servers on localhost.
+    const host = parsed.hostname;
+    return host === "localhost" || host === "127.0.0.1" || host === "::1";
+  }
+  return true;
 }
 
 function asStringArray(val: unknown): string[] {
@@ -577,8 +607,3 @@ function asStringArray(val: unknown): string[] {
   return [];
 }
 
-function requireEnv(name: string): string {
-  const val = process.env[name];
-  if (!val) throw new Error(`Missing required environment variable: ${name}`);
-  return val;
-}

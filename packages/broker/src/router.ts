@@ -1,9 +1,11 @@
 import picomatch from "picomatch";
 import RE2 from "re2";
 import { randomBytes } from "node:crypto";
+import { join } from "node:path";
 import { prisma } from "./db.js";
 import { dispatchRpc, getConnection, type RpcEnvelope, type RpcError } from "./hub.js";
 import { createLogger } from "@constellation/shared";
+import { config } from "./config.js";
 
 const log = createLogger("router");
 
@@ -30,6 +32,7 @@ export interface RouterError {
 const toolCallTimestamps = new Map<string, number[]>();
 const expensiveToolTimestamps = new Map<string, number[]>();
 
+
 const EXPENSIVE_TOOLS = new Set(["grep_files", "find_files"]);
 
 function isExpensive(tool: string, params: Record<string, unknown>): boolean {
@@ -42,8 +45,8 @@ function checkToolRateLimit(userId: string, tool: string, params: Record<string,
   const now = Date.now();
   const window = 60_000;
 
-  const standardLimit = parseInt(process.env["RATE_LIMIT_TOOL_CALLS_PER_MIN"] ?? "60", 10);
-  const expensiveLimit = parseInt(process.env["RATE_LIMIT_EXPENSIVE_TOOLS_PER_MIN"] ?? "20", 10);
+  const standardLimit = config.rateLimits.toolCallsPerMin;
+  const expensiveLimit = config.rateLimits.expensiveToolsPerMin;
 
   const standardTs = (toolCallTimestamps.get(userId) ?? []).filter((t) => now - t < window);
   standardTs.push(now);
@@ -207,15 +210,17 @@ export async function routeToolCall(
   }
 
   // Apply broker-side deny filters — check every path field supplied for this call.
+  // Use join() rather than string concatenation so traversal sequences (e.g. "../../x")
+  // are normalized before filter matching — otherwise a crafted relative_path can bypass filters.
   const pathsToFilter: string[] = [];
   const relPath = typeof effectiveParams["relative_path"] === "string" ? effectiveParams["relative_path"] : "";
-  pathsToFilter.push(relPath ? `${absoluteRoot}/${relPath}` : absoluteRoot);
+  pathsToFilter.push(relPath ? join(absoluteRoot, relPath) : absoluteRoot);
   const srcRelPath = typeof effectiveParams["src_relative_path"] === "string" ? effectiveParams["src_relative_path"] : "";
-  if (srcRelPath) pathsToFilter.push(`${absoluteRoot}/${srcRelPath}`);
+  if (srcRelPath) pathsToFilter.push(join(absoluteRoot, srcRelPath));
   const dstRelPath = typeof effectiveParams["dst_relative_path"] === "string" ? effectiveParams["dst_relative_path"] : "";
   if (dstRelPath) {
     const dstRoot = typeof effectiveParams["dst_root"] === "string" ? effectiveParams["dst_root"] : absoluteRoot;
-    pathsToFilter.push(`${dstRoot}/${dstRelPath}`);
+    pathsToFilter.push(join(dstRoot, dstRelPath));
   }
 
   for (const candidatePath of pathsToFilter) {
@@ -234,7 +239,7 @@ export async function routeToolCall(
   }
 
   const requestId = randomBytes(16).toString("hex");
-  const timeoutMs = parseInt(process.env["RPC_TIMEOUT_MS"] ?? "30000", 10);
+  const timeoutMs = config.rpcTimeoutMs;
   const envelope: RpcEnvelope = {
     request_id: requestId,
     tool,
@@ -255,13 +260,13 @@ export async function routeToolCall(
 
     return { result: response.result, error: response.error };
   } catch (err) {
-    const isTimeout = err instanceof Error && err.message === "timeout";
-    if (isTimeout) {
+    if (err instanceof Error && err.message === "agent_disconnected") {
+      log.warn({ userId, agentId, tool, requestId }, "RPC failed — agent disconnected");
+      return { code: "agent_offline", message: `'${agentHost}' disconnected before responding` };
+    }
+    if (err instanceof Error && err.message === "timeout") {
       log.warn({ userId, agentId, tool, requestId }, "RPC timed out");
-      return {
-        code: "timeout",
-        message: `No response from '${agentHost}' within ${timeoutMs / 1000}s`,
-      };
+      return { code: "timeout", message: `No response from '${agentHost}' within ${timeoutMs / 1000}s` };
     }
     throw err;
   }

@@ -70,6 +70,16 @@ export class AgentConnection {
     const config = this.opts.getConfig();
     const url = config.broker_url.replace(/^http/, "ws");
 
+    if (url.startsWith("ws://")) {
+      const host = new URL(url).hostname;
+      const isLocal = host === "localhost" || host === "127.0.0.1" || host === "::1";
+      if (!isLocal) {
+        log.error({ url }, "Refusing to connect: broker URL uses ws:// for a non-localhost host. Use wss:// to protect the agent token.");
+        this.scheduleReconnect();
+        return;
+      }
+    }
+
     log.info({ url }, "Connecting to broker");
 
     const ws = new WebSocket(url + "/agent/connect", {

@@ -1,9 +1,11 @@
 import { createRequire } from "node:module";
+import RE2 from "re2";
 import { Router, Request, Response, IRouter } from "express";
 import { prisma } from "./db.js";
 import { requireBrokerManage, AuthenticatedRequest } from "./middleware.js";
 import { getConnection } from "./hub.js";
 import { createLogger } from "@constellation/shared";
+import { config } from "./config.js";
 import { createLocalUser } from "./local-auth.js";
 
 const { version } = createRequire(import.meta.url)("../package.json") as { version: string };
@@ -12,12 +14,15 @@ const log = createLogger("api");
 
 export const apiRouter: IRouter = Router();
 
+function parsePagination(req: Request): { limit: number; offset: number } {
+  const limit = Math.min(Math.max(1, parseInt(String(req.query["limit"] ?? "100"), 10) || 100), 1000);
+  const offset = Math.max(0, parseInt(String(req.query["offset"] ?? "0"), 10) || 0);
+  return { limit, offset };
+}
+
 apiRouter.use(requireBrokerManage);
 
-const HEARTBEAT_THRESHOLD_MS =
-  parseInt(process.env["HEARTBEAT_INTERVAL_SECONDS"] ?? "60", 10) *
-  parseInt(process.env["HEARTBEAT_MAX_MISSED"] ?? "3", 10) *
-  1000;
+const HEARTBEAT_THRESHOLD_MS = config.heartbeat.intervalMs * config.heartbeat.maxMissed;
 
 function isOnline(lastHeartbeatAt: Date | null): boolean {
   if (!lastHeartbeatAt) return false;
@@ -44,28 +49,39 @@ apiRouter.get("/api/status", (_req: Request, res: Response) => {
 
 apiRouter.get("/api/agents", async (req: Request, res: Response) => {
   const uid = (req as AuthenticatedRequest).userId;
+  const { limit, offset } = parsePagination(req);
 
-  const agents = await prisma.agent.findMany({
-    where: { userId: uid },
-    include: {
-      pathLabels: { select: { label: true, reportedPath: true } },
-      agentToken: { select: { id: true, lastUsedAt: true } },
-    },
-    orderBy: { registeredAt: "desc" },
+  const [agents, total] = await Promise.all([
+    prisma.agent.findMany({
+      where: { userId: uid },
+      include: {
+        pathLabels: { select: { label: true, reportedPath: true } },
+        agentToken: { select: { id: true, lastUsedAt: true } },
+      },
+      orderBy: { host: "asc" },
+      take: limit,
+      skip: offset,
+    }),
+    prisma.agent.count({ where: { userId: uid } }),
+  ]);
+
+  res.json({
+    data: agents.map((a) => ({
+      id: a.id,
+      host: a.host,
+      registered_at: a.registeredAt.toISOString(),
+      last_heartbeat_at: a.lastHeartbeatAt?.toISOString() ?? null,
+      last_disconnect_reason: a.lastDisconnectReason ?? null,
+      online: isOnline(a.lastHeartbeatAt),
+      connected: getConnection(a.id) !== undefined,
+      token_id: a.agentToken.id,
+      token_last_used_at: a.agentToken.lastUsedAt?.toISOString() ?? null,
+      labels: a.pathLabels.map((pl) => ({ label: pl.label, reported_path: pl.reportedPath })),
+    })),
+    total,
+    limit,
+    offset,
   });
-
-  res.json(agents.map((a) => ({
-    id: a.id,
-    host: a.host,
-    registered_at: a.registeredAt.toISOString(),
-    last_heartbeat_at: a.lastHeartbeatAt?.toISOString() ?? null,
-    last_disconnect_reason: a.lastDisconnectReason ?? null,
-    online: isOnline(a.lastHeartbeatAt),
-    connected: getConnection(a.id) !== undefined,
-    token_id: a.agentToken.id,
-    token_last_used_at: a.agentToken.lastUsedAt?.toISOString() ?? null,
-    labels: a.pathLabels.map((pl) => ({ label: pl.label, reported_path: pl.reportedPath })),
-  })));
 });
 
 // ---------------------------------------------------------------------------
@@ -111,23 +127,32 @@ apiRouter.delete("/api/agents/:id/token", async (req: Request, res: Response) =>
 apiRouter.get("/api/labels", async (req: Request, res: Response) => {
   const uid = (req as AuthenticatedRequest).userId;
   const agentId = typeof req.query["agent_id"] === "string" ? req.query["agent_id"] : undefined;
+  const { limit, offset } = parsePagination(req);
+  const where = { userId: uid, ...(agentId ? { agentId } : {}) };
 
-  const labels = await prisma.pathLabel.findMany({
-    where: {
-      userId: uid,
-      ...(agentId ? { agentId } : {}),
-    },
-    include: { agent: { select: { host: true } } },
-    orderBy: { label: "asc" },
+  const [labels, total] = await Promise.all([
+    prisma.pathLabel.findMany({
+      where,
+      include: { agent: { select: { host: true } } },
+      orderBy: { label: "asc" },
+      take: limit,
+      skip: offset,
+    }),
+    prisma.pathLabel.count({ where }),
+  ]);
+
+  res.json({
+    data: labels.map((l) => ({
+      id: l.id,
+      label: l.label,
+      reported_path: l.reportedPath,
+      agent_id: l.agentId,
+      host: l.agent.host,
+    })),
+    total,
+    limit,
+    offset,
   });
-
-  res.json(labels.map((l) => ({
-    id: l.id,
-    label: l.label,
-    reported_path: l.reportedPath,
-    agent_id: l.agentId,
-    host: l.agent.host,
-  })));
 });
 
 // ---------------------------------------------------------------------------
@@ -136,19 +161,30 @@ apiRouter.get("/api/labels", async (req: Request, res: Response) => {
 
 apiRouter.get("/api/filters", async (req: Request, res: Response) => {
   const uid = (req as AuthenticatedRequest).userId;
+  const { limit, offset } = parsePagination(req);
 
-  const filters = await prisma.brokerPathFilter.findMany({
-    where: { scopeUserId: uid },
-    orderBy: { createdAt: "desc" },
+  const [filters, total] = await Promise.all([
+    prisma.brokerPathFilter.findMany({
+      where: { scopeUserId: uid },
+      orderBy: { createdAt: "desc" },
+      take: limit,
+      skip: offset,
+    }),
+    prisma.brokerPathFilter.count({ where: { scopeUserId: uid } }),
+  ]);
+
+  res.json({
+    data: filters.map((f) => ({
+      id: f.id,
+      pattern: f.pattern,
+      pattern_type: f.patternType,
+      scope_agent_id: f.scopeAgentId,
+      created_at: f.createdAt.toISOString(),
+    })),
+    total,
+    limit,
+    offset,
   });
-
-  res.json(filters.map((f) => ({
-    id: f.id,
-    pattern: f.pattern,
-    pattern_type: f.patternType,
-    scope_agent_id: f.scopeAgentId,
-    created_at: f.createdAt.toISOString(),
-  })));
 });
 
 // ---------------------------------------------------------------------------
@@ -162,6 +198,10 @@ apiRouter.post("/api/filters", async (req: Request, res: Response) => {
   const pattern = typeof body["pattern"] === "string" ? body["pattern"].trim() : "";
   if (!pattern) {
     res.status(400).json({ error: "invalid_request", error_description: "pattern is required" });
+    return;
+  }
+  if (pattern.length > 1000) {
+    res.status(400).json({ error: "invalid_request", error_description: "pattern must be 1000 characters or fewer" });
     return;
   }
 
@@ -183,7 +223,7 @@ apiRouter.post("/api/filters", async (req: Request, res: Response) => {
   // Validate regex compiles before storing.
   if (patternType === "regex") {
     try {
-      new RegExp(pattern);
+      new RE2(pattern);
     } catch {
       res.status(400).json({ error: "invalid_request", error_description: "Invalid regex pattern" });
       return;
@@ -237,22 +277,34 @@ apiRouter.delete("/api/filters/:id", async (req: Request, res: Response) => {
 
 apiRouter.get("/api/sessions", async (req: Request, res: Response) => {
   const uid = (req as AuthenticatedRequest).userId;
+  const { limit, offset } = parsePagination(req);
+  const where = { userId: uid, expiresAt: { gt: new Date() } };
 
-  const sessions = await prisma.oauthSession.findMany({
-    where: { userId: uid, expiresAt: { gt: new Date() } },
-    include: { mcpClient: { select: { isDynamic: true } } },
-    orderBy: { issuedAt: "desc" },
+  const [sessions, total] = await Promise.all([
+    prisma.oauthSession.findMany({
+      where,
+      include: { mcpClient: { select: { isDynamic: true } } },
+      orderBy: { issuedAt: "desc" },
+      take: limit,
+      skip: offset,
+    }),
+    prisma.oauthSession.count({ where }),
+  ]);
+
+  res.json({
+    data: sessions.map((s) => ({
+      id: s.id,
+      mcp_client_id: s.mcpClientId,
+      is_dynamic_client: s.mcpClient.isDynamic,
+      issued_at: s.issuedAt.toISOString(),
+      expires_at: s.expiresAt.toISOString(),
+      has_refresh_token: s.refreshTokenHash !== null,
+      refresh_token_expires_at: s.refreshTokenExpiresAt?.toISOString() ?? null,
+    })),
+    total,
+    limit,
+    offset,
   });
-
-  res.json(sessions.map((s) => ({
-    id: s.id,
-    mcp_client_id: s.mcpClientId,
-    is_dynamic_client: s.mcpClient.isDynamic,
-    issued_at: s.issuedAt.toISOString(),
-    expires_at: s.expiresAt.toISOString(),
-    has_refresh_token: s.refreshTokenHash !== null,
-    refresh_token_expires_at: s.refreshTokenExpiresAt?.toISOString() ?? null,
-  })));
 });
 
 // ---------------------------------------------------------------------------
@@ -303,18 +355,29 @@ function requireLocalMode(res: Response): boolean {
 apiRouter.get("/api/users", async (req: Request, res: Response) => {
   if (!requireLocalMode(res)) return;
 
-  const users = await prisma.localUser.findMany({
-    orderBy: { createdAt: "asc" },
-    select: { id: true, username: true, isActive: true, createdAt: true, lastLoginAt: true },
-  });
+  const { limit, offset } = parsePagination(req);
+  const [users, total] = await Promise.all([
+    prisma.localUser.findMany({
+      orderBy: { createdAt: "asc" },
+      select: { id: true, username: true, isActive: true, createdAt: true, lastLoginAt: true },
+      take: limit,
+      skip: offset,
+    }),
+    prisma.localUser.count(),
+  ]);
 
-  res.json(users.map((u) => ({
-    id: u.id,
-    username: u.username,
-    is_active: u.isActive,
-    created_at: u.createdAt.toISOString(),
-    last_login_at: u.lastLoginAt?.toISOString() ?? null,
-  })));
+  res.json({
+    data: users.map((u) => ({
+      id: u.id,
+      username: u.username,
+      is_active: u.isActive,
+      created_at: u.createdAt.toISOString(),
+      last_login_at: u.lastLoginAt?.toISOString() ?? null,
+    })),
+    total,
+    limit,
+    offset,
+  });
 });
 
 apiRouter.post("/api/users", async (req: Request, res: Response) => {
@@ -326,6 +389,11 @@ apiRouter.post("/api/users", async (req: Request, res: Response) => {
 
   if (!username) {
     res.status(400).json({ error: "invalid_request", error_description: "username is required" });
+    return;
+  }
+
+  if (username.length > 64) {
+    res.status(400).json({ error: "invalid_request", error_description: "username must be 64 characters or fewer" });
     return;
   }
 
@@ -349,7 +417,7 @@ apiRouter.post("/api/users", async (req: Request, res: Response) => {
   }
 });
 
-apiRouter.delete("/api/users/:username", async (req: Request, res: Response) => {
+apiRouter.post("/api/users/:username/deactivate", async (req: Request, res: Response) => {
   if (!requireLocalMode(res)) return;
 
   const username = req.params["username"] as string;

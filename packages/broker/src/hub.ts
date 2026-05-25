@@ -2,6 +2,7 @@ import { IncomingMessage, Server } from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
 import { prisma } from "./db.js";
 import { hashToken, generateToken, createLogger } from "@constellation/shared";
+import { config } from "./config.js";
 
 const log = createLogger("hub");
 
@@ -65,7 +66,7 @@ const ROTATION_TTL_MS = 5 * 60 * 1000;
 const reconnectTimestamps = new Map<string, number[]>();
 
 function checkReconnectRateLimit(tokenId: string): boolean {
-  const limit = parseInt(process.env["RATE_LIMIT_WS_RECONNECT_PER_MIN"] ?? "10", 10);
+  const limit = config.rateLimits.wsReconnectPerMin;
   const now = Date.now();
   const window = 60_000;
   const timestamps = (reconnectTimestamps.get(tokenId) ?? []).filter((t) => now - t < window);
@@ -78,12 +79,15 @@ function checkReconnectRateLimit(tokenId: string): boolean {
 // Heartbeat loop
 // ---------------------------------------------------------------------------
 
-const HEARTBEAT_INTERVAL_MS =
-  parseInt(process.env["HEARTBEAT_INTERVAL_SECONDS"] ?? "60", 10) * 1000;
-const HEARTBEAT_MAX_MISSED = parseInt(process.env["HEARTBEAT_MAX_MISSED"] ?? "3", 10);
+const HEARTBEAT_INTERVAL_MS = config.heartbeat.intervalMs;
+const HEARTBEAT_MAX_MISSED = config.heartbeat.maxMissed;
+const WS_MAX_MESSAGE_BYTES = config.ws.maxMessageBytes;
+const RPC_TIMEOUT_MS = config.rpcTimeoutMs;
+
+let _heartbeatInterval: ReturnType<typeof setInterval> | null = null;
 
 function startHeartbeatLoop(): void {
-  setInterval(() => {
+  _heartbeatInterval = setInterval(() => {
     for (const [agentId, conn] of connections) {
       conn.missedPings += 1;
 
@@ -106,8 +110,22 @@ function startHeartbeatLoop(): void {
 // WebSocket server setup
 // ---------------------------------------------------------------------------
 
+let _wss: WebSocketServer | null = null;
+
+export function closeHub(): Promise<void> {
+  if (_heartbeatInterval) {
+    clearInterval(_heartbeatInterval);
+    _heartbeatInterval = null;
+  }
+  return new Promise((resolve, reject) => {
+    if (!_wss) { resolve(); return; }
+    _wss.close((err) => err ? reject(err) : resolve());
+  });
+}
+
 export function attachHub(server: Server): void {
   const wss = new WebSocketServer({ noServer: true });
+  _wss = wss;
 
   server.on("upgrade", async (req: IncomingMessage, socket, head) => {
     if (req.url !== "/agent/connect") {
@@ -210,7 +228,10 @@ async function handleConnection(ws: WebSocket, meta: {
 
     // Complete a pending token rotation: atomically update agentTokenId and revoke the old token,
     // then cancel the expiry timer.
-    if (pendingRotation) {
+    // Guard against concurrent reconnects with the same new token: only the first handleConnection
+    // to run (before any await) will find the entry still in the map and proceed; the second
+    // treats the connection as a normal reconnect since rotation is already done.
+    if (pendingRotation && pendingRotations.has(tokenId)) {
       clearTimeout(pendingRotation.timer);
       pendingRotations.delete(tokenId);
       try {
@@ -264,7 +285,7 @@ async function handleConnection(ws: WebSocket, meta: {
       }).catch((err) => log.error({ err, agentId }, "Failed to update last_heartbeat_at"));
     });
 
-    const MAX_MESSAGE_BYTES = parseInt(process.env["WS_MAX_MESSAGE_BYTES"] ?? "10485760", 10); // 10 MiB
+    const MAX_MESSAGE_BYTES = WS_MAX_MESSAGE_BYTES;
 
     ws.on("message", (data) => {
       const byteLength = Buffer.isBuffer(data)
@@ -285,9 +306,13 @@ async function handleConnection(ws: WebSocket, meta: {
         log.warn({ agentId }, "Received non-JSON message from agent");
         return;
       }
-      handleAgentMessage(conn, msg).catch((err) =>
-        log.error({ err, agentId }, "Error handling agent message")
-      );
+      handleAgentMessage(conn, msg).catch((err) => {
+        log.error({ err, agentId }, "Error handling agent message");
+        // Best-effort: send a typed error back so the agent doesn't wait indefinitely.
+        const type = typeof msg["type"] === "string" ? msg["type"] : undefined;
+        if (type === "config_update") send(conn.ws, { type: "config_update_error", error: "Internal error" });
+        else if (type === "update_host") send(conn.ws, { type: "update_host_error", error: "Internal error" });
+      });
     });
 
     ws.on("close", () => {
@@ -367,26 +392,25 @@ async function handleConfigUpdate(conn: ConnectedAgent, msg: ConfigUpdateMessage
     seen.add(entry.label);
   }
 
-  // Check for label conflicts — another agent on the same user already owns any of these labels.
-  for (const entry of entries) {
-    const conflict = await prisma.pathLabel.findFirst({
-      where: {
-        userId: conn.userId,
-        label: entry.label,
-        NOT: { agentId: conn.agentId },
-      },
-    });
-    if (conflict) {
-      send(conn.ws, {
-        type: "config_update_error",
-        error: `Label "${entry.label}" is already registered by another agent`,
-      });
-      return;
-    }
-  }
-
   // Upsert all provided labels and remove any that are no longer present.
+  // Conflict check is inside the transaction to avoid a TOCTOU race where two
+  // agents register the same label concurrently and both pass a pre-transaction check.
+  let conflictLabel: string | null = null;
   await prisma.$transaction(async (tx) => {
+    for (const entry of entries) {
+      const conflict = await tx.pathLabel.findFirst({
+        where: {
+          userId: conn.userId,
+          label: entry.label,
+          NOT: { agentId: conn.agentId },
+        },
+      });
+      if (conflict) {
+        conflictLabel = entry.label;
+        return;
+      }
+    }
+
     for (const entry of entries) {
       await tx.pathLabel.upsert({
         where: { userId_label: { userId: conn.userId, label: entry.label } },
@@ -410,6 +434,14 @@ async function handleConfigUpdate(conn: ConnectedAgent, msg: ConfigUpdateMessage
     });
   });
 
+  if (conflictLabel) {
+    send(conn.ws, {
+      type: "config_update_error",
+      error: `Label "${conflictLabel}" is already registered by another agent`,
+    });
+    return;
+  }
+
   log.info({ agentId: conn.agentId, count: entries.length }, "Config updated");
   send(conn.ws, { type: "config_update_ok" });
 }
@@ -419,6 +451,11 @@ async function handleUpdateHost(conn: ConnectedAgent, msg: UpdateHostMessage): P
 
   if (!newHost) {
     send(conn.ws, { type: "update_host_error", error: "host must be a non-empty string" });
+    return;
+  }
+
+  if (newHost.length > 63) {
+    send(conn.ws, { type: "update_host_error", error: "Host name must be 63 characters or fewer" });
     return;
   }
 
@@ -510,6 +547,18 @@ export function getConnection(agentId: string): ConnectedAgent | undefined {
 
 /** Rejects all pending RPCs for a given agent — called on disconnect. */
 /** Removes expired reconnect timestamp entries. Called periodically from index.ts. */
+/** Revokes AgentToken rows that are not referenced by any Agent and were never revoked.
+ * These are left behind when the broker restarts mid-rotation. Called once at startup. */
+export async function revokeOrphanedTokens(): Promise<void> {
+  const result = await prisma.agentToken.updateMany({
+    where: { revokedAt: null, agents: { none: {} } },
+    data: { revokedAt: new Date() },
+  });
+  if (result.count > 0) {
+    log.warn({ count: result.count }, "Revoked orphaned agent tokens from prior restart");
+  }
+}
+
 export function pruneReconnectTimestamps(): void {
   const now = Date.now();
   const window = 60_000;
@@ -525,7 +574,7 @@ export function rejectAgentRpcs(agentId: string): void {
     if (pending.agentId === agentId) {
       clearTimeout(pending.timer);
       pendingRpcs.delete(requestId);
-      pending.reject(new Error("timeout"));
+      pending.reject(new Error("agent_disconnected"));
     }
   }
 }
@@ -538,7 +587,7 @@ export function dispatchRpc(
   if (!conn) throw new Error(`Agent ${agentId} is not connected`);
 
   const requestId = payload["request_id"] as string;
-  const timeoutMs = parseInt(process.env["RPC_TIMEOUT_MS"] ?? "30000", 10);
+  const timeoutMs = RPC_TIMEOUT_MS;
 
   return new Promise<RpcResponse>((resolve, reject) => {
     const timer = setTimeout(() => {

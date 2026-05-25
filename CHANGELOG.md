@@ -1,5 +1,29 @@
 # Changelog
 
+## v0.2.0 — 2026-05-25
+
+### Breaking changes
+
+- **`GET /api/users` response format changed** — now returns a paginated envelope `{ data: [...], total, limit, offset }` matching all other list endpoints. The previous format was a bare array. Affects `AUTH_MODE=local` deployments only. The `constellation broker users list` CLI command is updated accordingly.
+
+### Security fixes
+
+- **Invalid numeric environment variables now fail at startup** — previously, setting a rate-limit variable (e.g. `RATE_LIMIT_TOOL_CALLS_PER_MIN`) to a non-integer value would silently disable that limit due to `NaN` comparison. The broker now rejects any non-integer value with a clear startup error.
+- **Agent refuses unencrypted connections to remote brokers** — if `broker_url` uses `http://` (which the agent converts to `ws://`) and the hostname is not `localhost`, `127.0.0.1`, or `::1`, the agent logs an error and refuses to connect. Local development connections over plain HTTP are still permitted.
+
+### Reliability fixes
+
+- **Graceful shutdown sequence corrected** — the broker previously called `closeAllConnections()` before closing the WebSocket hub, which could abruptly kill agent connections and reject in-flight RPC calls. The shutdown now drains idle HTTP connections first, then closes the hub gracefully before stopping the server.
+- **Token rotation race condition resolved** — two concurrent WebSocket reconnects with the same new token could both attempt to complete the rotation transaction. The second concurrent connection now detects the rotation is already done and proceeds as a normal reconnect.
+- **Agent receives error acknowledgement on internal broker errors** — if a Prisma error occurred while processing a `config_update` or `update_host` message, the agent would wait indefinitely for an acknowledgement that never arrived. The broker now sends a typed error response in these cases.
+
+### Other changes
+
+- All numeric environment variables (`RATE_LIMIT_*`, `HEARTBEAT_*`, `RPC_TIMEOUT_MS`, `WS_MAX_MESSAGE_BYTES`, `PORT`) are now parsed once at startup from a central `config.ts` module rather than on each request.
+- Broker filter patterns are now capped at 1000 characters. Patterns exceeding this limit return `400 invalid_request`.
+
+---
+
 ## v0.1.0 — 2026-05-24
 
 A network-accessible MCP file server. Run an agent on any machine and access its filesystem from Claude, Cursor, or GitHub Copilot through a central broker — no inbound ports required.

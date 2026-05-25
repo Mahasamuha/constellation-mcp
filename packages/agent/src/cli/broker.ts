@@ -441,12 +441,12 @@ export function registerBrokerCommands(program: Command, getConfigDir: () => str
     .option("--json", "Output as JSON")
     .action(async (opts: { json?: boolean }) => {
       const session = await getValidSession(cfgDir);
-      const data = await apiGet<Array<{
+      const res = await apiGet<{ data: Array<{
         id: string; username: string; is_active: boolean;
         created_at: string; last_login_at: string | null;
-      }>>(session, "/api/users");
-      if (opts.json) { console.log(JSON.stringify(data, null, 2)); return; }
-      for (const u of data) {
+      }> }>(session, "/api/users");
+      if (opts.json) { console.log(JSON.stringify(res.data, null, 2)); return; }
+      for (const u of res.data) {
         const status = u.is_active ? "active" : "deactivated";
         const last = u.last_login_at ? `  last login: ${u.last_login_at}` : "";
         console.log(`${u.username}  [${status}]${last}`);

@@ -57,6 +57,8 @@ max_file_size_kb: 100
 | `host` | Display name for this machine, set during `agent init` |
 | `max_file_size_kb` | Maximum file size for a full `read_file` call (default: `100`). Range reads (`start_line`/`end_line`) are not subject to this cap. |
 
+The agent daemon also respects the `LOG_LEVEL` environment variable (`trace`, `debug`, `info`, `warn`, `error`, `fatal`; default `warn`). Set it in the service environment if you need verbose output.
+
 ### `paths.yaml`
 
 Edited manually or via `constellation agent paths add/remove`. Changes take effect on the next `constellation agent sync` or agent restart.
@@ -94,6 +96,8 @@ On start, the agent connects to `wss://<broker_url>/agent/connect` with `Authori
 **On successful connect:** sends a `config_update` message immediately to push the current `paths.yaml` to the broker.
 
 **Reconnect backoff:** starts at 1 second, doubles on each failure up to a maximum of 60 seconds, with ±20% jitter. Reconnects indefinitely until stopped.
+
+**TLS enforcement:** if `broker_url` uses `http://` (converted internally to `ws://`) and the hostname is not `localhost`, `127.0.0.1`, or `::1`, the agent refuses to connect and logs an error. The agent token is a long-lived credential; sending it over an unencrypted connection to a remote host is not permitted. Use `https://` in `broker_url` for any non-local broker.
 
 **Token rotation:** when the broker sends `token_rotated`, the agent writes the new token to `agent.yaml` and closes the WebSocket. The reconnect loop picks up the new token automatically from disk on the next connect attempt.
 

@@ -1,7 +1,10 @@
 import { Router, Request, Response, NextFunction, IRouter } from "express";
+import escHtml from "escape-html";
 import { prisma } from "./db.js";
 import { createLocalUser } from "./local-auth.js";
-import { createLogger } from "@constellation/shared";
+import { verifyCsrfToken } from "./middleware.js";
+import { generateToken, createLogger } from "@constellation/shared";
+import { pageStyle } from "./page-style.js";
 
 const log = createLogger("setup");
 
@@ -53,7 +56,14 @@ setupRouter.get("/setup", async (_req: Request, res: Response) => {
     return;
   }
 
-  res.send(setupFormPage());
+  const csrfToken = generateToken();
+  res.cookie("csrf_setup", csrfToken, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "strict",
+    maxAge: 30 * 60 * 1000,
+  });
+  res.send(setupFormPage([], csrfToken));
 });
 
 // ---------------------------------------------------------------------------
@@ -72,22 +82,33 @@ setupRouter.post("/setup", async (req: Request, res: Response) => {
   }
 
   const body = req.body as Record<string, string>;
+  if (!verifyCsrfToken(req, "csrf_setup")) {
+    res.status(403).send(setupFormPage(["Invalid or missing CSRF token. Please reload and try again."]));
+    return;
+  }
+
+  // Re-render the form with a fresh CSRF token so validation errors don't lock the user out.
+  function rerender(errors: string[]): void {
+    const newToken = generateToken();
+    res.cookie("csrf_setup", newToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "strict",
+      maxAge: 30 * 60 * 1000,
+    });
+    res.send(setupFormPage(errors, newToken));
+  }
+
   const username = (body["username"] ?? "").trim();
   const password = body["password"] ?? "";
   const confirm = body["confirm_password"] ?? "";
 
-  if (!username) {
-    res.send(setupFormPage("Username is required."));
-    return;
-  }
-
-  if (password.length < 12) {
-    res.send(setupFormPage("Password must be at least 12 characters."));
-    return;
-  }
-
-  if (password !== confirm) {
-    res.send(setupFormPage("Passwords do not match."));
+  const errors: string[] = [];
+  if (!username) errors.push("Username is required.");
+  if (password.length < 12) errors.push("Password must be at least 12 characters.");
+  if (password !== confirm) errors.push("Passwords do not match.");
+  if (errors.length > 0) {
+    rerender(errors);
     return;
   }
 
@@ -95,10 +116,11 @@ setupRouter.post("/setup", async (req: Request, res: Response) => {
     await createLocalUser(username, password);
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Setup failed";
-    res.send(setupFormPage(msg));
+    rerender([msg]);
     return;
   }
 
+  res.clearCookie("csrf_setup");
   markSetupDone();
   log.info({ username }, "First user created via setup");
   res.redirect("/");
@@ -147,7 +169,10 @@ const startedAt = Date.now();
 // HTML helpers
 // ---------------------------------------------------------------------------
 
-function setupFormPage(error?: string): string {
+function setupFormPage(errors: string[], csrfToken?: string): string {
+  const errorHtml = errors.length > 0
+    ? `<ul class="error">${errors.map((e) => `<li>${escHtml(e)}</li>`).join("")}</ul>`
+    : "";
   return `<!DOCTYPE html>
 <html lang="en">
 <head><meta charset="utf-8"><title>Constellation — Setup</title>${pageStyle()}</head>
@@ -155,8 +180,9 @@ function setupFormPage(error?: string): string {
   <div class="card">
     <h1>Welcome to Constellation</h1>
     <p>Create your admin account to get started.</p>
-    ${error ? `<p class="error">${escHtml(error)}</p>` : ""}
+    ${errorHtml}
     <form method="POST" action="/setup">
+      ${csrfToken ? `<input type="hidden" name="csrf_token" value="${escHtml(csrfToken)}">` : ""}
       <label for="username">Username</label>
       <input id="username" name="username" type="text" autocomplete="username" autofocus required>
       <label for="password">Password <span class="hint">(min 12 characters)</span></label>
@@ -209,30 +235,6 @@ function gonePage(): string {
 </html>`;
 }
 
-function pageStyle(): string {
-  return `<style>
-    body { font-family: system-ui, sans-serif; background: #f5f5f5; display: flex; justify-content: center; padding: 4rem 1rem; }
-    .card { background: #fff; border-radius: 8px; padding: 2rem; max-width: 420px; width: 100%; box-shadow: 0 2px 8px rgba(0,0,0,.1); }
-    .card.wide { max-width: 640px; }
-    h1 { margin-top: 0; font-size: 1.4rem; }
-    h2 { font-size: 1.1rem; margin-top: 1.6rem; }
-    label { display: block; margin: 1rem 0 .4rem; font-weight: 500; }
-    .hint { font-weight: 400; font-size: .85em; color: #666; }
-    input[type=text], input[type=password] { width: 100%; box-sizing: border-box; padding: .5rem; font-size: 1rem; border: 1px solid #ccc; border-radius: 4px; }
-    button { margin-top: 1.2rem; padding: .6rem 1.4rem; font-size: 1rem; border: none; border-radius: 4px; cursor: pointer; background: #2563eb; color: #fff; }
-    pre { background: #f1f5f9; padding: 1rem; border-radius: 4px; font-size: .85rem; overflow-x: auto; white-space: pre-wrap; }
-    .error { color: #dc2626; background: #fee2e2; padding: .6rem; border-radius: 4px; }
-    .meta { color: #555; font-size: .9rem; }
-    .checklist { list-style: none; padding: 0; }
-    .checklist li { padding: .3rem 0; }
-    .checklist .ok { color: #16a34a; }
-    .checklist .missing { color: #dc2626; }
-  </style>`;
-}
-
-function escHtml(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-}
 
 function formatUptime(seconds: number): string {
   const d = Math.floor(seconds / 86400);
