@@ -59,9 +59,11 @@ All values are read from `packages/broker/.env`. This file is shared by both the
 | `RPC_TIMEOUT_MS` | `30000` | Maximum wait for an agent to respond to a tool call |
 | `HEARTBEAT_INTERVAL_SECONDS` | `60` | How often the broker pings each connected agent |
 | `HEARTBEAT_MAX_MISSED` | `3` | Consecutive missed pongs before the agent connection is terminated |
+| `ALLOWED_ORIGINS` | — | Comma-separated list of origins permitted to make cross-origin requests (e.g. `https://claude.ai,https://cursor.com`). Required for browser-based MCP clients. Defaults to no cross-origin access if unset. |
 | `RATE_LIMIT_TOOL_CALLS_PER_MIN` | `60` | Standard tool call limit per user per 60-second sliding window |
 | `RATE_LIMIT_EXPENSIVE_TOOLS_PER_MIN` | `20` | Limit for expensive tools (`grep_files`, `find_files`, recursive `list_directory`) per user per 60-second window |
-| `RATE_LIMIT_OAUTH_PER_15MIN` | `10` | Requests to `/oauth/token` and `/oauth/register` per IP per 15 minutes |
+| `RATE_LIMIT_OAUTH_PER_15MIN` | `10` | Requests to `/oauth/token`, `/oauth/register`, `/setup`, and `/auth/login` per IP per 15 minutes |
+| `RATE_LIMIT_DEVICE_POLL_PER_15MIN` | `200` | Requests to `/oauth/token` with `grant_type=device_code` per IP per 15 minutes. Device flow clients poll every 5 seconds for up to 15 minutes (≈180 requests); this limit must exceed that. |
 | `RATE_LIMIT_WS_RECONNECT_PER_MIN` | `10` | WebSocket reconnect attempts per agent token per 60-second window |
 
 An agent is considered **online** when `now - last_heartbeat_at < HEARTBEAT_INTERVAL_SECONDS × HEARTBEAT_MAX_MISSED × 1000 ms`.

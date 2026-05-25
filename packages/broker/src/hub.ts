@@ -106,8 +106,18 @@ function startHeartbeatLoop(): void {
 // WebSocket server setup
 // ---------------------------------------------------------------------------
 
+let _wss: WebSocketServer | null = null;
+
+export function closeHub(): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (!_wss) { resolve(); return; }
+    _wss.close((err) => err ? reject(err) : resolve());
+  });
+}
+
 export function attachHub(server: Server): void {
   const wss = new WebSocketServer({ noServer: true });
+  _wss = wss;
 
   server.on("upgrade", async (req: IncomingMessage, socket, head) => {
     if (req.url !== "/agent/connect") {

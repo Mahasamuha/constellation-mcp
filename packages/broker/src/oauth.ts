@@ -254,16 +254,17 @@ oauthRouter.post("/auth/login", async (req: Request, res: Response) => {
   res.clearCookie(cookieName);
 
   const code = generateToken();
-  const codeExpiresAt = Date.now() + 10 * 60 * 1000;
-  authCodes.set(code, {
-    userId,
-    clientId: pending.clientId,
-    redirectUri: pending.redirectUri,
-    codeChallenge: pending.downstreamCodeChallenge,
-    codeChallengeMethod: pending.downstreamCodeChallengeMethod,
-    expiresAt: codeExpiresAt,
+  await prisma.authCode.create({
+    data: {
+      codeHash: hashToken(code),
+      userId,
+      clientId: pending.clientId,
+      redirectUri: pending.redirectUri,
+      codeChallenge: pending.downstreamCodeChallenge ?? null,
+      codeChallengeMethod: pending.downstreamCodeChallengeMethod ?? null,
+      expiresAt: new Date(Date.now() + 10 * 60 * 1000),
+    },
   });
-  setTimeout(() => authCodes.delete(code), 10 * 60 * 1000);
 
   const redirectParams = new URLSearchParams({ code });
   if (pending.downstreamState) redirectParams.set("state", pending.downstreamState);
@@ -286,17 +287,10 @@ interface PendingOidc {
   downstreamState?: string;
 }
 
-interface AuthCodeEntry {
-  userId: string;
-  clientId: string;
-  redirectUri: string;
-  codeChallenge?: string;
-  codeChallengeMethod?: string;
-  expiresAt: number;
+/** Removes expired auth code rows. Called periodically from index.ts. */
+export async function pruneAuthCodes(): Promise<void> {
+  await prisma.authCode.deleteMany({ where: { expiresAt: { lt: new Date() } } });
 }
-
-// In-memory store for short-lived authorization codes (10 min TTL).
-const authCodes = new Map<string, AuthCodeEntry>();
 
 oauthRouter.get("/oauth/callback", async (req: Request, res: Response) => {
   const rawState = typeof req.query["state"] === "string" ? req.query["state"] : "";
@@ -350,16 +344,17 @@ oauthRouter.get("/oauth/callback", async (req: Request, res: Response) => {
 
   // Issue a short-lived authorization code to hand back to the MCP client.
   const code = generateToken();
-  const codeExpiresAt = Date.now() + 10 * 60 * 1000;
-  authCodes.set(code, {
-    userId,
-    clientId: pending.clientId,
-    redirectUri: pending.redirectUri,
-    codeChallenge: pending.downstreamCodeChallenge,
-    codeChallengeMethod: pending.downstreamCodeChallengeMethod,
-    expiresAt: codeExpiresAt,
+  await prisma.authCode.create({
+    data: {
+      codeHash: hashToken(code),
+      userId,
+      clientId: pending.clientId,
+      redirectUri: pending.redirectUri,
+      codeChallenge: pending.downstreamCodeChallenge ?? null,
+      codeChallengeMethod: pending.downstreamCodeChallengeMethod ?? null,
+      expiresAt: new Date(Date.now() + 10 * 60 * 1000),
+    },
   });
-  setTimeout(() => authCodes.delete(code), 10 * 60 * 1000);
 
   const redirectParams = new URLSearchParams({ code });
   if (pending.downstreamState) redirectParams.set("state", pending.downstreamState);
@@ -398,15 +393,16 @@ async function handleAuthorizationCodeGrant(
     return;
   }
 
-  const entry = authCodes.get(code);
-  if (!entry || entry.expiresAt < Date.now()) {
-    authCodes.delete(code);
+  const codeHash = hashToken(code);
+  const entry = await prisma.authCode.findUnique({ where: { codeHash } });
+  if (!entry || entry.expiresAt < new Date()) {
+    if (entry) await prisma.authCode.delete({ where: { codeHash } });
     res.status(400).json({ error: "invalid_grant", error_description: "Authorization code invalid or expired" });
     return;
   }
 
   if (entry.clientId !== client_id || entry.redirectUri !== redirect_uri) {
-    authCodes.delete(code);
+    await prisma.authCode.delete({ where: { codeHash } });
     res.status(400).json({ error: "invalid_grant", error_description: "client_id or redirect_uri mismatch" });
     return;
   }
@@ -429,7 +425,7 @@ async function handleAuthorizationCodeGrant(
     }
   }
 
-  authCodes.delete(code);
+  await prisma.authCode.delete({ where: { codeHash } });
 
   const oauthClient = await prisma.oauthClient.findUnique({ where: { id: client_id } });
   if (!oauthClient) {

@@ -1,9 +1,11 @@
 import { createServer } from "node:http";
 import { app } from "./app.js";
-import { attachHub, pruneReconnectTimestamps } from "./hub.js";
+import { attachHub, closeHub, pruneReconnectTimestamps } from "./hub.js";
 import { pruneDeviceCodes } from "./device.js";
+import { pruneAuthCodes } from "./oauth.js";
 import { pruneRateLimits } from "./router.js";
 import { pruneLoginFailures } from "./local-auth.js";
+import { prisma } from "./db.js";
 import { createLogger } from "@constellation/shared";
 
 const log = createLogger("broker");
@@ -13,9 +15,10 @@ const server = createServer(app);
 
 attachHub(server);
 
-// Prune all in-memory sliding-window and TTL stores every 5 minutes.
+// Prune all TTL stores every 5 minutes.
 setInterval(() => {
-  pruneDeviceCodes();
+  pruneDeviceCodes().catch((err) => log.warn({ err }, "pruneDeviceCodes failed"));
+  pruneAuthCodes().catch((err) => log.warn({ err }, "pruneAuthCodes failed"));
   pruneRateLimits();
   pruneReconnectTimestamps();
   pruneLoginFailures();
@@ -24,3 +27,15 @@ setInterval(() => {
 server.listen(port, () => {
   log.info({ port }, "Broker listening");
 });
+
+async function shutdown(): Promise<void> {
+  log.info("Shutting down");
+  server.closeAllConnections();
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+  await closeHub();
+  await prisma.$disconnect();
+  log.info("Shutdown complete");
+}
+
+process.once("SIGTERM", () => shutdown().catch((err) => { log.error({ err }, "Error during shutdown"); process.exit(1); }));
+process.once("SIGINT", () => shutdown().catch((err) => { log.error({ err }, "Error during shutdown"); process.exit(1); }));

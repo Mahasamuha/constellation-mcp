@@ -28,8 +28,17 @@ if (preset === "railway") {
 
 // MCP and OAuth endpoints must be reachable from browser-based MCP clients
 // (Claude.ai, Cursor web, etc.) which send CORS preflight requests.
+// Set ALLOWED_ORIGINS to a comma-separated list of trusted origins (e.g. "https://claude.ai").
+// Defaults to no cross-origin access if unset.
+const _allowedOrigins = (process.env["ALLOWED_ORIGINS"] ?? "")
+  .split(",")
+  .map((o) => o.trim())
+  .filter(Boolean);
+
 app.use(cors({
-  origin: true,
+  origin: _allowedOrigins.length > 0
+    ? (origin, cb) => cb(null, !origin || _allowedOrigins.includes(origin))
+    : false,
   methods: ["GET", "POST", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization", "Mcp-Session-Id"],
   exposedHeaders: ["Mcp-Session-Id"],

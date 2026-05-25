@@ -28,39 +28,36 @@ interface DeviceEntry {
   pendingUserId?: string;
 }
 
-const deviceCodes = new Map<string, DeviceEntry>();
-
-/** Removes expired device code entries. Called on new issuance and periodically from index.ts. */
-export function pruneDeviceCodes(): void {
-  const now = Date.now();
-  for (const [k, v] of deviceCodes) {
-    if (v.expiresAt < now) deviceCodes.delete(k);
-  }
+/** Removes expired device code rows. Called on new issuance and periodically from index.ts. */
+export async function pruneDeviceCodes(): Promise<void> {
+  await prisma.deviceCode.deleteMany({ where: { expiresAt: { lt: new Date() } } });
 }
 
-function findByUserCode(userCode: string): [string, DeviceEntry] | undefined {
+async function findByUserCode(userCode: string) {
   const normalized = userCode.toUpperCase().replace(/[^A-Z0-9]/g, "");
-  for (const [deviceCode, entry] of deviceCodes) {
-    if (entry.userCode.replace(/[^A-Z0-9]/g, "") === normalized) return [deviceCode, entry];
-  }
-  return undefined;
+  return prisma.deviceCode.findFirst({
+    where: { userCode: normalized, status: "pending", expiresAt: { gt: new Date() } },
+  });
 }
 
-/** Generates a human-friendly 9-char user code in XXXX-XXXX format. */
+function byCode(deviceCode: string) {
+  return { where: { deviceCode } } as const;
+}
+
+/** Generates a human-friendly 8-char normalized user code (no dash). Caller formats for display. */
 function generateUserCode(): string {
   // Omit visually ambiguous characters: 0, O, 1, I, L
   const chars = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
   const bytes = randomBytes(8);
   const pick = (b: number) => chars[b % chars.length]!;
-  const half = (start: number) => [0, 1, 2, 3].map(i => pick(bytes[start + i]!)).join("");
-  return `${half(0)}-${half(4)}`;
+  return [0, 1, 2, 3, 4, 5, 6, 7].map(i => pick(bytes[i]!)).join("");
 }
 
 // ---------------------------------------------------------------------------
 // POST /oauth/device/code
 // ---------------------------------------------------------------------------
 
-deviceRouter.post("/oauth/device/code", (req: Request, res: Response) => {
+deviceRouter.post("/oauth/device/code", async (req: Request, res: Response) => {
   const body = req.body as Record<string, string>;
   const scope = body["scope"] as DeviceScope | undefined;
 
@@ -69,17 +66,20 @@ deviceRouter.post("/oauth/device/code", (req: Request, res: Response) => {
     return;
   }
 
-  pruneDeviceCodes();
+  await pruneDeviceCodes();
 
   const deviceCode = generateToken();
-  const userCode = generateUserCode();
+  const userCodeNormalized = generateUserCode();
+  const userCodeDisplay = `${userCodeNormalized.slice(0, 4)}-${userCodeNormalized.slice(4)}`;
   const expiresIn = 15 * 60; // seconds
 
-  deviceCodes.set(deviceCode, {
-    userCode,
-    scope,
-    expiresAt: Date.now() + expiresIn * 1000,
-    status: "pending",
+  await prisma.deviceCode.create({
+    data: {
+      deviceCode,
+      userCode: userCodeNormalized,
+      scope,
+      expiresAt: new Date(Date.now() + expiresIn * 1000),
+    },
   });
 
   const brokerUrl = requireEnv("BROKER_URL");
@@ -88,9 +88,9 @@ deviceRouter.post("/oauth/device/code", (req: Request, res: Response) => {
 
   res.json({
     device_code: deviceCode,
-    user_code: userCode,
+    user_code: userCodeDisplay,
     verification_uri: `${brokerUrl}/activate`,
-    verification_uri_complete: `${brokerUrl}/activate?user_code=${userCode}`,
+    verification_uri_complete: `${brokerUrl}/activate?user_code=${userCodeDisplay}`,
     expires_in: expiresIn,
     interval: 5,
   });
@@ -108,21 +108,14 @@ deviceRouter.get("/activate", async (req: Request, res: Response) => {
     return;
   }
 
-  const match = findByUserCode(userCode);
-  if (!match) {
+  const entry = await findByUserCode(userCode);
+  if (!entry) {
     res.send(activateEntryPage("Invalid or expired code. Please try again."));
     return;
   }
 
-  const [deviceCode, entry] = match;
-
-  if (entry.status !== "pending" || entry.expiresAt < Date.now()) {
-    res.send(activateEntryPage("This code has already been used or has expired."));
-    return;
-  }
-
   if (process.env["AUTH_MODE"] === "local") {
-    res.send(localActivateLoginPage(deviceCode));
+    res.send(localActivateLoginPage(entry.deviceCode));
     return;
   }
 
@@ -132,7 +125,7 @@ deviceRouter.get("/activate", async (req: Request, res: Response) => {
 
   const pendingId = generateToken().slice(0, 32);
 
-  res.cookie(`activate_pending_${pendingId}`, JSON.stringify({ state, codeVerifier, deviceCode }), {
+  res.cookie(`activate_pending_${pendingId}`, JSON.stringify({ state, codeVerifier, deviceCode: entry.deviceCode }), {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
     maxAge: 10 * 60 * 1000,
@@ -159,8 +152,8 @@ deviceRouter.post("/activate/login", async (req: Request, res: Response) => {
     return;
   }
 
-  const entry = deviceCodes.get(deviceCode);
-  if (!entry || entry.status !== "pending" || entry.expiresAt < Date.now()) {
+  const entry = await prisma.deviceCode.findUnique(byCode(deviceCode));
+  if (!entry || entry.status !== "pending" || entry.expiresAt < new Date()) {
     res.send(activateEntryPage("This code has already been used or has expired."));
     return;
   }
@@ -174,7 +167,7 @@ deviceRouter.post("/activate/login", async (req: Request, res: Response) => {
     return;
   }
 
-  entry.pendingUserId = userId;
+  await prisma.deviceCode.update({ ...byCode(deviceCode), data: { pendingUserId: userId } });
   const csrfToken = generateToken();
   res.cookie("csrf_activate", csrfToken, {
     httpOnly: true,
@@ -182,7 +175,7 @@ deviceRouter.post("/activate/login", async (req: Request, res: Response) => {
     sameSite: "strict",
     maxAge: 15 * 60 * 1000,
   });
-  res.send(consentPage(deviceCode, entry.scope, undefined, csrfToken));
+  res.send(consentPage(deviceCode, entry.scope as DeviceScope, undefined, csrfToken));
 });
 
 // ---------------------------------------------------------------------------
@@ -236,14 +229,14 @@ deviceRouter.get("/activate/callback", async (req: Request, res: Response) => {
     return;
   }
 
-  const entry = deviceCodes.get(stored.deviceCode);
-  if (!entry || entry.status !== "pending" || entry.expiresAt < Date.now()) {
+  const entry = await prisma.deviceCode.findUnique(byCode(stored.deviceCode));
+  if (!entry || entry.status !== "pending" || entry.expiresAt < new Date()) {
     res.send(activateEntryPage("This code has already been used or has expired."));
     return;
   }
 
   // Store the OIDC-verified userId server-side before showing the consent page.
-  entry.pendingUserId = userId;
+  await prisma.deviceCode.update({ ...byCode(stored.deviceCode), data: { pendingUserId: userId } });
 
   const csrfToken = generateToken();
   res.cookie("csrf_activate", csrfToken, {
@@ -252,7 +245,7 @@ deviceRouter.get("/activate/callback", async (req: Request, res: Response) => {
     sameSite: "strict",
     maxAge: 15 * 60 * 1000,
   });
-  res.send(consentPage(stored.deviceCode, entry.scope, undefined, csrfToken));
+  res.send(consentPage(stored.deviceCode, entry.scope as DeviceScope, undefined, csrfToken));
 });
 
 // ---------------------------------------------------------------------------
@@ -271,14 +264,16 @@ deviceRouter.post("/activate/confirm", async (req: Request, res: Response) => {
   res.clearCookie("csrf_activate");
 
   if (action === "deny") {
-    const entry = deviceCodes.get(device_code);
-    if (entry) entry.status = "denied";
+    await prisma.deviceCode.updateMany({
+      where: { deviceCode: device_code, status: "pending" },
+      data: { status: "denied" },
+    });
     res.send(activateDonePage("Access denied. You can close this tab."));
     return;
   }
 
-  const entry = deviceCodes.get(device_code);
-  if (!entry || entry.status !== "pending" || entry.expiresAt < Date.now()) {
+  const entry = await prisma.deviceCode.findUnique(byCode(device_code));
+  if (!entry || entry.status !== "pending" || entry.expiresAt < new Date()) {
     res.status(400).send("Session expired or already completed.");
     return;
   }
@@ -293,14 +288,13 @@ deviceRouter.post("/activate/confirm", async (req: Request, res: Response) => {
   if (entry.scope === "agent:register") {
     const resolvedHost = (host_name ?? "").trim();
     if (!resolvedHost) {
-      res.send(consentPage(device_code, entry.scope, "Host name is required."));
+      res.send(consentPage(device_code, entry.scope as DeviceScope, "Host name is required."));
       return;
     }
-    entry.hostName = resolvedHost;
+    await prisma.deviceCode.update({ ...byCode(device_code), data: { hostName: resolvedHost, userId: verifiedUserId, status: "approved" } });
+  } else {
+    await prisma.deviceCode.update({ ...byCode(device_code), data: { userId: verifiedUserId, status: "approved" } });
   }
-
-  entry.userId = verifiedUserId;
-  entry.status = "approved";
 
   log.info({ scope: entry.scope, userId: verifiedUserId }, "Device consent approved");
   res.send(activateDonePage("Access granted. You can close this tab."));
@@ -325,15 +319,15 @@ export async function handleDeviceCodeGrant(
     return;
   }
 
-  const entry = deviceCodes.get(device_code);
+  const entry = await prisma.deviceCode.findUnique(byCode(device_code));
 
   if (!entry) {
     res.status(400).json({ error: "invalid_grant", error_description: "device_code not found" });
     return;
   }
 
-  if (entry.expiresAt < Date.now()) {
-    deviceCodes.delete(device_code);
+  if (entry.expiresAt < new Date()) {
+    await prisma.deviceCode.delete(byCode(device_code));
     res.status(400).json({ error: "expired_token" });
     return;
   }
@@ -344,13 +338,13 @@ export async function handleDeviceCodeGrant(
   }
 
   if (entry.status === "denied") {
-    deviceCodes.delete(device_code);
+    await prisma.deviceCode.delete(byCode(device_code));
     res.status(400).json({ error: "access_denied" });
     return;
   }
 
   // Approved — consume the entry.
-  deviceCodes.delete(device_code);
+  await prisma.deviceCode.delete(byCode(device_code));
   const userId = entry.userId!;
 
   if (entry.scope === "agent:register") {
@@ -431,23 +425,21 @@ export async function handleDeviceCodeGrant(
   }
 }
 
-/** Returns the id of the static broker-manage OAuth client, creating it on first call. */
-async function ensureBrokerClient(): Promise<string> {
-  const existing = await prisma.oauthClient.findFirst({
-    where: { isDynamic: false, grantTypes: { has: "broker:manage" } },
-    select: { id: true },
-  });
-  if (existing) return existing.id;
+const BROKER_CLIENT_ID = "constellation-broker-manage";
 
-  const created = await prisma.oauthClient.create({
-    data: {
+/** Returns the id of the static broker-manage OAuth client, creating it if absent. */
+async function ensureBrokerClient(): Promise<string> {
+  await prisma.oauthClient.upsert({
+    where: { id: BROKER_CLIENT_ID },
+    create: {
+      id: BROKER_CLIENT_ID,
       redirectUris: [],
       grantTypes: ["broker:manage", "urn:ietf:params:oauth:grant-type:device_code", "refresh_token"],
       isDynamic: false,
     },
-    select: { id: true },
+    update: {},
   });
-  return created.id;
+  return BROKER_CLIENT_ID;
 }
 
 // ---------------------------------------------------------------------------
