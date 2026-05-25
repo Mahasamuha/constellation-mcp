@@ -282,6 +282,12 @@ apiRouter.delete("/api/sessions/:id", async (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 // User management — AUTH_MODE=local only
 // ---------------------------------------------------------------------------
+//
+// Any broker:manage token grants full user-management access (list, create,
+// deactivate, reset password). There is no separate admin role. This is
+// intentional for single-user/small-team deployments where every operator is
+// effectively an admin. A role-based access model would be needed if the broker
+// were to support mixed-trust users with delegated management.
 
 function requireLocalMode(res: Response): boolean {
   if (process.env["AUTH_MODE"] !== "local") {

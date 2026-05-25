@@ -8,6 +8,9 @@ const BCRYPT_COST = 12;
 const MAX_FAILURES = 5;
 const FAILURE_WINDOW_MS = 15 * 60 * 1000;
 
+// In-memory only — intentional for single-user/single-instance deployments.
+// Counters reset on process restart. Persisting to Postgres or Redis would be
+// needed for multi-instance deployments or restart-resistant protection.
 const loginFailures = new Map<string, number[]>();
 
 export function checkBruteForce(ip: string): boolean {
@@ -72,12 +75,15 @@ export async function validateLocalUser(username: string, password: string): Pro
     throw new Error("Invalid credentials");
   }
 
-  const valid = await bcrypt.compare(password, localUser.passwordHash);
-  if (!valid) throw new Error("Invalid credentials");
-
+  // Check deactivation before password verification so a successful bcrypt compare
+  // cannot be inferred from the error message (password oracle).
   if (!localUser.isActive || localUser.user.deactivatedAt !== null) {
+    await bcrypt.compare(password, "$2a$12$invalidhashpadding000000000000000000000000000000000000000");
     throw new Error("Account is deactivated");
   }
+
+  const valid = await bcrypt.compare(password, localUser.passwordHash);
+  if (!valid) throw new Error("Invalid credentials");
 
   await prisma.localUser.update({
     where: { id: localUser.id },
