@@ -34,9 +34,10 @@ server.listen(port, () => {
 
 async function shutdown(): Promise<void> {
   log.info("Shutting down");
-  server.closeAllConnections();
-  await new Promise<void>((resolve) => server.close(() => resolve()));
+  server.closeIdleConnections();
+  const serverClosed = new Promise<void>((resolve) => server.close(() => resolve()));
   await closeHub();
+  await serverClosed;
   await prisma.$disconnect();
   log.info("Shutdown complete");
 }
