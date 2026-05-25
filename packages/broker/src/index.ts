@@ -24,6 +24,8 @@ setInterval(() => {
   pruneLoginFailures().catch((err) => log.warn({ err }, "pruneLoginFailures failed"));
 }, 5 * 60 * 1000).unref();
 
+server.setTimeout(60_000);
+
 server.listen(port, () => {
   log.info({ port }, "Broker listening");
 });
