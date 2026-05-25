@@ -47,14 +47,17 @@ jobs:
       # Single esbuild pass: bundles agent + shared TypeScript directly to CJS.
       # Avoids workspace symlink resolution issues with tsup in CI.
       - name: Bundle to CJS
-        run: >
-          npx esbuild packages/agent/src/cli.ts
-          --bundle
-          --platform=node
-          --format=cjs
-          --external:*.node
-          --alias:@constellation/shared=./packages/shared/src/index.ts
-          --outfile=cli-bundle.cjs
+        shell: bash
+        run: |
+          VERSION=$(node -p 'require("./packages/agent/package.json").version')
+          npx esbuild packages/agent/src/cli.ts \
+            --bundle \
+            --platform=node \
+            --format=cjs \
+            --external:*.node \
+            --alias:@constellation/shared=./packages/shared/src/index.ts \
+            "--define:__PKG_VERSION__=\"${VERSION}\"" \
+            --outfile=cli-bundle.cjs
 
       - name: Compile to native binary
         run: npx @yao-pkg/pkg cli-bundle.cjs --target ${{ matrix.pkg_target }} --output ${{ matrix.binary }}
