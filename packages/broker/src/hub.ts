@@ -267,8 +267,13 @@ async function handleConnection(ws: WebSocket, meta: {
     const MAX_MESSAGE_BYTES = parseInt(process.env["WS_MAX_MESSAGE_BYTES"] ?? "10485760", 10); // 10 MiB
 
     ws.on("message", (data) => {
-      if (data.length > MAX_MESSAGE_BYTES) {
-        log.warn({ agentId, size: data.length, limit: MAX_MESSAGE_BYTES }, "Agent message exceeds size limit — terminating");
+      const byteLength = Buffer.isBuffer(data)
+        ? data.length
+        : Array.isArray(data)
+          ? data.reduce((sum, b) => sum + b.length, 0)
+          : data.byteLength;
+      if (byteLength > MAX_MESSAGE_BYTES) {
+        log.warn({ agentId, size: byteLength, limit: MAX_MESSAGE_BYTES }, "Agent message exceeds size limit — terminating");
         conn.disconnectReason = "error";
         ws.terminate();
         return;
