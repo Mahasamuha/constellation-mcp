@@ -147,7 +147,7 @@ deviceRouter.post("/activate/login", async (req: Request, res: Response) => {
   const password = body["password"] ?? "";
 
   const ip = req.ip ?? "unknown";
-  if (!checkBruteForce(ip)) {
+  if (!await checkBruteForce(ip)) {
     res.status(429).send(localActivateLoginPage(deviceCode, "Too many failed attempts. Please wait 15 minutes."));
     return;
   }
@@ -162,7 +162,7 @@ deviceRouter.post("/activate/login", async (req: Request, res: Response) => {
   try {
     userId = await validateLocalUser(username, password);
   } catch {
-    recordFailure(ip);
+    await recordFailure(ip);
     res.send(localActivateLoginPage(deviceCode, "Invalid username or password."));
     return;
   }

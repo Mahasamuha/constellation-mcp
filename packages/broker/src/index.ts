@@ -21,7 +21,7 @@ setInterval(() => {
   pruneAuthCodes().catch((err) => log.warn({ err }, "pruneAuthCodes failed"));
   pruneRateLimits();
   pruneReconnectTimestamps();
-  pruneLoginFailures();
+  pruneLoginFailures().catch((err) => log.warn({ err }, "pruneLoginFailures failed"));
 }, 5 * 60 * 1000).unref();
 
 server.listen(port, () => {

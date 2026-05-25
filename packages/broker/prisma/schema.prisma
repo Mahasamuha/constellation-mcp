@@ -111,6 +111,15 @@ model BrokerPathFilter {
   @@map("broker_path_filters")
 }
 
+model LoginFailure {
+  id       Int      @id @default(autoincrement())
+  ip       String
+  failedAt DateTime @default(now()) @map("failed_at")
+
+  @@index([ip, failedAt])
+  @@map("login_failures")
+}
+
 model AuthCode {
   codeHash            String   @id @map("code_hash")
   userId              String   @map("user_id")

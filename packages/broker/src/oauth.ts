@@ -222,7 +222,7 @@ oauthRouter.post("/auth/login", async (req: Request, res: Response) => {
   const password = body["password"] ?? "";
 
   const ip = req.ip ?? "unknown";
-  if (!checkBruteForce(ip)) {
+  if (!await checkBruteForce(ip)) {
     res.status(429).send(loginPage(pendingId, "Too many failed attempts. Please wait 15 minutes."));
     return;
   }
@@ -246,7 +246,7 @@ oauthRouter.post("/auth/login", async (req: Request, res: Response) => {
   try {
     userId = await validateLocalUser(username, password);
   } catch {
-    recordFailure(ip);
+    await recordFailure(ip);
     res.send(loginPage(pendingId, "Invalid username or password."));
     return;
   }

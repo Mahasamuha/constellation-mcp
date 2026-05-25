@@ -8,31 +8,18 @@ const BCRYPT_COST = 12;
 const MAX_FAILURES = 5;
 const FAILURE_WINDOW_MS = 15 * 60 * 1000;
 
-// In-memory only — intentional for single-user/single-instance deployments.
-// Counters reset on process restart. Persisting to Postgres or Redis would be
-// needed for multi-instance deployments or restart-resistant protection.
-const loginFailures = new Map<string, number[]>();
-
-export function checkBruteForce(ip: string): boolean {
-  const now = Date.now();
-  const failures = (loginFailures.get(ip) ?? []).filter((t) => now - t < FAILURE_WINDOW_MS);
-  return failures.length < MAX_FAILURES;
+export async function checkBruteForce(ip: string): Promise<boolean> {
+  const since = new Date(Date.now() - FAILURE_WINDOW_MS);
+  const count = await prisma.loginFailure.count({ where: { ip, failedAt: { gte: since } } });
+  return count < MAX_FAILURES;
 }
 
-export function recordFailure(ip: string): void {
-  const now = Date.now();
-  const failures = (loginFailures.get(ip) ?? []).filter((t) => now - t < FAILURE_WINDOW_MS);
-  failures.push(now);
-  loginFailures.set(ip, failures);
+export async function recordFailure(ip: string): Promise<void> {
+  await prisma.loginFailure.create({ data: { ip } });
 }
 
-export function pruneLoginFailures(): void {
-  const now = Date.now();
-  for (const [ip, ts] of loginFailures) {
-    const fresh = ts.filter((t) => now - t < FAILURE_WINDOW_MS);
-    if (fresh.length === 0) loginFailures.delete(ip);
-    else loginFailures.set(ip, fresh);
-  }
+export async function pruneLoginFailures(): Promise<void> {
+  await prisma.loginFailure.deleteMany({ where: { failedAt: { lt: new Date(Date.now() - FAILURE_WINDOW_MS) } } });
 }
 
 /**
