@@ -1,3 +1,4 @@
+import { createRequire } from "node:module";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { Router, Request, Response, IRouter } from "express";
@@ -5,6 +6,8 @@ import { z } from "zod/v4";
 import { prisma } from "./db.js";
 import { routeToolCall, RouterError } from "./router.js";
 import { hashToken, createLogger } from "@constellation/shared";
+
+const { version } = createRequire(import.meta.url)("../package.json") as { version: string };
 
 // ---------------------------------------------------------------------------
 // Output schemas — used as outputSchema in registerTool and to type ok()
@@ -144,7 +147,7 @@ mcpRouter.all("/mcp", async (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 
 export function buildMcpServer(): McpServer {
-  const server = new McpServer({ name: "constellation", version: "0.1.0" });
+  const server = new McpServer({ name: "constellation", version });
 
   registerListHosts(server);
   registerListLabels(server);

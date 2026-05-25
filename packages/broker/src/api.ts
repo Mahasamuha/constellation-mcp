@@ -1,9 +1,12 @@
+import { createRequire } from "node:module";
 import { Router, Request, Response, IRouter } from "express";
 import { prisma } from "./db.js";
 import { requireBrokerManage, AuthenticatedRequest } from "./middleware.js";
 import { getConnection } from "./hub.js";
 import { createLogger } from "@constellation/shared";
 import { createLocalUser } from "./local-auth.js";
+
+const { version } = createRequire(import.meta.url)("../package.json") as { version: string };
 
 const log = createLogger("api");
 
@@ -31,7 +34,7 @@ apiRouter.get("/api/status", (_req: Request, res: Response) => {
   res.json({
     status: "ok",
     uptime_seconds: Math.floor((Date.now() - startedAt.getTime()) / 1000),
-    version: "0.1.0",
+    version,
   });
 });
 
