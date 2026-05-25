@@ -1,6 +1,6 @@
 services:
   broker:
-    image: ghcr.io/mahasamuha/constellation-broker:latest
+    image: mahasamuha/constellation-broker:latest
     env_file: .env
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
