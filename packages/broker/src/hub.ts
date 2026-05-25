@@ -82,8 +82,10 @@ const HEARTBEAT_INTERVAL_MS =
   parseInt(process.env["HEARTBEAT_INTERVAL_SECONDS"] ?? "60", 10) * 1000;
 const HEARTBEAT_MAX_MISSED = parseInt(process.env["HEARTBEAT_MAX_MISSED"] ?? "3", 10);
 
+let _heartbeatInterval: ReturnType<typeof setInterval> | null = null;
+
 function startHeartbeatLoop(): void {
-  setInterval(() => {
+  _heartbeatInterval = setInterval(() => {
     for (const [agentId, conn] of connections) {
       conn.missedPings += 1;
 
@@ -109,6 +111,10 @@ function startHeartbeatLoop(): void {
 let _wss: WebSocketServer | null = null;
 
 export function closeHub(): Promise<void> {
+  if (_heartbeatInterval) {
+    clearInterval(_heartbeatInterval);
+    _heartbeatInterval = null;
+  }
   return new Promise((resolve, reject) => {
     if (!_wss) { resolve(); return; }
     _wss.close((err) => err ? reject(err) : resolve());
@@ -377,26 +383,25 @@ async function handleConfigUpdate(conn: ConnectedAgent, msg: ConfigUpdateMessage
     seen.add(entry.label);
   }
 
-  // Check for label conflicts — another agent on the same user already owns any of these labels.
-  for (const entry of entries) {
-    const conflict = await prisma.pathLabel.findFirst({
-      where: {
-        userId: conn.userId,
-        label: entry.label,
-        NOT: { agentId: conn.agentId },
-      },
-    });
-    if (conflict) {
-      send(conn.ws, {
-        type: "config_update_error",
-        error: `Label "${entry.label}" is already registered by another agent`,
-      });
-      return;
-    }
-  }
-
   // Upsert all provided labels and remove any that are no longer present.
+  // Conflict check is inside the transaction to avoid a TOCTOU race where two
+  // agents register the same label concurrently and both pass a pre-transaction check.
+  let conflictLabel: string | null = null;
   await prisma.$transaction(async (tx) => {
+    for (const entry of entries) {
+      const conflict = await tx.pathLabel.findFirst({
+        where: {
+          userId: conn.userId,
+          label: entry.label,
+          NOT: { agentId: conn.agentId },
+        },
+      });
+      if (conflict) {
+        conflictLabel = entry.label;
+        return;
+      }
+    }
+
     for (const entry of entries) {
       await tx.pathLabel.upsert({
         where: { userId_label: { userId: conn.userId, label: entry.label } },
@@ -419,6 +424,14 @@ async function handleConfigUpdate(conn: ConnectedAgent, msg: ConfigUpdateMessage
       },
     });
   });
+
+  if (conflictLabel) {
+    send(conn.ws, {
+      type: "config_update_error",
+      error: `Label "${conflictLabel}" is already registered by another agent`,
+    });
+    return;
+  }
 
   log.info({ agentId: conn.agentId, count: entries.length }, "Config updated");
   send(conn.ws, { type: "config_update_ok" });
@@ -525,6 +538,18 @@ export function getConnection(agentId: string): ConnectedAgent | undefined {
 
 /** Rejects all pending RPCs for a given agent — called on disconnect. */
 /** Removes expired reconnect timestamp entries. Called periodically from index.ts. */
+/** Revokes AgentToken rows that are not referenced by any Agent and were never revoked.
+ * These are left behind when the broker restarts mid-rotation. Called once at startup. */
+export async function revokeOrphanedTokens(): Promise<void> {
+  const result = await prisma.agentToken.updateMany({
+    where: { revokedAt: null, agents: { none: {} } },
+    data: { revokedAt: new Date() },
+  });
+  if (result.count > 0) {
+    log.warn({ count: result.count }, "Revoked orphaned agent tokens from prior restart");
+  }
+}
+
 export function pruneReconnectTimestamps(): void {
   const now = Date.now();
   const window = 60_000;

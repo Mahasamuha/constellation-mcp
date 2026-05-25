@@ -350,7 +350,12 @@ export async function handleDeviceCodeGrant(
 
   // Approved — consume the entry.
   await prisma.deviceCode.delete(byCode(device_code));
-  const userId = entry.userId!;
+  const userId = entry.userId;
+  if (!userId) {
+    log.error({ deviceCode: device_code }, "Approved device code missing userId — possible data corruption");
+    res.status(500).json({ error: "server_error" });
+    return;
+  }
 
   if (entry.scope === "agent:register") {
     const token = generateToken();

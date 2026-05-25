@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 import { app } from "./app.js";
-import { attachHub, closeHub, pruneReconnectTimestamps } from "./hub.js";
+import { attachHub, closeHub, pruneReconnectTimestamps, revokeOrphanedTokens } from "./hub.js";
 import { pruneDeviceCodes } from "./device.js";
 import { pruneAuthCodes } from "./oauth.js";
 import { pruneRateLimits } from "./router.js";
@@ -14,6 +14,8 @@ const port = parseInt(process.env["PORT"] ?? "3000", 10);
 const server = createServer(app);
 
 attachHub(server);
+
+revokeOrphanedTokens().catch((err) => log.warn({ err }, "revokeOrphanedTokens failed"));
 
 // Prune all TTL stores every 5 minutes.
 setInterval(() => {
