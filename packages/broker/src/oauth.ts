@@ -1,4 +1,5 @@
 import { Router, Request, Response, IRouter } from "express";
+import escHtml from "escape-html";
 import { randomBytes, createHash } from "node:crypto";
 import { prisma } from "./db.js";
 import { buildAuthorizationUrl, exchangeCodeAndUpsertUser } from "./oidc.js";
@@ -571,9 +572,6 @@ function loginPage(pendingId: string, error?: string): string {
 </html>`;
 }
 
-function escHtml(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-}
 
 function asStringArray(val: unknown): string[] {
   if (Array.isArray(val)) return val.filter((v): v is string => typeof v === "string");

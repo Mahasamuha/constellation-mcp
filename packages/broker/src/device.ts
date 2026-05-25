@@ -1,4 +1,5 @@
 import { Router, Request, Response, IRouter } from "express";
+import escHtml from "escape-html";
 import { randomBytes } from "node:crypto";
 import { prisma } from "./db.js";
 import { buildAuthorizationUrl, exchangeCodeAndUpsertUser } from "./oidc.js";
@@ -548,9 +549,6 @@ function pageStyle(): string {
   </style>`;
 }
 
-function escHtml(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-}
 
 function requireEnv(name: string): string {
   const val = process.env[name];

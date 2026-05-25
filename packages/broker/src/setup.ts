@@ -1,4 +1,5 @@
 import { Router, Request, Response, NextFunction, IRouter } from "express";
+import escHtml from "escape-html";
 import { prisma } from "./db.js";
 import { createLocalUser } from "./local-auth.js";
 import { generateToken, createLogger } from "@constellation/shared";
@@ -244,9 +245,6 @@ function pageStyle(): string {
   </style>`;
 }
 
-function escHtml(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-}
 
 function formatUptime(seconds: number): string {
   const d = Math.floor(seconds / 86400);
