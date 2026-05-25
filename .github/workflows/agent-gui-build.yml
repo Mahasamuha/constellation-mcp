@@ -59,6 +59,7 @@ jobs:
 
       - name: Reinstall Tauri CLI with platform bindings
         if: matrix.os != 'ubuntu-22.04'
+        shell: bash
         run: |
           rm -rf node_modules/@tauri-apps/cli node_modules/@tauri-apps/cli-*
           npm install --no-save @tauri-apps/cli
