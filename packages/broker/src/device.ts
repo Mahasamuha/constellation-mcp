@@ -175,7 +175,14 @@ deviceRouter.post("/activate/login", async (req: Request, res: Response) => {
   }
 
   entry.pendingUserId = userId;
-  res.send(consentPage(deviceCode, entry.scope));
+  const csrfToken = generateToken();
+  res.cookie("csrf_activate", csrfToken, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "strict",
+    maxAge: 15 * 60 * 1000,
+  });
+  res.send(consentPage(deviceCode, entry.scope, undefined, csrfToken));
 });
 
 // ---------------------------------------------------------------------------
@@ -238,7 +245,14 @@ deviceRouter.get("/activate/callback", async (req: Request, res: Response) => {
   // Store the OIDC-verified userId server-side before showing the consent page.
   entry.pendingUserId = userId;
 
-  res.send(consentPage(stored.deviceCode, entry.scope));
+  const csrfToken = generateToken();
+  res.cookie("csrf_activate", csrfToken, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "strict",
+    maxAge: 15 * 60 * 1000,
+  });
+  res.send(consentPage(stored.deviceCode, entry.scope, undefined, csrfToken));
 });
 
 // ---------------------------------------------------------------------------
@@ -248,6 +262,13 @@ deviceRouter.get("/activate/callback", async (req: Request, res: Response) => {
 deviceRouter.post("/activate/confirm", async (req: Request, res: Response) => {
   const body = req.body as Record<string, string>;
   const { device_code, host_name, action } = body;
+
+  const csrfCookie = (req.cookies as Record<string, string>)["csrf_activate"];
+  if (!csrfCookie || csrfCookie !== body["csrf_token"]) {
+    res.status(403).send("Invalid or missing CSRF token. Please go back and try again.");
+    return;
+  }
+  res.clearCookie("csrf_activate");
 
   if (action === "deny") {
     const entry = deviceCodes.get(device_code);
@@ -472,7 +493,7 @@ function activateEntryPage(error?: string): string {
 </html>`;
 }
 
-function consentPage(deviceCode: string, scope: DeviceScope, error?: string): string {
+function consentPage(deviceCode: string, scope: DeviceScope, error?: string, csrfToken?: string): string {
   const isAgent = scope === "agent:register";
   const title = isAgent ? "Register Agent" : "Authorize Management Access";
   const description = isAgent
@@ -489,6 +510,7 @@ function consentPage(deviceCode: string, scope: DeviceScope, error?: string): st
     ${error ? `<p class="error">${escHtml(error)}</p>` : ""}
     <form method="POST" action="/activate/confirm">
       <input type="hidden" name="device_code" value="${escHtml(deviceCode)}">
+      ${csrfToken ? `<input type="hidden" name="csrf_token" value="${escHtml(csrfToken)}">` : ""}
       ${isAgent ? `
       <label for="host_name">Host name for this machine:</label>
       <input id="host_name" name="host_name" type="text" placeholder="e.g. home-server" autocomplete="off" autofocus required>

@@ -1,4 +1,5 @@
 import { createRequire } from "node:module";
+import RE2 from "re2";
 import { Router, Request, Response, IRouter } from "express";
 import { prisma } from "./db.js";
 import { requireBrokerManage, AuthenticatedRequest } from "./middleware.js";
@@ -183,7 +184,7 @@ apiRouter.post("/api/filters", async (req: Request, res: Response) => {
   // Validate regex compiles before storing.
   if (patternType === "regex") {
     try {
-      new RegExp(pattern);
+      new RE2(pattern);
     } catch {
       res.status(400).json({ error: "invalid_request", error_description: "Invalid regex pattern" });
       return;

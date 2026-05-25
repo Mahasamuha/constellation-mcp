@@ -154,7 +154,7 @@ oauthRouter.get("/oauth/authorize", async (req: Request, res: Response) => {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
       maxAge: 10 * 60 * 1000,
-      sameSite: "lax",
+      sameSite: "strict",
     });
     log.info({ clientId: client_id }, "Authorization redirected to local login");
     res.redirect(`/auth/login?pending=${pendingId}`);
@@ -435,6 +435,14 @@ async function handleAuthorizationCodeGrant(
   if (!oauthClient) {
     res.status(400).json({ error: "invalid_client" });
     return;
+  }
+
+  if (oauthClient.clientSecretHash !== null) {
+    const { client_secret } = body;
+    if (!client_secret || hashToken(client_secret) !== oauthClient.clientSecretHash) {
+      res.status(401).json({ error: "invalid_client", error_description: "client_secret required for confidential clients" });
+      return;
+    }
   }
 
   const accessToken = generateToken();

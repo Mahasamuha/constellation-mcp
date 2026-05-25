@@ -1,7 +1,7 @@
 import { Router, Request, Response, NextFunction, IRouter } from "express";
 import { prisma } from "./db.js";
 import { createLocalUser } from "./local-auth.js";
-import { createLogger } from "@constellation/shared";
+import { generateToken, createLogger } from "@constellation/shared";
 
 const log = createLogger("setup");
 
@@ -53,7 +53,14 @@ setupRouter.get("/setup", async (_req: Request, res: Response) => {
     return;
   }
 
-  res.send(setupFormPage());
+  const csrfToken = generateToken();
+  res.cookie("csrf_setup", csrfToken, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "strict",
+    maxAge: 30 * 60 * 1000,
+  });
+  res.send(setupFormPage(undefined, csrfToken));
 });
 
 // ---------------------------------------------------------------------------
@@ -72,6 +79,12 @@ setupRouter.post("/setup", async (req: Request, res: Response) => {
   }
 
   const body = req.body as Record<string, string>;
+  const csrfCookie = (req.cookies as Record<string, string>)["csrf_setup"];
+  if (!csrfCookie || csrfCookie !== body["csrf_token"]) {
+    res.status(403).send(setupFormPage("Invalid or missing CSRF token. Please reload and try again."));
+    return;
+  }
+  res.clearCookie("csrf_setup");
   const username = (body["username"] ?? "").trim();
   const password = body["password"] ?? "";
   const confirm = body["confirm_password"] ?? "";
@@ -147,7 +160,7 @@ const startedAt = Date.now();
 // HTML helpers
 // ---------------------------------------------------------------------------
 
-function setupFormPage(error?: string): string {
+function setupFormPage(error?: string, csrfToken?: string): string {
   return `<!DOCTYPE html>
 <html lang="en">
 <head><meta charset="utf-8"><title>Constellation — Setup</title>${pageStyle()}</head>
@@ -157,6 +170,7 @@ function setupFormPage(error?: string): string {
     <p>Create your admin account to get started.</p>
     ${error ? `<p class="error">${escHtml(error)}</p>` : ""}
     <form method="POST" action="/setup">
+      ${csrfToken ? `<input type="hidden" name="csrf_token" value="${escHtml(csrfToken)}">` : ""}
       <label for="username">Username</label>
       <input id="username" name="username" type="text" autocomplete="username" autofocus required>
       <label for="password">Password <span class="hint">(min 12 characters)</span></label>

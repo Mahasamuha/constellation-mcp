@@ -36,8 +36,8 @@ app.use(cors({
   credentials: true,
 }));
 
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: "1mb" }));
+app.use(express.urlencoded({ extended: true, limit: "1mb" }));
 app.use(cookieParser());
 
 app.get("/healthz", (_req: Request, res: Response) => {
@@ -52,7 +52,24 @@ export const oauthLimiter = rateLimit({
   message: { error: "rate_limit_exceeded" },
 });
 
-app.use("/oauth/token", oauthLimiter);
+// Device code polling is high-frequency by design (5s interval, 15min TTL ≈ 180 polls).
+// Give it a separate, higher-capacity bucket so it doesn't exhaust the strict OAuth limit.
+export const devicePollLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: () => parseInt(process.env["RATE_LIMIT_DEVICE_POLL_PER_15MIN"] ?? "200", 10),
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  message: { error: "rate_limit_exceeded" },
+});
+
+app.use("/oauth/token", (req, res, next) => {
+  const grant = (req.body as Record<string, unknown>)?.["grant_type"];
+  if (grant === "urn:ietf:params:oauth:grant-type:device_code") {
+    devicePollLimiter(req, res, next);
+  } else {
+    oauthLimiter(req, res, next);
+  }
+});
 app.use("/oauth/register", oauthLimiter);
 app.use("/setup", oauthLimiter);
 app.use("/auth/login", oauthLimiter);
