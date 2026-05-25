@@ -69,6 +69,8 @@ All values are read from `packages/broker/.env`. This file is shared by both the
 
 An agent is considered **online** when `now - last_heartbeat_at < HEARTBEAT_INTERVAL_SECONDS × HEARTBEAT_MAX_MISSED × 1000 ms`.
 
+All numeric variables are validated at startup. Setting any of them to a non-integer value causes the broker to exit immediately with an error message naming the offending variable.
+
 ---
 
 ## Management API
@@ -183,7 +185,7 @@ Add a broker path filter.
 | `pattern_type` | yes | `"glob"` or `"regex"` |
 | `agent_id` | no | Scope to a specific agent; omit for all agents |
 
-Regex patterns are validated server-side before storage. Invalid patterns return `400`.
+Regex patterns are validated server-side before storage. Invalid patterns return `400`. Patterns are limited to 1000 characters.
 
 **Response `201`** — the created filter object (same shape as `GET /api/filters` entries).
 
@@ -192,7 +194,7 @@ Regex patterns are validated server-side before storage. Invalid patterns return
 | Status | Meaning |
 |---|---|
 | `201` | Filter created |
-| `400` | Missing/invalid fields, or invalid regex |
+| `400` | Missing/invalid fields, invalid regex, or pattern exceeds 1000 characters |
 | `404` | `agent_id` specified but not found for this user |
 
 ---
@@ -238,6 +240,42 @@ Revoke an OAuth session. Both access and refresh tokens are invalidated immediat
 |---|---|
 | `204` | Session revoked |
 | `404` | Not found or belongs to another user |
+
+---
+
+---
+
+### `GET /api/users` · `POST /api/users` · `POST /api/users/:username/deactivate` · `POST /api/users/:username/reset-password`
+
+User management endpoints. Available in `AUTH_MODE=local` only. Return `404` in `AUTH_MODE=oidc`.
+
+**`GET /api/users`** — list all local users.
+
+**Query params**: `limit` (default 100, max 1000), `offset` (default 0).
+
+**Response `200`**
+```json
+{
+  "data": [
+    {
+      "id": "...",
+      "username": "alice",
+      "is_active": true,
+      "created_at": "2026-05-25T12:00:00.000Z",
+      "last_login_at": "2026-05-25T14:00:00.000Z"
+    }
+  ],
+  "total": 1,
+  "limit": 100,
+  "offset": 0
+}
+```
+
+**`POST /api/users`** — create a new local user. Body: `{ username, password }`. Password must be at least 12 characters. Returns `409` if the username is already taken.
+
+**`POST /api/users/:username/deactivate`** — deactivate a user. Blocks all future logins. Does not revoke existing sessions immediately; those expire normally.
+
+**`POST /api/users/:username/reset-password`** — set a new password. Body: `{ password }`. Immediately invalidates all existing OAuth sessions for that user.
 
 ---
 

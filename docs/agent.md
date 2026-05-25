@@ -97,6 +97,8 @@ On start, the agent connects to `wss://<broker_url>/agent/connect` with `Authori
 
 **Reconnect backoff:** starts at 1 second, doubles on each failure up to a maximum of 60 seconds, with ±20% jitter. Reconnects indefinitely until stopped.
 
+**TLS enforcement:** if `broker_url` uses `http://` (converted internally to `ws://`) and the hostname is not `localhost`, `127.0.0.1`, or `::1`, the agent refuses to connect and logs an error. The agent token is a long-lived credential; sending it over an unencrypted connection to a remote host is not permitted. Use `https://` in `broker_url` for any non-local broker.
+
 **Token rotation:** when the broker sends `token_rotated`, the agent writes the new token to `agent.yaml` and closes the WebSocket. The reconnect loop picks up the new token automatically from disk on the next connect attempt.
 
 ---
