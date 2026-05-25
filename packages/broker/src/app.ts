@@ -10,6 +10,7 @@ import { apiRouter } from "./api.js";
 import { setupRouter, setupMiddleware } from "./setup.js";
 import { prisma } from "./db.js";
 import { createLogger } from "@constellation/shared";
+import { config } from "./config.js";
 
 const log = createLogger("app");
 
@@ -81,7 +82,7 @@ app.get("/healthz", async (_req: Request, res: Response) => {
 
 export const oauthLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  limit: () => parseInt(process.env["RATE_LIMIT_OAUTH_PER_15MIN"] ?? "10", 10),
+  limit: config.rateLimits.oauthPer15Min,
   standardHeaders: "draft-7",
   legacyHeaders: false,
   message: { error: "rate_limit_exceeded" },
@@ -91,7 +92,7 @@ export const oauthLimiter = rateLimit({
 // Give it a separate, higher-capacity bucket so it doesn't exhaust the strict OAuth limit.
 export const devicePollLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  limit: () => parseInt(process.env["RATE_LIMIT_DEVICE_POLL_PER_15MIN"] ?? "200", 10),
+  limit: config.rateLimits.devicePollPer15Min,
   standardHeaders: "draft-7",
   legacyHeaders: false,
   message: { error: "rate_limit_exceeded" },

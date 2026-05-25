@@ -5,6 +5,7 @@ import { prisma } from "./db.js";
 import { requireBrokerManage, AuthenticatedRequest } from "./middleware.js";
 import { getConnection } from "./hub.js";
 import { createLogger } from "@constellation/shared";
+import { config } from "./config.js";
 import { createLocalUser } from "./local-auth.js";
 
 const { version } = createRequire(import.meta.url)("../package.json") as { version: string };
@@ -21,10 +22,7 @@ function parsePagination(req: Request): { limit: number; offset: number } {
 
 apiRouter.use(requireBrokerManage);
 
-const HEARTBEAT_THRESHOLD_MS =
-  parseInt(process.env["HEARTBEAT_INTERVAL_SECONDS"] ?? "60", 10) *
-  parseInt(process.env["HEARTBEAT_MAX_MISSED"] ?? "3", 10) *
-  1000;
+const HEARTBEAT_THRESHOLD_MS = config.heartbeat.intervalMs * config.heartbeat.maxMissed;
 
 function isOnline(lastHeartbeatAt: Date | null): boolean {
   if (!lastHeartbeatAt) return false;

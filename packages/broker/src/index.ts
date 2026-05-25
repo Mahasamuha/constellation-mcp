@@ -7,10 +7,11 @@ import { pruneRateLimits } from "./router.js";
 import { pruneLoginFailures } from "./local-auth.js";
 import { prisma } from "./db.js";
 import { createLogger } from "@constellation/shared";
+import { config } from "./config.js";
 
 const log = createLogger("broker");
 
-const port = parseInt(process.env["PORT"] ?? "3000", 10);
+const port = config.port;
 const server = createServer(app);
 
 attachHub(server);

@@ -2,6 +2,7 @@ import { IncomingMessage, Server } from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
 import { prisma } from "./db.js";
 import { hashToken, generateToken, createLogger } from "@constellation/shared";
+import { config } from "./config.js";
 
 const log = createLogger("hub");
 
@@ -65,7 +66,7 @@ const ROTATION_TTL_MS = 5 * 60 * 1000;
 const reconnectTimestamps = new Map<string, number[]>();
 
 function checkReconnectRateLimit(tokenId: string): boolean {
-  const limit = parseInt(process.env["RATE_LIMIT_WS_RECONNECT_PER_MIN"] ?? "10", 10);
+  const limit = config.rateLimits.wsReconnectPerMin;
   const now = Date.now();
   const window = 60_000;
   const timestamps = (reconnectTimestamps.get(tokenId) ?? []).filter((t) => now - t < window);
@@ -78,9 +79,10 @@ function checkReconnectRateLimit(tokenId: string): boolean {
 // Heartbeat loop
 // ---------------------------------------------------------------------------
 
-const HEARTBEAT_INTERVAL_MS =
-  parseInt(process.env["HEARTBEAT_INTERVAL_SECONDS"] ?? "60", 10) * 1000;
-const HEARTBEAT_MAX_MISSED = parseInt(process.env["HEARTBEAT_MAX_MISSED"] ?? "3", 10);
+const HEARTBEAT_INTERVAL_MS = config.heartbeat.intervalMs;
+const HEARTBEAT_MAX_MISSED = config.heartbeat.maxMissed;
+const WS_MAX_MESSAGE_BYTES = config.ws.maxMessageBytes;
+const RPC_TIMEOUT_MS = config.rpcTimeoutMs;
 
 let _heartbeatInterval: ReturnType<typeof setInterval> | null = null;
 
@@ -280,7 +282,7 @@ async function handleConnection(ws: WebSocket, meta: {
       }).catch((err) => log.error({ err, agentId }, "Failed to update last_heartbeat_at"));
     });
 
-    const MAX_MESSAGE_BYTES = parseInt(process.env["WS_MAX_MESSAGE_BYTES"] ?? "10485760", 10); // 10 MiB
+    const MAX_MESSAGE_BYTES = WS_MAX_MESSAGE_BYTES;
 
     ws.on("message", (data) => {
       const byteLength = Buffer.isBuffer(data)
@@ -578,7 +580,7 @@ export function dispatchRpc(
   if (!conn) throw new Error(`Agent ${agentId} is not connected`);
 
   const requestId = payload["request_id"] as string;
-  const timeoutMs = parseInt(process.env["RPC_TIMEOUT_MS"] ?? "30000", 10);
+  const timeoutMs = RPC_TIMEOUT_MS;
 
   return new Promise<RpcResponse>((resolve, reject) => {
     const timer = setTimeout(() => {

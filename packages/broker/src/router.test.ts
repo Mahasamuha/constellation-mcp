@@ -10,6 +10,22 @@ vi.mock("@constellation/shared", () => {
   };
 });
 
+vi.mock("./config.js", () => ({
+  config: {
+    rateLimits: {
+      toolCallsPerMin: 60,
+      expensiveToolsPerMin: 20,
+      wsReconnectPerMin: 10,
+      oauthPer15Min: 10,
+      devicePollPer15Min: 200,
+    },
+    heartbeat: { intervalMs: 60_000, maxMissed: 3 },
+    ws: { maxMessageBytes: 10_485_760 },
+    rpcTimeoutMs: 30_000,
+    port: 3000,
+  },
+}));
+
 vi.mock("./db.js", () => ({
   prisma: {
     pathLabel: { findFirst: vi.fn() },
@@ -27,6 +43,7 @@ vi.mock("./hub.js", () => ({
 import { prisma } from "./db.js";
 import { getConnection, dispatchRpc } from "./hub.js";
 import { routeToolCall } from "./router.js";
+import { config } from "./config.js";
 
 // Typed access to mocked functions
 const db = prisma as unknown as {
@@ -54,8 +71,8 @@ const uid = () => `user-${uidSeq++}`;
 beforeEach(() => {
   vi.clearAllMocks();
   db.brokerPathFilter.findMany.mockResolvedValue([]);
-  delete process.env["RATE_LIMIT_TOOL_CALLS_PER_MIN"];
-  delete process.env["RATE_LIMIT_EXPENSIVE_TOOLS_PER_MIN"];
+  config.rateLimits.toolCallsPerMin = 60;
+  config.rateLimits.expensiveToolsPerMin = 20;
 });
 
 // ---------------------------------------------------------------------------
@@ -64,7 +81,7 @@ beforeEach(() => {
 
 describe("rate limiting", () => {
   it("allows calls within the standard limit", async () => {
-    process.env["RATE_LIMIT_TOOL_CALLS_PER_MIN"] = "3";
+    config.rateLimits.toolCallsPerMin = 3;
     stubLabel();
     const u = uid();
 
@@ -77,7 +94,7 @@ describe("rate limiting", () => {
   });
 
   it("returns rate_limited after exceeding standard limit", async () => {
-    process.env["RATE_LIMIT_TOOL_CALLS_PER_MIN"] = "2";
+    config.rateLimits.toolCallsPerMin = 2;
     stubLabel();
     const u = uid();
 
@@ -89,8 +106,8 @@ describe("rate limiting", () => {
   });
 
   it("returns rate_limited for expensive tool after exceeding expensive limit", async () => {
-    process.env["RATE_LIMIT_TOOL_CALLS_PER_MIN"] = "100";
-    process.env["RATE_LIMIT_EXPENSIVE_TOOLS_PER_MIN"] = "1";
+    config.rateLimits.toolCallsPerMin = 100;
+    config.rateLimits.expensiveToolsPerMin = 1;
     stubLabel();
     const u = uid();
 
@@ -101,8 +118,8 @@ describe("rate limiting", () => {
   });
 
   it("treats recursive list_directory as expensive", async () => {
-    process.env["RATE_LIMIT_TOOL_CALLS_PER_MIN"] = "100";
-    process.env["RATE_LIMIT_EXPENSIVE_TOOLS_PER_MIN"] = "1";
+    config.rateLimits.toolCallsPerMin = 100;
+    config.rateLimits.expensiveToolsPerMin = 1;
     stubLabel();
     const u = uid();
 
@@ -113,7 +130,7 @@ describe("rate limiting", () => {
   });
 
   it("does not rate-limit non-recursive list_directory as expensive", async () => {
-    process.env["RATE_LIMIT_EXPENSIVE_TOOLS_PER_MIN"] = "1";
+    config.rateLimits.expensiveToolsPerMin = 1;
     stubLabel();
     const u = uid();
 
@@ -258,7 +275,6 @@ describe("cross-host routing", () => {
 
 describe("timeout", () => {
   it("returns timeout when dispatchRpc throws a timeout error", async () => {
-    process.env["RPC_TIMEOUT_MS"] = "30000";
     stubLabel();
     mockDispatchRpc.mockRejectedValue(new Error("timeout"));
 

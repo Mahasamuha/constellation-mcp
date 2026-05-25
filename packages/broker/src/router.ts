@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { prisma } from "./db.js";
 import { dispatchRpc, getConnection, type RpcEnvelope, type RpcError } from "./hub.js";
 import { createLogger } from "@constellation/shared";
+import { config } from "./config.js";
 
 const log = createLogger("router");
 
@@ -31,6 +32,7 @@ export interface RouterError {
 const toolCallTimestamps = new Map<string, number[]>();
 const expensiveToolTimestamps = new Map<string, number[]>();
 
+
 const EXPENSIVE_TOOLS = new Set(["grep_files", "find_files"]);
 
 function isExpensive(tool: string, params: Record<string, unknown>): boolean {
@@ -43,8 +45,8 @@ function checkToolRateLimit(userId: string, tool: string, params: Record<string,
   const now = Date.now();
   const window = 60_000;
 
-  const standardLimit = parseInt(process.env["RATE_LIMIT_TOOL_CALLS_PER_MIN"] ?? "60", 10);
-  const expensiveLimit = parseInt(process.env["RATE_LIMIT_EXPENSIVE_TOOLS_PER_MIN"] ?? "20", 10);
+  const standardLimit = config.rateLimits.toolCallsPerMin;
+  const expensiveLimit = config.rateLimits.expensiveToolsPerMin;
 
   const standardTs = (toolCallTimestamps.get(userId) ?? []).filter((t) => now - t < window);
   standardTs.push(now);
@@ -237,7 +239,7 @@ export async function routeToolCall(
   }
 
   const requestId = randomBytes(16).toString("hex");
-  const timeoutMs = parseInt(process.env["RPC_TIMEOUT_MS"] ?? "30000", 10);
+  const timeoutMs = config.rpcTimeoutMs;
   const envelope: RpcEnvelope = {
     request_id: requestId,
     tool,
