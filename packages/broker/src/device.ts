@@ -263,9 +263,9 @@ deviceRouter.post("/activate/confirm", async (req: Request, res: Response) => {
     res.status(403).send("Invalid or missing CSRF token. Please go back and try again.");
     return;
   }
-  res.clearCookie("csrf_activate");
 
   if (action === "deny") {
+    res.clearCookie("csrf_activate");
     await prisma.deviceCode.updateMany({
       where: { deviceCode: device_code, status: "pending" },
       data: { status: "denied" },
@@ -276,6 +276,7 @@ deviceRouter.post("/activate/confirm", async (req: Request, res: Response) => {
 
   const entry = await prisma.deviceCode.findUnique(byCode(device_code));
   if (!entry || entry.status !== "pending" || entry.expiresAt < new Date()) {
+    res.clearCookie("csrf_activate");
     res.status(400).send("Session expired or already completed.");
     return;
   }
@@ -283,18 +284,23 @@ deviceRouter.post("/activate/confirm", async (req: Request, res: Response) => {
   // Use the server-side verified userId set during OIDC — never trust the form body.
   const verifiedUserId = entry.pendingUserId;
   if (!verifiedUserId) {
+    res.clearCookie("csrf_activate");
     res.status(400).send("Authentication session expired — please start again.");
     return;
   }
 
   if (entry.scope === "agent:register") {
     const resolvedHost = (host_name ?? "").trim();
-    if (!resolvedHost) {
-      res.send(consentPage(device_code, entry.scope as DeviceScope, "Host name is required."));
-      return;
-    }
-    if (resolvedHost.length > 63) {
-      res.send(consentPage(device_code, entry.scope as DeviceScope, "Host name must be 63 characters or fewer."));
+    if (!resolvedHost || resolvedHost.length > 63) {
+      const errorMsg = !resolvedHost ? "Host name is required." : "Host name must be 63 characters or fewer.";
+      const freshCsrf = generateToken();
+      res.cookie("csrf_activate", freshCsrf, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+        sameSite: "strict",
+        maxAge: 15 * 60 * 1000,
+      });
+      res.send(consentPage(device_code, entry.scope as DeviceScope, errorMsg, freshCsrf));
       return;
     }
     await prisma.deviceCode.update({ ...byCode(device_code), data: { hostName: resolvedHost, userId: verifiedUserId, status: "approved" } });
@@ -302,6 +308,7 @@ deviceRouter.post("/activate/confirm", async (req: Request, res: Response) => {
     await prisma.deviceCode.update({ ...byCode(device_code), data: { userId: verifiedUserId, status: "approved" } });
   }
 
+  res.clearCookie("csrf_activate");
   log.info({ scope: entry.scope, userId: verifiedUserId }, "Device consent approved");
   res.send(activateDonePage("Access granted. You can close this tab."));
 });
