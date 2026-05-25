@@ -41,3 +41,6 @@ async function shutdown(): Promise<void> {
 
 process.once("SIGTERM", () => shutdown().catch((err) => { log.error({ err }, "Error during shutdown"); process.exit(1); }));
 process.once("SIGINT", () => shutdown().catch((err) => { log.error({ err }, "Error during shutdown"); process.exit(1); }));
+
+process.on("unhandledRejection", (err) => { log.error({ err }, "Unhandled rejection"); process.exit(1); });
+process.on("uncaughtException", (err) => { log.error({ err }, "Uncaught exception"); process.exit(1); });

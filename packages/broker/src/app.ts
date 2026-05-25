@@ -1,4 +1,4 @@
-import express, { Express, Request, Response } from "express";
+import express, { Express, NextFunction, Request, Response } from "express";
 import cookieParser from "cookie-parser";
 import cors from "cors";
 import { rateLimit } from "express-rate-limit";
@@ -7,6 +7,10 @@ import { deviceRouter } from "./device.js";
 import { mcpRouter } from "./mcp.js";
 import { apiRouter } from "./api.js";
 import { setupRouter, setupMiddleware } from "./setup.js";
+import { prisma } from "./db.js";
+import { createLogger } from "@constellation/shared";
+
+const log = createLogger("app");
 
 export const app: Express = express();
 
@@ -58,8 +62,13 @@ app.use((_req, res, next) => {
   next();
 });
 
-app.get("/healthz", (_req: Request, res: Response) => {
-  res.json({ status: "ok" });
+app.get("/healthz", async (_req: Request, res: Response) => {
+  try {
+    await prisma.$queryRaw`SELECT 1`;
+    res.json({ status: "ok" });
+  } catch {
+    res.status(503).json({ status: "error", reason: "database_unavailable" });
+  }
 });
 
 export const oauthLimiter = rateLimit({
@@ -100,3 +109,11 @@ app.use("/", oauthRouter);
 app.use("/", deviceRouter);
 app.use("/", mcpRouter);
 app.use("/", apiRouter);
+
+// Must be last — 4-argument signature is how Express identifies error handlers.
+app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+  log.error({ err }, "Unhandled request error");
+  if (!res.headersSent) {
+    res.status(500).json({ error: "internal_server_error" });
+  }
+});

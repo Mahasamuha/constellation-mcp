@@ -62,7 +62,7 @@ setupRouter.get("/setup", async (_req: Request, res: Response) => {
     sameSite: "strict",
     maxAge: 30 * 60 * 1000,
   });
-  res.send(setupFormPage(undefined, csrfToken));
+  res.send(setupFormPage([], csrfToken));
 });
 
 // ---------------------------------------------------------------------------
@@ -82,26 +82,32 @@ setupRouter.post("/setup", async (req: Request, res: Response) => {
 
   const body = req.body as Record<string, string>;
   if (!verifyCsrfToken(req, "csrf_setup")) {
-    res.status(403).send(setupFormPage("Invalid or missing CSRF token. Please reload and try again."));
+    res.status(403).send(setupFormPage(["Invalid or missing CSRF token. Please reload and try again."]));
     return;
   }
-  res.clearCookie("csrf_setup");
+
+  // Re-render the form with a fresh CSRF token so validation errors don't lock the user out.
+  function rerender(errors: string[]): void {
+    const newToken = generateToken();
+    res.cookie("csrf_setup", newToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "strict",
+      maxAge: 30 * 60 * 1000,
+    });
+    res.send(setupFormPage(errors, newToken));
+  }
+
   const username = (body["username"] ?? "").trim();
   const password = body["password"] ?? "";
   const confirm = body["confirm_password"] ?? "";
 
-  if (!username) {
-    res.send(setupFormPage("Username is required."));
-    return;
-  }
-
-  if (password.length < 12) {
-    res.send(setupFormPage("Password must be at least 12 characters."));
-    return;
-  }
-
-  if (password !== confirm) {
-    res.send(setupFormPage("Passwords do not match."));
+  const errors: string[] = [];
+  if (!username) errors.push("Username is required.");
+  if (password.length < 12) errors.push("Password must be at least 12 characters.");
+  if (password !== confirm) errors.push("Passwords do not match.");
+  if (errors.length > 0) {
+    rerender(errors);
     return;
   }
 
@@ -109,10 +115,11 @@ setupRouter.post("/setup", async (req: Request, res: Response) => {
     await createLocalUser(username, password);
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Setup failed";
-    res.send(setupFormPage(msg));
+    rerender([msg]);
     return;
   }
 
+  res.clearCookie("csrf_setup");
   markSetupDone();
   log.info({ username }, "First user created via setup");
   res.redirect("/");
@@ -161,7 +168,10 @@ const startedAt = Date.now();
 // HTML helpers
 // ---------------------------------------------------------------------------
 
-function setupFormPage(error?: string, csrfToken?: string): string {
+function setupFormPage(errors: string[], csrfToken?: string): string {
+  const errorHtml = errors.length > 0
+    ? `<ul class="error">${errors.map((e) => `<li>${escHtml(e)}</li>`).join("")}</ul>`
+    : "";
   return `<!DOCTYPE html>
 <html lang="en">
 <head><meta charset="utf-8"><title>Constellation — Setup</title>${pageStyle()}</head>
@@ -169,7 +179,7 @@ function setupFormPage(error?: string, csrfToken?: string): string {
   <div class="card">
     <h1>Welcome to Constellation</h1>
     <p>Create your admin account to get started.</p>
-    ${error ? `<p class="error">${escHtml(error)}</p>` : ""}
+    ${errorHtml}
     <form method="POST" action="/setup">
       ${csrfToken ? `<input type="hidden" name="csrf_token" value="${escHtml(csrfToken)}">` : ""}
       <label for="username">Username</label>
@@ -236,7 +246,8 @@ function pageStyle(): string {
     input[type=text], input[type=password] { width: 100%; box-sizing: border-box; padding: .5rem; font-size: 1rem; border: 1px solid #ccc; border-radius: 4px; }
     button { margin-top: 1.2rem; padding: .6rem 1.4rem; font-size: 1rem; border: none; border-radius: 4px; cursor: pointer; background: #2563eb; color: #fff; }
     pre { background: #f1f5f9; padding: 1rem; border-radius: 4px; font-size: .85rem; overflow-x: auto; white-space: pre-wrap; }
-    .error { color: #dc2626; background: #fee2e2; padding: .6rem; border-radius: 4px; }
+    .error { color: #dc2626; background: #fee2e2; padding: .4rem .6rem; border-radius: 4px; margin: 0; padding-left: 1.6rem; }
+    .error li { padding: .2rem 0; }
     .meta { color: #555; font-size: .9rem; }
     .checklist { list-style: none; padding: 0; }
     .checklist li { padding: .3rem 0; }
