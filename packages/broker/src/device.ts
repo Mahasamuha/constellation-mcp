@@ -291,6 +291,10 @@ deviceRouter.post("/activate/confirm", async (req: Request, res: Response) => {
       res.send(consentPage(device_code, entry.scope as DeviceScope, "Host name is required."));
       return;
     }
+    if (resolvedHost.length > 63) {
+      res.send(consentPage(device_code, entry.scope as DeviceScope, "Host name must be 63 characters or fewer."));
+      return;
+    }
     await prisma.deviceCode.update({ ...byCode(device_code), data: { hostName: resolvedHost, userId: verifiedUserId, status: "approved" } });
   } else {
     await prisma.deviceCode.update({ ...byCode(device_code), data: { userId: verifiedUserId, status: "approved" } });
