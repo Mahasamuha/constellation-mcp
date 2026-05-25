@@ -1,6 +1,7 @@
 import picomatch from "picomatch";
 import RE2 from "re2";
 import { randomBytes } from "node:crypto";
+import { join } from "node:path";
 import { prisma } from "./db.js";
 import { dispatchRpc, getConnection, type RpcEnvelope, type RpcError } from "./hub.js";
 import { createLogger } from "@constellation/shared";
@@ -207,15 +208,17 @@ export async function routeToolCall(
   }
 
   // Apply broker-side deny filters — check every path field supplied for this call.
+  // Use join() rather than string concatenation so traversal sequences (e.g. "../../x")
+  // are normalized before filter matching — otherwise a crafted relative_path can bypass filters.
   const pathsToFilter: string[] = [];
   const relPath = typeof effectiveParams["relative_path"] === "string" ? effectiveParams["relative_path"] : "";
-  pathsToFilter.push(relPath ? `${absoluteRoot}/${relPath}` : absoluteRoot);
+  pathsToFilter.push(relPath ? join(absoluteRoot, relPath) : absoluteRoot);
   const srcRelPath = typeof effectiveParams["src_relative_path"] === "string" ? effectiveParams["src_relative_path"] : "";
-  if (srcRelPath) pathsToFilter.push(`${absoluteRoot}/${srcRelPath}`);
+  if (srcRelPath) pathsToFilter.push(join(absoluteRoot, srcRelPath));
   const dstRelPath = typeof effectiveParams["dst_relative_path"] === "string" ? effectiveParams["dst_relative_path"] : "";
   if (dstRelPath) {
     const dstRoot = typeof effectiveParams["dst_root"] === "string" ? effectiveParams["dst_root"] : absoluteRoot;
-    pathsToFilter.push(`${dstRoot}/${dstRelPath}`);
+    pathsToFilter.push(join(dstRoot, dstRelPath));
   }
 
   for (const candidatePath of pathsToFilter) {

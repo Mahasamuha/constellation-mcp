@@ -432,6 +432,11 @@ async function handleUpdateHost(conn: ConnectedAgent, msg: UpdateHostMessage): P
     return;
   }
 
+  if (newHost.length > 63) {
+    send(conn.ws, { type: "update_host_error", error: "Host name must be 63 characters or fewer" });
+    return;
+  }
+
   const conflict = await prisma.agent.findFirst({
     where: { userId: conn.userId, host: newHost, NOT: { id: conn.agentId } },
   });

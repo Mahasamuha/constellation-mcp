@@ -57,6 +57,13 @@ oauthRouter.post("/oauth/register", async (req: Request, res: Response) => {
     return;
   }
 
+  for (const uri of redirectUris) {
+    if (!isAllowedRedirectUri(uri)) {
+      res.status(400).json({ error: "invalid_client_metadata", error_description: `redirect_uri not allowed: ${uri}` });
+      return;
+    }
+  }
+
   // broker:manage is reserved for the first-party CLI client issued via the
   // device flow — strip it from any dynamically registered client.
   const grantTypes = (asStringArray(body["grant_types"]) || ["authorization_code"])
@@ -572,6 +579,27 @@ function loginPage(pendingId: string, error?: string): string {
 </html>`;
 }
 
+
+/**
+ * Rejects javascript:, data:, and vbscript: URIs. Allows https:, custom schemes
+ * (native app callbacks), and http: only for loopback addresses.
+ */
+function isAllowedRedirectUri(uri: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(uri);
+  } catch {
+    return false;
+  }
+  const scheme = parsed.protocol;
+  if (scheme === "javascript:" || scheme === "data:" || scheme === "vbscript:") return false;
+  if (scheme === "http:") {
+    // Allow http only for loopback — native app dev servers on localhost.
+    const host = parsed.hostname;
+    return host === "localhost" || host === "127.0.0.1" || host === "::1";
+  }
+  return true;
+}
 
 function asStringArray(val: unknown): string[] {
   if (Array.isArray(val)) return val.filter((v): v is string => typeof v === "string");

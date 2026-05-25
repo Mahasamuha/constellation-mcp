@@ -49,6 +49,15 @@ app.use(express.json({ limit: "1mb" }));
 app.use(express.urlencoded({ extended: true, limit: "1mb" }));
 app.use(cookieParser());
 
+app.use((_req, res, next) => {
+  res.set("X-Content-Type-Options", "nosniff");
+  res.set("X-Frame-Options", "DENY");
+  res.set("Referrer-Policy", "strict-origin-when-cross-origin");
+  // Inline styles are used in server-rendered auth/setup pages; no JS or external resources.
+  res.set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'");
+  next();
+});
+
 app.get("/healthz", (_req: Request, res: Response) => {
   res.json({ status: "ok" });
 });
@@ -80,6 +89,7 @@ app.use("/oauth/token", (req, res, next) => {
   }
 });
 app.use("/oauth/register", oauthLimiter);
+app.use("/oauth/device/code", oauthLimiter);
 app.use("/setup", oauthLimiter);
 app.use("/auth/login", oauthLimiter);
 
