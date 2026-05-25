@@ -3,9 +3,10 @@ import escHtml from "escape-html";
 import { randomBytes } from "node:crypto";
 import { prisma } from "./db.js";
 import { buildAuthorizationUrl, exchangeCodeAndUpsertUser } from "./oidc.js";
-import { generateToken, hashToken, createLogger } from "@constellation/shared";
+import { generateToken, hashToken, createLogger, requireEnv } from "@constellation/shared";
 import { checkBruteForce, recordFailure, validateLocalUser } from "./local-auth.js";
 import { verifyCsrfToken } from "./middleware.js";
+import { pageStyle } from "./page-style.js";
 
 const log = createLogger("device");
 
@@ -436,19 +437,23 @@ export async function handleDeviceCodeGrant(
 }
 
 const BROKER_CLIENT_ID = "constellation-broker-manage";
+let _brokerClientEnsured = false;
 
 /** Returns the id of the static broker-manage OAuth client, creating it if absent. */
 async function ensureBrokerClient(): Promise<string> {
-  await prisma.oauthClient.upsert({
-    where: { id: BROKER_CLIENT_ID },
-    create: {
-      id: BROKER_CLIENT_ID,
-      redirectUris: [],
-      grantTypes: ["broker:manage", "urn:ietf:params:oauth:grant-type:device_code", "refresh_token"],
-      isDynamic: false,
-    },
-    update: {},
-  });
+  if (!_brokerClientEnsured) {
+    await prisma.oauthClient.upsert({
+      where: { id: BROKER_CLIENT_ID },
+      create: {
+        id: BROKER_CLIENT_ID,
+        redirectUris: [],
+        grantTypes: ["broker:manage", "urn:ietf:params:oauth:grant-type:device_code", "refresh_token"],
+        isDynamic: false,
+      },
+      update: {},
+    });
+    _brokerClientEnsured = true;
+  }
   return BROKER_CLIENT_ID;
 }
 
@@ -487,7 +492,7 @@ function activateEntryPage(error?: string): string {
     ${error ? `<p class="error">${escHtml(error)}</p>` : ""}
     <form method="GET" action="/activate">
       <label for="user_code">Enter the code displayed in your terminal:</label>
-      <input id="user_code" name="user_code" type="text" placeholder="XXXX-XXXX" autocomplete="off" autofocus required>
+      <input id="user_code" name="user_code" type="text" class="code-input" placeholder="XXXX-XXXX" autocomplete="off" autofocus required>
       <button type="submit">Continue</button>
     </form>
   </div>
@@ -540,23 +545,3 @@ function activateDonePage(message: string): string {
 </html>`;
 }
 
-function pageStyle(): string {
-  return `<style>
-    body { font-family: system-ui, sans-serif; background: #f5f5f5; display: flex; justify-content: center; padding: 4rem 1rem; }
-    .card { background: #fff; border-radius: 8px; padding: 2rem; max-width: 420px; width: 100%; box-shadow: 0 2px 8px rgba(0,0,0,.1); }
-    h1 { margin-top: 0; font-size: 1.4rem; }
-    label { display: block; margin: 1rem 0 .4rem; font-weight: 500; }
-    input[type=text] { width: 100%; box-sizing: border-box; padding: .5rem; font-size: 1.1rem; border: 1px solid #ccc; border-radius: 4px; letter-spacing: .1em; }
-    button { margin-top: 1.2rem; padding: .6rem 1.4rem; font-size: 1rem; border: none; border-radius: 4px; cursor: pointer; background: #2563eb; color: #fff; }
-    button.secondary { background: #e5e7eb; color: #111; margin-left: .6rem; }
-    .actions { display: flex; }
-    .error { color: #dc2626; background: #fee2e2; padding: .6rem; border-radius: 4px; }
-  </style>`;
-}
-
-
-function requireEnv(name: string): string {
-  const val = process.env[name];
-  if (!val) throw new Error(`Missing required environment variable: ${name}`);
-  return val;
-}

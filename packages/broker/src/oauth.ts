@@ -4,7 +4,7 @@ import { randomBytes, createHash } from "node:crypto";
 import { prisma } from "./db.js";
 import { buildAuthorizationUrl, exchangeCodeAndUpsertUser } from "./oidc.js";
 import { handleDeviceCodeGrant } from "./device.js";
-import { generateToken, hashToken, safeEqual, createLogger } from "@constellation/shared";
+import { generateToken, hashToken, safeEqual, createLogger, requireEnv } from "@constellation/shared";
 import { checkBruteForce, recordFailure, validateLocalUser } from "./local-auth.js";
 
 const log = createLogger("oauth");
@@ -607,8 +607,3 @@ function asStringArray(val: unknown): string[] {
   return [];
 }
 
-function requireEnv(name: string): string {
-  const val = process.env[name];
-  if (!val) throw new Error(`Missing required environment variable: ${name}`);
-  return val;
-}

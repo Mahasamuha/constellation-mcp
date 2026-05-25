@@ -404,7 +404,7 @@ apiRouter.post("/api/users", async (req: Request, res: Response) => {
   }
 });
 
-apiRouter.delete("/api/users/:username", async (req: Request, res: Response) => {
+apiRouter.post("/api/users/:username/deactivate", async (req: Request, res: Response) => {
   if (!requireLocalMode(res)) return;
 
   const username = req.params["username"] as string;

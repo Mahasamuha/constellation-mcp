@@ -1,6 +1,6 @@
 import * as client from "openid-client";
 import { PrismaClient } from "./generated/prisma/client.js";
-import { createLogger } from "@constellation/shared";
+import { createLogger, requireEnv } from "@constellation/shared";
 import { randomBytes } from "node:crypto";
 
 const log = createLogger("oidc");
@@ -117,8 +117,3 @@ export async function exchangeCodeAndUpsertUser(
   return user.id;
 }
 
-function requireEnv(name: string): string {
-  const val = process.env[name];
-  if (!val) throw new Error(`Missing required environment variable: ${name}`);
-  return val;
-}
