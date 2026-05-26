@@ -5,7 +5,7 @@ import { Router, Request, Response, IRouter } from "express";
 import { z } from "zod/v4";
 import { prisma } from "./db.js";
 import { routeToolCall, RouterError } from "./router.js";
-import { hashToken, createLogger } from "@constellation/shared";
+import { hashToken } from "@constellation/shared";
 
 const { version } = createRequire(import.meta.url)("../package.json") as { version: string };
 
@@ -72,8 +72,6 @@ const DeleteOutput = {
   size_bytes: z.number().optional(),
   file_count: z.number().optional(),
 };
-
-const log = createLogger("mcp");
 
 export const mcpRouter: IRouter = Router();
 

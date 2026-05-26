@@ -18,19 +18,6 @@ export const deviceRouter: IRouter = Router();
 
 export type DeviceScope = "agent:register" | "broker:manage";
 
-interface DeviceEntry {
-  userCode: string;
-  scope: DeviceScope;
-  expiresAt: number;
-  /** Set once the user completes consent on /activate */
-  status: "pending" | "approved" | "denied";
-  userId?: string;
-  /** Confirmed host name, set for agent:register scope */
-  hostName?: string;
-  /** OIDC-verified user id set server-side during /activate/callback — not from form body */
-  pendingUserId?: string;
-}
-
 /** Removes expired device code rows. Called on new issuance and periodically from index.ts. */
 export async function pruneDeviceCodes(): Promise<void> {
   await prisma.deviceCode.deleteMany({ where: { expiresAt: { lt: new Date() } } });
