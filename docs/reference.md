@@ -218,6 +218,21 @@ Deactivates your account after an interactive confirmation prompt. All agent con
 
 Tools are called by MCP clients (Claude, Cursor, GitHub Copilot) after authenticating via OAuth. Every tool that operates on files takes a `label` (a named path root registered by an agent) and optionally a `host` to disambiguate when the same label name exists on multiple machines.
 
+### Agent-enforced caps
+
+These limits are applied by the agent regardless of broker settings.
+
+| Tool | Limit |
+|---|---|
+| `list_directory` | Default 2,000 nodes per call; hard cap 10,000. Set `limit` to override (capped at 10,000). Returns `truncated: true` and `truncated_by` when the limit is hit. |
+| `find_files` | 200 results. Returns `truncated: true` when hit. |
+| `grep_files` | 50 total matches or 100 KB of output, whichever comes first. Files larger than 10 MB are skipped silently. Returns `truncated: true` when hit. |
+| `read_file` | `max_file_size_kb` from `agent.yaml` (default 100 KB) per call. Applies to both full reads and range reads. Use `start_line`/`end_line` to page through large files; `total_lines` in the response tells you when to stop. |
+| `copy` / `move` | Fails if the destination already exists. Cross-device `move` falls back to copy + delete automatically. |
+| `delete` (directory) | Without `recursive: true`, returns a dry-run summary (`size_bytes`, `file_count`, `requires_confirmation: true`). Re-call with `recursive: true` to proceed. |
+
+---
+
 ### `list_hosts`
 
 List all registered hosts with online status and their labels.

@@ -92,7 +92,7 @@ For self-hosted options see [Self-hosted with Cloudflare Tunnel](docs/self-hoste
 | `PORT` | TCP port the HTTP server binds to | `3000` |
 | `RPC_TIMEOUT_MS` | Max wait for an agent to respond to a tool call | `30000` |
 
-Full variable reference: [docs/broker.md](docs/broker.md).
+Full variable reference: [docs/configuration.md](docs/configuration.md).
 
 ### Client (agent)
 
@@ -102,7 +102,7 @@ Full variable reference: [docs/broker.md](docs/broker.md).
 | `max_file_size_kb` (in `agent.yaml`) | Max file size for `read_file` calls | `100` |
 | `LOG_LEVEL` | Agent daemon log verbosity (`trace`…`fatal`) | `warn` |
 
-Full CLI and config reference: [docs/agent.md](docs/agent.md).
+Full CLI and config reference: [docs/reference.md](docs/reference.md) · [docs/configuration.md](docs/configuration.md).
 
 ## Contributing
 
