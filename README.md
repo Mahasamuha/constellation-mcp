@@ -3,129 +3,39 @@
   <img src="assets/logo/constellation-logo.svg" alt="Constellation" width="400">
 </picture>
 
+# Constellation
+
+Access any machine's filesystem from any MCP client (Claude, Cursor, GitHub Copilot) through a self-hosted broker — no inbound ports required on the machines you expose.
+
 [![CI / Tests](https://github.com/Mahasamuha/constellation-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/Mahasamuha/constellation-mcp/actions/workflows/ci.yml)
 [![CI / Build](https://github.com/Mahasamuha/constellation-mcp/actions/workflows/build.yml/badge.svg)](https://github.com/Mahasamuha/constellation-mcp/actions/workflows/build.yml)
+[![Docker Image](https://img.shields.io/docker/v/mahasamuha/constellation-broker?label=docker&logo=docker)](https://hub.docker.com/r/mahasamuha/constellation-broker)
+[![License: PolyForm Noncommercial](https://img.shields.io/badge/license-PolyForm%20Noncommercial-blue)](./LICENSE)
 
-A network-accessible MCP file server. Run a local agent on any machine and access its filesystem from any MCP client (Claude, Cursor, GitHub Copilot) through a central broker.
-
-```
-MCP client → broker (VPS) → agent (your machine)
-```
-
-The agent never opens inbound ports. All traffic flows outbound from the agent to the broker over WebSocket. The broker authenticates MCP clients via OAuth 2.0. The agent is the security boundary — it enforces path restrictions locally regardless of what the broker forwards.
-
----
-
-## Quick start — Railway (no server required)
-
-Deploy a fully functional broker in minutes with built-in HTTPS, Postgres, and local username/password auth. No DNS, no nginx, no OIDC provider.
-
-1. Go to [railway.com](https://railway.com) and create a new **Empty Project**
-2. Click **Create** → **GitHub Repo** and select this repository
-3. Add Postgres: click **Create** → **Database** → **Add PostgreSQL**
-4. In the broker service **Variables** tab, add:
-   ```
-   AUTH_MODE=local
-   TRUST_PROXY_PRESET=railway
-   DATABASE_URL=${{Postgres.DATABASE_URL}}
-   BROKER_URL=https://<your-app>.up.railway.app
-   ```
-   Set `BROKER_URL` after step 5 once you have the domain.
-5. Generate a public URL: in the broker service, go to **Settings** → **Networking** → **Generate Domain**. Use that URL as your `BROKER_URL`.
-6. Deploy — Railway detects `railway.toml` at the repo root and builds using the broker Dockerfile automatically
-7. Open the broker URL — the setup wizard creates your admin account
-8. On each machine you want to access, download the agent from [GitHub Releases](https://github.com/Mahasamuha/constellation-mcp/releases/latest) and run:
-   ```sh
-   constellation agent init --broker https://<your-app>.up.railway.app
-   ```
-9. Add the broker URL to your MCP client:
-   ```json
-   { "mcpServers": { "constellation": { "type": "http", "url": "https://<your-app>.up.railway.app/mcp" } } }
-   ```
-
-For self-hosted options see [Self-hosted with Cloudflare Tunnel](docs/self-hosted-cloudflare-tunnel.md) or the full self-hosted setup below.
-
----
-
-## Requirements (self-hosted)
+## Prerequisites
 
 - Docker and Docker Compose (broker)
-- A reverse proxy for TLS, **or** a Cloudflare account (free) for the tunnel option
+- A publicly accessible address (domain or IP) for the broker — required for agent and MCP client connectivity
 
----
+## Installation
 
-## 1. Deploy the broker
+### Server (broker)
 
-### Choose a deployment style
-
-Pick the folder that matches how you want to run the broker. Each has a self-contained `docker-compose.yml` and `.env.example`.
-
-| Folder | What it does |
-|---|---|
-| [`docker/standard/`](docker/standard/) | Broker + Postgres. Port 3000 exposed — add a reverse proxy (Caddy, nginx) in front for TLS. |
-| [`docker/cloudflare-tunnel/`](docker/cloudflare-tunnel/) | Broker + Postgres + Cloudflare Tunnel. No open ports or reverse proxy needed. |
-
-### Configure and start
-
-```sh
-# Example: standard deployment
+```bash
+# Standard deployment (broker + Postgres, port 3000 exposed — add a reverse proxy for TLS)
 cd docker/standard
 cp .env.example .env
-# Edit .env — set BROKER_URL and any auth variables
+# Edit .env — set BROKER_URL, AUTH_MODE, and any auth variables
 docker compose up -d
 ```
 
-On first start the broker automatically applies pending database migrations. Subsequent deploys do the same — no manual migration step required.
+Alternatively, use [`docker/cloudflare-tunnel/`](docker/cloudflare-tunnel/) for a no-open-ports setup via Cloudflare Tunnel, or deploy to Railway — see [Quick Start](#quick-start) below.
 
-**For the standard deployment**, add a reverse proxy in front for TLS. Example Caddyfile:
+On first visit the broker runs a setup wizard to create your admin account. Migrations apply automatically on every start.
 
-```
-your-broker.example.com {
-    reverse_proxy localhost:3000
-}
-```
+### Client (agent)
 
-**For the Cloudflare Tunnel deployment**, see [docs/self-hosted-cloudflare-tunnel.md](docs/self-hosted-cloudflare-tunnel.md) for the full setup walkthrough.
-
-### Environment variables
-
-**`AUTH_MODE=local` (default — no OIDC provider needed)**
-
-| Variable | Description |
-|---|---|
-| `DATABASE_URL` | Postgres connection string |
-| `BROKER_URL` | Public URL of the broker, e.g. `https://your-broker.example.com` |
-| `TRUST_PROXY` or `TRUST_PROXY_PRESET` | See the `.env.example` in your chosen deployment folder |
-
-On first visit the setup wizard creates your admin account. Additional users: `constellation broker users add <username>`.
-
-**`AUTH_MODE=oidc` (external provider)**
-
-| Variable | Description |
-|---|---|
-| `DATABASE_URL` | Postgres connection string |
-| `OIDC_ISSUER` | OIDC provider issuer URL |
-| `OIDC_CLIENT_ID` | Client ID from your OIDC provider |
-| `OIDC_CLIENT_SECRET` | Client secret from your OIDC provider |
-| `BROKER_URL` | Public URL of the broker, e.g. `https://your-broker.example.com` |
-
-Register an OAuth application with your provider and add these redirect URIs:
-- `https://your-broker.example.com/oauth/callback` — MCP clients (Claude, Cursor)
-- `https://your-broker.example.com/activate/callback` — agent and broker CLI device flows
-
-**Google:** set `OIDC_ISSUER=https://accounts.google.com` and create a Web application client ID in [Google Cloud Console](https://console.cloud.google.com/apis/credentials).
-
-**Azure AD:** set `OIDC_ISSUER=https://login.microsoftonline.com/<tenant-id>/v2.0` and register an app in [Azure Portal](https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps).
-
-**Authentik:** set `OIDC_ISSUER=https://your-authentik.example.com/application/o/<slug>/` and create an OAuth2/OpenID Provider.
-
----
-
-## 2. Install the agent
-
-Download the latest release from [GitHub Releases](https://github.com/Mahasamuha/constellation-mcp/releases/latest). Two options:
-
-### CLI (recommended for servers and headless machines)
+Download the latest release from [GitHub Releases](https://github.com/Mahasamuha/constellation-mcp/releases/latest) and install it on each machine you want to expose.
 
 | Platform | File | Install |
 |---|---|---|
@@ -133,160 +43,70 @@ Download the latest release from [GitHub Releases](https://github.com/Mahasamuha
 | macOS | `constellation-agent_*_macos-arm64.tar.gz` | Extract, then `sudo mv constellation /usr/local/bin/` |
 | Windows | `constellation-agent_*_windows-x64.zip` | Extract and add to `PATH` |
 
-### GUI (desktop machines)
+A system tray GUI is also available for desktop machines — see [GitHub Releases](https://github.com/Mahasamuha/constellation-mcp/releases/latest).
 
-A system tray app that manages the agent. Requires the CLI to also be installed — the GUI locates it from `PATH`.
+## Quick Start
 
-| Platform | File |
-|---|---|
-| macOS | `Constellation Agent GUI_*.dmg` |
-| Linux | `Constellation Agent GUI_*.AppImage` or `constellation-agent-gui_*.deb` |
-| Windows | `Constellation Agent GUI_*.exe` |
+The fastest path is Railway: deploy a broker with one click, install the agent binary on your machines, and add the broker URL to your MCP client. No DNS, no reverse proxy, no OIDC provider.
 
-### Initialize
+```bash
+# 1. Deploy broker to Railway
+#    - Create a new Empty Project at railway.com
+#    - Add this repo as a GitHub service and add a PostgreSQL database
+#    - Set these variables in the broker service:
+#        AUTH_MODE=local
+#        TRUST_PROXY_PRESET=railway
+#        DATABASE_URL=${{Postgres.DATABASE_URL}}
+#        BROKER_URL=https://<your-app>.up.railway.app
+#    - Generate a public domain under Settings → Networking
+#    - Deploy — railway.toml is detected automatically
 
-Run this on the machine whose filesystem you want to expose:
-
-```sh
-constellation agent init --broker https://your-broker.example.com
-```
-
-This opens a browser, authenticates you, and writes credentials to `~/.config/constellation/agent.yaml` (Linux/macOS) or `%APPDATA%\constellation\agent.yaml` (Windows).
-
-**Set config file permissions** (Linux/macOS):
-
-```sh
-chmod 600 ~/.config/constellation/agent.yaml
-chmod 600 ~/.config/constellation/paths.yaml
-```
-
-### Configure paths
-
-Add paths with the CLI (syncs to the broker automatically):
-
-```sh
+# 2. Initialize the agent on each machine you want to expose
+constellation agent init --broker https://<your-app>.up.railway.app
 constellation agent paths add projects /home/user/projects
-constellation agent paths add dotfiles /home/user/.config
+constellation agent install && constellation agent start
+
+# 3. Add the broker to your MCP client
+#    Claude: Settings → Integrations → add URL
+#    Cursor: .cursor/mcp.json
+{ "mcpServers": { "constellation": { "url": "https://<your-app>.up.railway.app/mcp" } } }
 ```
 
-Or edit `~/.config/constellation/paths.yaml` directly and push manually:
+For self-hosted options see [Self-hosted with Cloudflare Tunnel](docs/self-hosted-cloudflare-tunnel.md).
 
-```sh
-constellation agent sync
-```
+## Configuration
 
-Labels must be unique across all your agents.
+### Server (broker)
 
-### Install as a system service
+| Variable | Description | Default |
+|---|---|---|
+| `BROKER_URL` | Public base URL of the broker, no trailing slash | — |
+| `AUTH_MODE` | `local` (built-in username/password) or `oidc` (external provider) | `local` |
+| `DATABASE_URL` | PostgreSQL connection string | — |
+| `TRUST_PROXY` | Trusted reverse proxy IPs/CIDRs (e.g. `127.0.0.1`) | — |
+| `TRUST_PROXY_PRESET` | Shorthand: `railway`, `fly`, or `cloudflare-tunnel` (overrides `TRUST_PROXY`) | — |
+| `OIDC_ISSUER` | OIDC provider issuer URL — required when `AUTH_MODE=oidc` | — |
+| `OIDC_CLIENT_ID` | OIDC client ID — required when `AUTH_MODE=oidc` | — |
+| `OIDC_CLIENT_SECRET` | OIDC client secret — required when `AUTH_MODE=oidc` | — |
+| `OIDC_CALLBACK_URL` | Full URL of `/oauth/callback` — required when `AUTH_MODE=oidc` | — |
+| `PORT` | TCP port the HTTP server binds to | `3000` |
+| `RPC_TIMEOUT_MS` | Max wait for an agent to respond to a tool call | `30000` |
 
-```sh
-constellation agent install
-constellation agent start
-```
+Full variable reference: [docs/broker.md](docs/broker.md).
 
-This registers the agent with your OS service manager (systemd on Linux, launchd on macOS, Task Scheduler on Windows) and starts it. The agent connects to the broker and reconnects automatically on restart.
+### Client (agent)
 
----
+| Variable / Flag | Description | Default |
+|---|---|---|
+| `--config <dir>` / `CONSTELLATION_CONFIG_DIR` | Override the config directory | Platform default |
+| `max_file_size_kb` (in `agent.yaml`) | Max file size for `read_file` calls | `100` |
+| `LOG_LEVEL` | Agent daemon log verbosity (`trace`…`fatal`) | `warn` |
 
-## 3. Connect an MCP client
+Full CLI and config reference: [docs/agent.md](docs/agent.md).
 
-Add the broker as an MCP server in your client. The broker handles OAuth automatically — most clients (Claude, Cursor, Copilot) will open a browser on first connection.
+## Contributing
 
-**Claude (claude.ai)**
-
-In Claude settings → Integrations, add:
-```
-https://your-broker.example.com/mcp
-```
-
-**Cursor**
-
-In `.cursor/mcp.json`:
-```json
-{
-  "mcpServers": {
-    "constellation": {
-      "url": "https://your-broker.example.com/mcp"
-    }
-  }
-}
-```
-
-**GitHub Copilot**
-
-Add the server URL in your IDE's Copilot MCP settings. Copilot will attempt Dynamic Client Registration automatically.
-
----
-
-## 4. Using the tools
-
-Once connected, the model can use these tools:
-
-| Tool | What it does |
-|---|---|
-| `list_hosts` | Show all your registered machines with online status |
-| `list_labels` | Show path labels, optionally filtered by host |
-| `list_directory` | Browse a directory tree |
-| `file_info` | Check file size and type before reading |
-| `read_file` | Read a file, with optional line range |
-| `grep_files` | Search file contents by literal string or regex |
-| `find_files` | Find files by name pattern |
-| `write_file` | Write or append to a file |
-| `edit_file` | Apply exact-match text substitutions |
-| `copy` | Copy a file or directory |
-| `move` | Move a file or directory |
-| `create_directory` | Create a directory |
-| `delete` | Delete a file or directory (prompts for confirmation on directories) |
-
-Example prompts:
-- *"What machines do I have connected?"* → `list_hosts`
-- *"Show me the structure of my projects directory"* → `list_directory` with `recursive: true`
-- *"Find all .env files in projects"* → `find_files`
-- *"Fix the bug in src/auth.ts"* → `read_file`, then `edit_file`
-
----
-
-## 5. Agent CLI reference
-
-```sh
-constellation agent init        # First-time setup
-constellation agent install     # Register with OS service manager
-constellation agent start       # Start the service
-constellation agent stop        # Stop the service
-constellation agent restart     # Restart the service
-constellation agent status      # Show connection state and labels
-constellation agent sync        # Push paths.yaml changes to broker (after manual edits)
-constellation agent rotate      # Rotate agent token
-constellation agent rename <h>  # Update host name
-constellation agent logs [-f]   # Show service logs
-constellation agent paths list  # List configured labels
-constellation agent paths add <label> <path>   # Add label and sync
-constellation agent paths remove <label>       # Remove label and sync
-```
-
-## 6. Broker CLI reference
-
-```sh
-constellation broker login              # Authenticate with broker management API
-constellation broker status             # Broker health and version
-constellation broker agents list        # All agents with liveness status
-constellation broker agents revoke <id> # Revoke an agent token
-constellation broker labels list        # All path labels
-constellation broker filters list       # Active deny filters
-constellation broker filters add <pattern> [--type glob|regex]
-constellation broker filters remove <id>
-constellation broker sessions list      # Active MCP client sessions
-constellation broker sessions revoke <id>
-constellation broker account deactivate
-
-# User management (AUTH_MODE=local only)
-constellation broker users list
-constellation broker users add <username>
-constellation broker users remove <username>
-constellation broker users reset-password <username>
-```
-
----
+Open an issue or PR.
 
 ## License
 

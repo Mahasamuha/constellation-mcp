@@ -41,12 +41,25 @@ All values are read from `packages/broker/.env`. This file is shared by both the
 | `POSTGRES_PASSWORD` | Postgres password (also read by the Postgres container) |
 | `POSTGRES_DB` | Postgres database name (also read by the Postgres container) |
 | `DATABASE_URL` | PostgreSQL connection string — must match the `POSTGRES_*` values above |
+| `BROKER_URL` | Public base URL, no trailing slash (e.g. `https://broker.example.com`). Used to construct OAuth callback URLs — there is no separate callback URL variable. |
+| `TRUST_PROXY` | Comma-separated list of trusted reverse proxy IP addresses or CIDR ranges. Required by Express to correctly read `X-Forwarded-For`. Example: `127.0.0.1` for a single local proxy, or `127.0.0.1,10.0.0.0/8` for a local proxy plus an internal network. Numbers and booleans are rejected. |
+
+### Auth mode
+
+`AUTH_MODE` controls how users authenticate. Defaults to `oidc`.
+
+| Value | Behaviour |
+|---|---|
+| `oidc` (default) | Delegates to an upstream OIDC provider. Requires `OIDC_ISSUER`, `OIDC_CLIENT_ID`, and `OIDC_CLIENT_SECRET`. User management endpoints return `404`. |
+| `local` | Built-in username/password auth. No OIDC provider required. First-run setup wizard creates the admin account. |
+
+**OIDC variables** (required when `AUTH_MODE=oidc`):
+
+| Variable | Description |
+|---|---|
 | `OIDC_ISSUER` | OIDC provider issuer URL (e.g. `https://accounts.google.com`) |
 | `OIDC_CLIENT_ID` | Client ID from your OIDC provider |
 | `OIDC_CLIENT_SECRET` | Client secret from your OIDC provider |
-| `OIDC_CALLBACK_URL` | Full URL of `/oauth/callback` on this broker |
-| `BROKER_URL` | Public base URL, no trailing slash (e.g. `https://broker.example.com`) |
-| `TRUST_PROXY` | Comma-separated list of trusted reverse proxy IP addresses or CIDR ranges. Required by Express to correctly read `X-Forwarded-For`. Example: `127.0.0.1` for a single local proxy, or `127.0.0.1,10.0.0.0/8` for a local proxy plus an internal network. Numbers and booleans are rejected. |
 
 ### Optional
 
@@ -59,6 +72,7 @@ All values are read from `packages/broker/.env`. This file is shared by both the
 | `RPC_TIMEOUT_MS` | `30000` | Maximum wait for an agent to respond to a tool call |
 | `HEARTBEAT_INTERVAL_SECONDS` | `60` | How often the broker pings each connected agent |
 | `HEARTBEAT_MAX_MISSED` | `3` | Consecutive missed pongs before the agent connection is terminated |
+| `WS_MAX_MESSAGE_BYTES` | `10485760` | Maximum WebSocket message size accepted from an agent, in bytes (default 10 MB) |
 | `ALLOWED_ORIGINS` | — | Comma-separated list of origins permitted to make cross-origin requests (e.g. `https://claude.ai,https://cursor.com`). Required for browser-based MCP clients. Defaults to no cross-origin access if unset. |
 | `RATE_LIMIT_TOOL_CALLS_PER_MIN` | `60` | Standard tool call limit per user per 60-second sliding window |
 | `RATE_LIMIT_EXPENSIVE_TOOLS_PER_MIN` | `20` | Limit for expensive tools (`grep_files`, `find_files`, recursive `list_directory`) per user per 60-second window |
