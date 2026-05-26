@@ -44,6 +44,12 @@ Register an OAuth application with your provider and add these redirect URIs:
 
 The broker constructs both callback URLs from `BROKER_URL` automatically — there is no separate callback URL variable.
 
+**Google** — set `OIDC_ISSUER=https://accounts.google.com`. Create a Web application credential in [Google Cloud Console](https://console.cloud.google.com/apis/credentials) and add both redirect URIs above.
+
+**Azure AD** — set `OIDC_ISSUER=https://login.microsoftonline.com/<tenant-id>/v2.0`. Register an application in [Azure Portal](https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps) and add both redirect URIs under **Authentication**.
+
+**Authentik** — set `OIDC_ISSUER=https://your-authentik.example.com/application/o/<slug>/`. Create an OAuth2/OpenID Provider in Authentik and add both redirect URIs.
+
 ### Optional
 
 **Server**
@@ -104,6 +110,22 @@ The Cloudflare Tunnel deployment additionally requires:
 | Variable | Description |
 |---|---|
 | `CLOUDFLARE_TUNNEL_TOKEN` | Token from the Cloudflare Zero Trust dashboard (Networks → Tunnels → your tunnel → Install connector) |
+
+---
+
+## Reverse Proxy (standard deployment)
+
+The standard Docker Compose deployment (`docker/standard/`) exposes the broker on port 3000. Put a reverse proxy in front to terminate TLS.
+
+Example Caddyfile — Caddy obtains and renews a TLS certificate automatically:
+
+```
+your-broker.example.com {
+    reverse_proxy localhost:3000
+}
+```
+
+Set `TRUST_PROXY=127.0.0.1` in your `.env` when running behind a local reverse proxy. The Cloudflare Tunnel deployment does not need a reverse proxy — see [self-hosted-cloudflare-tunnel.md](self-hosted-cloudflare-tunnel.md).
 
 ---
 

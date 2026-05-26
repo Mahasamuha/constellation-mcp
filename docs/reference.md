@@ -465,6 +465,17 @@ Delete a file or directory. If the target is a directory and `recursive` is abse
 
 ---
 
+## Example Prompts
+
+| Prompt | Tools used |
+|---|---|
+| "What machines do I have connected?" | `list_hosts` |
+| "Show me the structure of my projects directory" | `list_directory` with `recursive: true` |
+| "Find all `.env` files in my projects" | `find_files` |
+| "Fix the bug in `src/auth.ts`" | `read_file`, then `edit_file` |
+
+---
+
 ## Management API
 
 All `/api/*` endpoints require a `broker:manage`-scoped Bearer token obtained via `constellation broker login`. Tokens without that scope receive `403 insufficient_scope`.
