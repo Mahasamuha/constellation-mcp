@@ -6,23 +6,20 @@ The broker is a stateful HTTP/WebSocket server that sits between MCP clients and
 
 ## Architecture
 
-```
-MCP client (Claude, Cursor, Copilot)
-    │  HTTPS + OAuth Bearer
-    ▼
-  POST /mcp
-    │
-  [auth middleware — resolves Bearer token to userId]
-    │
-  MCP tool call
-    │
-  [router — rate check → label resolution → filter check → liveness check]
-    │
-  dispatchRpc → WebSocket frame → agent
-    │
-  ← RPC response (or timeout)
-    │
-  ← MCP tool response
+```mermaid
+flowchart TD
+    Client["MCP client\n(Claude, Cursor, Copilot)"]
+    Auth["auth middleware\nresolves Bearer token to userId"]
+    Tool["MCP tool call"]
+    Router["router\nrate check → label resolution → filter check → liveness check"]
+    Agent["Agent"]
+
+    Client -->|"HTTPS + OAuth Bearer · POST /mcp"| Auth
+    Auth --> Tool
+    Tool --> Router
+    Router -->|"dispatchRpc · WebSocket frame"| Agent
+    Agent -.->|"RPC response (or timeout)"| Router
+    Router -.->|"MCP tool response"| Client
 ```
 
 Agents connect over WebSocket to `wss://<broker>/agent/connect` using a long-lived bearer token. The broker keeps one connection per agent in memory and heartbeats it with WebSocket pings.
@@ -263,29 +260,23 @@ The broker acts as an OAuth 2.0 authorization server backed by an upstream OIDC 
 
 Used by Claude, Cursor, Copilot, and any OAuth 2.0 client.
 
-```
-Client                    Broker                    OIDC Provider
-  │                         │                            │
-  │  GET /oauth/authorize   │                            │
-  │ ──────────────────────► │                            │
-  │                         │  redirect → OIDC /authorize│
-  │ ◄──────────────────── 302                            │
-  │                         │                            │
-  │  browser follows redirect                            │
-  │ ────────────────────────────────────────────────────►│
-  │  user authenticates                                  │
-  │ ◄────────────────────────────────────────────────────│
-  │  GET /oauth/callback?code=...                        │
-  │ ──────────────────────►│                             │
-  │                         │  exchange code with OIDC   │
-  │                         │ ──────────────────────────►│
-  │                         │ ◄──────────────────────────│
-  │                         │  upsert user row           │
-  │  302 → client redirect_uri?code=...                  │
-  │ ◄──────────────────────│                             │
-  │  POST /oauth/token      │                            │
-  │ ──────────────────────► │                            │
-  │  ← access_token + refresh_token                      │
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Broker
+    participant OIDC as OIDC Provider
+
+    Client->>Broker: GET /oauth/authorize
+    Broker-->>Client: 302 → OIDC /authorize
+    Client->>OIDC: browser follows redirect
+    OIDC-->>Client: user authenticates
+    Client->>Broker: GET /oauth/callback?code=...
+    Broker->>OIDC: exchange code
+    OIDC-->>Broker: tokens
+    Note over Broker: upsert user row
+    Broker-->>Client: 302 → redirect_uri?code=...
+    Client->>Broker: POST /oauth/token
+    Broker-->>Client: access_token + refresh_token
 ```
 
 PKCE (`S256`) is **required**. The broker rejects `/oauth/authorize` requests that omit `code_challenge`. The MCP auth spec is based on OAuth 2.1, which mandates PKCE for all authorization code flows. All compliant MCP clients (Claude, Cursor, Copilot) support it.
@@ -296,22 +287,26 @@ PKCE (`S256`) is **required**. The broker rejects `/oauth/authorize` requests th
 
 Used by `constellation agent init` (scope `agent:register`) and `constellation broker login` (scope `broker:manage`).
 
-```
-CLI                        Broker                    Browser
-  │  POST /oauth/device/code│                            │
-  │ ──────────────────────► │                            │
-  │  ← device_code, user_code, verification_uri          │
-  │                         │                            │
-  │  display user_code       │                            │
-  │  poll POST /oauth/token  │  user opens /activate     │
-  │  (every 5s)             │ ◄──────────────────────── │
-  │                         │  OIDC auth + consent form  │
-  │                         │ ──────────────────────────►│
-  │                         │ ◄──────────────────────────│
-  │                         │  POST /activate/confirm    │
-  │                         │ ◄──────────────────────── │
-  │  poll returns token      │                            │
-  │ ◄──────────────────────│                            │
+```mermaid
+sequenceDiagram
+    participant CLI
+    participant Broker
+    participant Browser
+
+    CLI->>Broker: POST /oauth/device/code
+    Broker-->>CLI: device_code, user_code, verification_uri
+    Note over CLI: display user_code
+    par CLI polls every 5s
+        loop until approved
+            CLI->>Broker: POST /oauth/token
+            Broker-->>CLI: authorization_pending
+        end
+    and User authenticates in browser
+        Browser->>Broker: GET /activate
+        Broker->>Browser: OIDC auth + consent form
+        Browser-->>Broker: POST /activate/confirm
+    end
+    Broker-->>CLI: access_token (next poll succeeds)
 ```
 
 - `agent:register` — on approval, the broker creates an `Agent` row and an `AgentToken`, then returns `{ access_token, token_type: "agent", host }`.

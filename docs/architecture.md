@@ -25,20 +25,16 @@
 
 ## Components
 
-```
-MCP client (Claude, Cursor, Copilot)
-    │  HTTPS + OAuth 2.0 Bearer
-    ▼
-Broker (VPS / Railway / Fly)
-    │  MCP server · OAuth AS · WebSocket hub · request router
-    │  ← Postgres (agent registry, OAuth sessions, path labels, filters)
-    │
-    │  wss://<broker>/agent/connect
-    │  Bearer <agent-token>
-    ▼
-Agent (your machine)
-    │  outbound WebSocket only — no inbound ports
-    └── local filesystem ops · path enforcement
+```mermaid
+flowchart TD
+    Client["MCP client\n(Claude, Cursor, Copilot)"]
+    Broker["Broker · VPS / Railway / Fly\nMCP server · OAuth AS · WebSocket hub · request router"]
+    Postgres[("Postgres\nagent registry · OAuth sessions · path labels · filters")]
+    Agent["Agent · your machine\noutbound WebSocket only — no inbound ports\nlocal filesystem ops · path enforcement"]
+
+    Client -->|"HTTPS + OAuth 2.0 Bearer"| Broker
+    Broker --- Postgres
+    Broker -->|"wss://&lt;broker&gt;/agent/connect · Bearer &lt;agent-token&gt;"| Agent
 ```
 
 | Component | Runs where | Responsibility |
