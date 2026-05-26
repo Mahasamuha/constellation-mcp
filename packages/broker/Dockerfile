@@ -45,7 +45,9 @@ COPY packages/broker/prisma ./packages/broker/prisma
 COPY packages/broker/prisma.config.ts ./packages/broker/
 
 COPY packages/broker/docker-entrypoint.sh ./
-RUN chmod +x docker-entrypoint.sh
+RUN chmod +x docker-entrypoint.sh && chown -R node:node /app
+
+USER node
 
 EXPOSE 3000
 ENTRYPOINT ["./docker-entrypoint.sh"]
