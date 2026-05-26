@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.2.4 — 2026-05-25
+
+### Security
+
+- **Broker container no longer runs as root** — the runtime image now drops to the built-in `node` user (uid 1000) before starting the process.
+- **Supply chain attestations added to the broker image** — every published image now includes a SLSA Build Provenance attestation and an SBOM attestation, verifiable with `docker buildx imagetools inspect` or `cosign verify-attestation`.
+
+### Bug fixes
+
+- **Agent GUI version sourced from `package.json`** — `tauri.conf.json` now reads the version at build time from the workspace `package.json` rather than duplicating it, preventing version skew between the binary and the metadata.
+
+### Other changes
+
+- ESLint added to CI with project-wide defaults enforced on every pull request.
+- Documentation significantly expanded: architecture, configuration, broker API, and CLI reference now live in dedicated files under `docs/`. New additions include a contributing guide, OIDC provider-specific setup examples (Google, Azure AD, Authentik), a reverse proxy setup section, example MCP prompts, and a Docker Hub overview page.
+
+---
+
 ## v0.2.0 — 2026-05-25
 
 ### Breaking changes
