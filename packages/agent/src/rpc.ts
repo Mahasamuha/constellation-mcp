@@ -301,14 +301,14 @@ async function safeRealpath(path: string, boundaryRoot: string): Promise<string>
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
 
     const parent = dirname(path);
-    if (parent === path) throw new Error("Cannot resolve path");
+    if (parent === path) throw new Error("Cannot resolve path", { cause: err });
 
     // Resolve the parent first, then verify it's still inside the boundary.
     // Using string startsWith on the unresolved parent is insufficient because
     // a path like /root/../outside passes the prefix check before resolution.
     const resolvedParent = await safeRealpath(parent, boundaryRoot);
     if (!resolvedParent.startsWith(boundaryRoot + sep) && resolvedParent !== boundaryRoot) {
-      throw new Error("Cannot resolve path");
+      throw new Error("Cannot resolve path", { cause: err });
     }
     return join(resolvedParent, basename(path));
   }

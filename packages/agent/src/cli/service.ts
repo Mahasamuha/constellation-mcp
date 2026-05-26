@@ -31,7 +31,7 @@ export function install(executablePath: string): void {
 // binary and should be invoked directly.  When running as a plain Node.js
 // script, prepend the node executable.
 function execPrefix(): string[] {
-  if ((process as any).pkg !== undefined) {
+  if ((process as typeof process & { pkg?: unknown }).pkg !== undefined) {
     return [process.execPath];
   }
   return [process.execPath, process.argv[1]!];

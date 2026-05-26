@@ -63,7 +63,7 @@ export default function Status() {
   const [follow, setFollow] = useState(true);
   const [logsCopied, setLogsCopied] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
-  const [now, setNow] = useState(Date.now());
+  const [now, setNow] = useState(() => Date.now());
   const logsRef = useRef<HTMLDivElement>(null);
 
   async function refresh() {

@@ -6,70 +6,23 @@ The broker is a stateful HTTP/WebSocket server that sits between MCP clients and
 
 ## Architecture
 
-```
-MCP client (Claude, Cursor, Copilot)
-    │  HTTPS + OAuth Bearer
-    ▼
-  POST /mcp
-    │
-  [auth middleware — resolves Bearer token to userId]
-    │
-  MCP tool call
-    │
-  [router — rate check → label resolution → filter check → liveness check]
-    │
-  dispatchRpc → WebSocket frame → agent
-    │
-  ← RPC response (or timeout)
-    │
-  ← MCP tool response
+```mermaid
+flowchart TD
+    Client["MCP client\n(Claude, Cursor, Copilot)"]
+    Auth["auth middleware\nresolves Bearer token to userId"]
+    Tool["MCP tool call"]
+    Router["router\nrate check → label resolution → filter check → liveness check"]
+    Agent["Agent"]
+
+    Client -->|"HTTPS + OAuth Bearer · POST /mcp"| Auth
+    Auth --> Tool
+    Tool --> Router
+    Router -->|"dispatchRpc · WebSocket frame"| Agent
+    Agent -.->|"RPC response (or timeout)"| Router
+    Router -.->|"MCP tool response"| Client
 ```
 
 Agents connect over WebSocket to `wss://<broker>/agent/connect` using a long-lived bearer token. The broker keeps one connection per agent in memory and heartbeats it with WebSocket pings.
-
----
-
-## Configuration Reference
-
-All values are read from `packages/broker/.env`. This file is shared by both the broker and the Postgres container in Docker Compose — set `POSTGRES_USER`, `POSTGRES_PASSWORD`, and `POSTGRES_DB` here and make sure `DATABASE_URL` uses the same credentials. The broker refuses to start if `TRUST_PROXY` is absent.
-
-### Required
-
-| Variable | Description |
-|---|---|
-| `POSTGRES_USER` | Postgres username (also read by the Postgres container) |
-| `POSTGRES_PASSWORD` | Postgres password (also read by the Postgres container) |
-| `POSTGRES_DB` | Postgres database name (also read by the Postgres container) |
-| `DATABASE_URL` | PostgreSQL connection string — must match the `POSTGRES_*` values above |
-| `OIDC_ISSUER` | OIDC provider issuer URL (e.g. `https://accounts.google.com`) |
-| `OIDC_CLIENT_ID` | Client ID from your OIDC provider |
-| `OIDC_CLIENT_SECRET` | Client secret from your OIDC provider |
-| `OIDC_CALLBACK_URL` | Full URL of `/oauth/callback` on this broker |
-| `BROKER_URL` | Public base URL, no trailing slash (e.g. `https://broker.example.com`) |
-| `TRUST_PROXY` | Comma-separated list of trusted reverse proxy IP addresses or CIDR ranges. Required by Express to correctly read `X-Forwarded-For`. Example: `127.0.0.1` for a single local proxy, or `127.0.0.1,10.0.0.0/8` for a local proxy plus an internal network. Numbers and booleans are rejected. |
-
-### Optional
-
-| Variable | Default | Description |
-|---|---|---|
-| `PORT` | `3000` | TCP port the HTTP server binds to |
-| `NODE_ENV` | — | Set to `production` to enable `Secure` on cookies |
-| `OAUTH_ACCESS_TOKEN_TTL_HOURS` | `24` | Lifetime of MCP client access tokens |
-| `OAUTH_REFRESH_TOKEN_TTL_DAYS` | `30` | Lifetime of MCP client refresh tokens |
-| `RPC_TIMEOUT_MS` | `30000` | Maximum wait for an agent to respond to a tool call |
-| `HEARTBEAT_INTERVAL_SECONDS` | `60` | How often the broker pings each connected agent |
-| `HEARTBEAT_MAX_MISSED` | `3` | Consecutive missed pongs before the agent connection is terminated |
-| `ALLOWED_ORIGINS` | — | Comma-separated list of origins permitted to make cross-origin requests (e.g. `https://claude.ai,https://cursor.com`). Required for browser-based MCP clients. Defaults to no cross-origin access if unset. |
-| `RATE_LIMIT_TOOL_CALLS_PER_MIN` | `60` | Standard tool call limit per user per 60-second sliding window |
-| `RATE_LIMIT_EXPENSIVE_TOOLS_PER_MIN` | `20` | Limit for expensive tools (`grep_files`, `find_files`, recursive `list_directory`) per user per 60-second window |
-| `LOG_LEVEL` | `warn` | Pino log level (`trace`, `debug`, `info`, `warn`, `error`, `fatal`). Set to `info` for verbose output during development. |
-| `RATE_LIMIT_OAUTH_PER_15MIN` | `10` | Requests to `/oauth/token`, `/oauth/register`, `/oauth/device/code`, `/setup`, and `/auth/login` per IP per 15 minutes |
-| `RATE_LIMIT_DEVICE_POLL_PER_15MIN` | `200` | Requests to `/oauth/token` with `grant_type=device_code` per IP per 15 minutes. Device flow clients poll every 5 seconds for up to 15 minutes (≈180 requests); this limit must exceed that. |
-| `RATE_LIMIT_WS_RECONNECT_PER_MIN` | `10` | WebSocket reconnect attempts per agent token per 60-second window |
-
-An agent is considered **online** when `now - last_heartbeat_at < HEARTBEAT_INTERVAL_SECONDS × HEARTBEAT_MAX_MISSED × 1000 ms`.
-
-All numeric variables are validated at startup. Setting any of them to a non-integer value causes the broker to exit immediately with an error message naming the offending variable.
 
 ---
 
@@ -307,29 +260,23 @@ The broker acts as an OAuth 2.0 authorization server backed by an upstream OIDC 
 
 Used by Claude, Cursor, Copilot, and any OAuth 2.0 client.
 
-```
-Client                    Broker                    OIDC Provider
-  │                         │                            │
-  │  GET /oauth/authorize   │                            │
-  │ ──────────────────────► │                            │
-  │                         │  redirect → OIDC /authorize│
-  │ ◄──────────────────── 302                            │
-  │                         │                            │
-  │  browser follows redirect                            │
-  │ ────────────────────────────────────────────────────►│
-  │  user authenticates                                  │
-  │ ◄────────────────────────────────────────────────────│
-  │  GET /oauth/callback?code=...                        │
-  │ ──────────────────────►│                             │
-  │                         │  exchange code with OIDC   │
-  │                         │ ──────────────────────────►│
-  │                         │ ◄──────────────────────────│
-  │                         │  upsert user row           │
-  │  302 → client redirect_uri?code=...                  │
-  │ ◄──────────────────────│                             │
-  │  POST /oauth/token      │                            │
-  │ ──────────────────────► │                            │
-  │  ← access_token + refresh_token                      │
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Broker
+    participant OIDC as OIDC Provider
+
+    Client->>Broker: GET /oauth/authorize
+    Broker-->>Client: 302 → OIDC /authorize
+    Client->>OIDC: browser follows redirect
+    OIDC-->>Client: user authenticates
+    Client->>Broker: GET /oauth/callback?code=...
+    Broker->>OIDC: exchange code
+    OIDC-->>Broker: tokens
+    Note over Broker: upsert user row
+    Broker-->>Client: 302 → redirect_uri?code=...
+    Client->>Broker: POST /oauth/token
+    Broker-->>Client: access_token + refresh_token
 ```
 
 PKCE (`S256`) is **required**. The broker rejects `/oauth/authorize` requests that omit `code_challenge`. The MCP auth spec is based on OAuth 2.1, which mandates PKCE for all authorization code flows. All compliant MCP clients (Claude, Cursor, Copilot) support it.
@@ -340,22 +287,26 @@ PKCE (`S256`) is **required**. The broker rejects `/oauth/authorize` requests th
 
 Used by `constellation agent init` (scope `agent:register`) and `constellation broker login` (scope `broker:manage`).
 
-```
-CLI                        Broker                    Browser
-  │  POST /oauth/device/code│                            │
-  │ ──────────────────────► │                            │
-  │  ← device_code, user_code, verification_uri          │
-  │                         │                            │
-  │  display user_code       │                            │
-  │  poll POST /oauth/token  │  user opens /activate     │
-  │  (every 5s)             │ ◄──────────────────────── │
-  │                         │  OIDC auth + consent form  │
-  │                         │ ──────────────────────────►│
-  │                         │ ◄──────────────────────────│
-  │                         │  POST /activate/confirm    │
-  │                         │ ◄──────────────────────── │
-  │  poll returns token      │                            │
-  │ ◄──────────────────────│                            │
+```mermaid
+sequenceDiagram
+    participant CLI
+    participant Broker
+    participant Browser
+
+    CLI->>Broker: POST /oauth/device/code
+    Broker-->>CLI: device_code, user_code, verification_uri
+    Note over CLI: display user_code
+    par CLI polls every 5s
+        loop until approved
+            CLI->>Broker: POST /oauth/token
+            Broker-->>CLI: authorization_pending
+        end
+    and User authenticates in browser
+        Browser->>Broker: GET /activate
+        Broker->>Browser: OIDC auth + consent form
+        Browser-->>Broker: POST /activate/confirm
+    end
+    Broker-->>CLI: access_token (next poll succeeds)
 ```
 
 - `agent:register` — on approval, the broker creates an `Agent` row and an `AgentToken`, then returns `{ access_token, token_type: "agent", host }`.
