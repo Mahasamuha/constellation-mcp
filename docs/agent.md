@@ -270,6 +270,22 @@ Lists active MCP client OAuth sessions (non-expired only).
 
 Immediately invalidates an MCP client session (both access and refresh tokens).
 
+### `broker users list [--json]`
+
+Lists all local user accounts. Only available when the broker is running in `AUTH_MODE=local`.
+
+### `broker users add <username>`
+
+Creates a new local user. Prompts for a password (minimum 12 characters).
+
+### `broker users remove <username>`
+
+Deactivates a local user (soft delete). Prompts for confirmation. Existing sessions expire normally; no future logins are permitted.
+
+### `broker users reset-password <username>`
+
+Sets a new password for a local user and immediately invalidates all of their existing OAuth sessions. Prompts for the new password (minimum 12 characters).
+
 ### `broker account deactivate`
 
 Deactivates your account after an interactive confirmation prompt. All agent connections and MCP client sessions are immediately blocked. Re-running `constellation agent init` is required to restore access.
