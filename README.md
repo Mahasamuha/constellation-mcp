@@ -12,6 +12,15 @@ Access any machine's filesystem from any MCP client (Claude, Cursor, GitHub Copi
 [![Docker Image](https://img.shields.io/docker/v/mahasamuha/constellation-broker?label=docker&logo=docker)](https://hub.docker.com/r/mahasamuha/constellation-broker)
 [![License: PolyForm Noncommercial](https://img.shields.io/badge/license-PolyForm%20Noncommercial-blue)](./LICENSE)
 
+## How It Works
+
+1. **Stand up the broker** — a small self-hosted server that acts as a relay between your MCP client and your machines.
+2. **Install the agent** on each machine you want to expose. The agent connects outbound to the broker, so no inbound ports are needed on the machine itself.
+3. **Add paths** on the agent — each path scopes what the MCP client can see (e.g. `/home/user/notes`). Paths get a short label (e.g. `notes`) that makes them easy to reference in conversation.
+4. **Connect your MCP client** (Claude, Cursor, etc.) to the broker URL — it sees one unified tool surface across all your agents and labeled paths.
+
+That's it. Ask your AI assistant to read, search, or edit anything under a registered path, on any connected machine.
+
 ## Prerequisites
 
 - Docker and Docker Compose (broker)
