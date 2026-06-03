@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.2.5 — 2026-06-02
+
+### Security
+
+- **OAuth session validation consolidated into a single implementation** — `mcp.ts` previously had its own `resolveBearerToken` function that duplicated the three auth checks (session exists, not expired, user not deactivated) from `middleware.ts`. The standalone function is removed; both paths now delegate to a shared `lookupOAuthSession` export, eliminating the risk of the two implementations drifting apart.
+
+### Reliability
+
+- **Label conflict check now causes a true transaction rollback** — when two agents concurrently register the same label, the conflict check previously set a flag and returned early, causing the transaction to commit as a no-op before sending an error. The transaction now throws a typed `LabelConflictError` on conflict, which rolls it back cleanly. Unknown errors are re-thrown as before.
+
+---
+
 ## v0.2.4 — 2026-05-25
 
 ### Security
