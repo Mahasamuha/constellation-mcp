@@ -5,7 +5,7 @@ import { Router, Request, Response, IRouter } from "express";
 import { z } from "zod/v4";
 import { prisma } from "./db.js";
 import { routeToolCall, RouterError } from "./router.js";
-import { hashToken } from "@constellation/shared";
+import { lookupOAuthSession } from "./middleware.js";
 
 const { version } = createRequire(import.meta.url)("../package.json") as { version: string };
 
@@ -76,28 +76,6 @@ const DeleteOutput = {
 export const mcpRouter: IRouter = Router();
 
 // ---------------------------------------------------------------------------
-// Auth middleware — sets req.auth for the SDK transport
-// ---------------------------------------------------------------------------
-
-async function resolveBearerToken(token: string): Promise<{
-  userId: string;
-  clientId: string;
-  expiresAt: Date;
-} | null> {
-  const tokenHash = hashToken(token);
-  const session = await prisma.oauthSession.findUnique({
-    where: { accessTokenHash: tokenHash },
-    include: { user: { select: { id: true, deactivatedAt: true } } },
-  });
-
-  if (!session) return null;
-  if (session.expiresAt < new Date()) return null;
-  if (session.user.deactivatedAt !== null) return null;
-
-  return { userId: session.user.id, clientId: session.mcpClientId, expiresAt: session.expiresAt };
-}
-
-// ---------------------------------------------------------------------------
 // Route: POST /mcp  (and GET for SSE)
 // ---------------------------------------------------------------------------
 
@@ -112,7 +90,7 @@ mcpRouter.all("/mcp", async (req: Request, res: Response) => {
     return;
   }
 
-  const session = await resolveBearerToken(token);
+  const session = await lookupOAuthSession(token);
   if (!session) {
     const brokerUrl = process.env["BROKER_URL"] ?? "";
     res.set("WWW-Authenticate", `Bearer realm="${brokerUrl}", error="invalid_token"`);
@@ -122,7 +100,7 @@ mcpRouter.all("/mcp", async (req: Request, res: Response) => {
 
   (req as Request & { auth: object }).auth = {
     token,
-    clientId: session.clientId,
+    clientId: session.mcpClientId,
     scopes: [],
     expiresAt: Math.floor(session.expiresAt.getTime() / 1000),
     extra: { userId: session.userId },

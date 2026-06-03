@@ -395,51 +395,55 @@ async function handleConfigUpdate(conn: ConnectedAgent, msg: ConfigUpdateMessage
   // Upsert all provided labels and remove any that are no longer present.
   // Conflict check is inside the transaction to avoid a TOCTOU race where two
   // agents register the same label concurrently and both pass a pre-transaction check.
-  let conflictLabel: string | null = null;
-  await prisma.$transaction(async (tx) => {
-    for (const entry of entries) {
-      const conflict = await tx.pathLabel.findFirst({
-        where: {
-          userId: conn.userId,
-          label: entry.label,
-          NOT: { agentId: conn.agentId },
-        },
-      });
-      if (conflict) {
-        conflictLabel = entry.label;
-        return;
+  // Throwing inside the transaction rolls it back cleanly.
+  class LabelConflictError extends Error {
+    constructor(public readonly label: string) { super(); }
+  }
+
+  try {
+    await prisma.$transaction(async (tx) => {
+      for (const entry of entries) {
+        const conflict = await tx.pathLabel.findFirst({
+          where: {
+            userId: conn.userId,
+            label: entry.label,
+            NOT: { agentId: conn.agentId },
+          },
+        });
+        if (conflict) throw new LabelConflictError(entry.label);
       }
-    }
 
-    for (const entry of entries) {
-      await tx.pathLabel.upsert({
-        where: { userId_label: { userId: conn.userId, label: entry.label } },
-        create: {
-          userId: conn.userId,
+      for (const entry of entries) {
+        await tx.pathLabel.upsert({
+          where: { userId_label: { userId: conn.userId, label: entry.label } },
+          create: {
+            userId: conn.userId,
+            agentId: conn.agentId,
+            label: entry.label,
+            reportedPath: entry.reported_path,
+          },
+          update: { reportedPath: entry.reported_path },
+        });
+      }
+
+      // Remove labels belonging to this agent that are no longer in the payload.
+      const activeLabels = entries.map((e) => e.label);
+      await tx.pathLabel.deleteMany({
+        where: {
           agentId: conn.agentId,
-          label: entry.label,
-          reportedPath: entry.reported_path,
+          label: { notIn: activeLabels },
         },
-        update: { reportedPath: entry.reported_path },
       });
+    });
+  } catch (err) {
+    if (err instanceof LabelConflictError) {
+      send(conn.ws, {
+        type: "config_update_error",
+        error: `Label "${err.label}" is already registered by another agent`,
+      });
+      return;
     }
-
-    // Remove labels belonging to this agent that are no longer in the payload.
-    const activeLabels = entries.map((e) => e.label);
-    await tx.pathLabel.deleteMany({
-      where: {
-        agentId: conn.agentId,
-        label: { notIn: activeLabels },
-      },
-    });
-  });
-
-  if (conflictLabel) {
-    send(conn.ws, {
-      type: "config_update_error",
-      error: `Label "${conflictLabel}" is already registered by another agent`,
-    });
-    return;
+    throw err;
   }
 
   log.info({ agentId: conn.agentId, count: entries.length }, "Config updated");
