@@ -103,14 +103,17 @@ export async function resolveLabel(
   const sharedResult = await resolveSharedLabel(label, host, userOidcSub);
   if (sharedResult) return sharedResult;
 
-  // Give a specific error if the host exists but the label doesn't
+  // Give a specific error if the host exists but the label doesn't.
+  // Check both personal agents (userId-scoped) and shared agents (userId: null).
   if (host) {
-    const hostExists = await prisma.agent.findFirst({ where: { userId, host } });
+    const hostExists = await prisma.agent.findFirst({
+      where: { host, OR: [{ userId }, { userId: null }] },
+    });
     if (!hostExists) {
-      return { code: "host_not_found", message: `No host '${host}' registered on your account` };
+      return { code: "host_not_found", message: `No host '${host}' found` };
     }
   }
-  return { code: "label_not_found", message: `No label '${label}' found on your account` };
+  return { code: "label_not_found", message: `No label '${label}' found` };
 }
 
 /**
