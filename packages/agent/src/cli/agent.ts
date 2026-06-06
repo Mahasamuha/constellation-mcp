@@ -1,6 +1,6 @@
 import { Command } from "commander";
 import { execFileSync } from "node:child_process";
-import { statSync } from "node:fs";
+import { realpathSync, statSync } from "node:fs";
 import WebSocket from "ws";
 import open from "open";
 import {
@@ -320,17 +320,18 @@ export function registerAgentCommands(program: Command, getConfigDir: () => stri
         console.error(`Label '${label}' already exists. Remove it first.`);
         process.exit(1);
       }
+      let resolvedPath: string;
       try {
-        const stat = statSync(pathArg);
-        if (!stat.isDirectory()) {
-          console.error(`Error: '${pathArg}' is not a directory.`);
-          process.exit(1);
-        }
+        resolvedPath = realpathSync(pathArg);
       } catch {
         console.error(`Error: path '${pathArg}' does not exist.`);
         process.exit(1);
       }
-      cfg.paths.push({ label, path: pathArg });
+      if (!statSync(resolvedPath).isDirectory()) {
+        console.error(`Error: '${pathArg}' is not a directory.`);
+        process.exit(1);
+      }
+      cfg.paths.push({ label, path: resolvedPath });
       writePathsConfig(dir, cfg);
       await syncPaths(dir);
       console.log(`Label '${label}' added and synced.`);
