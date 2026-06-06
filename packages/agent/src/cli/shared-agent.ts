@@ -1,5 +1,6 @@
 import { Command } from "commander";
 import { hostname } from "node:os";
+import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync, mkdirSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 import WebSocket from "ws";
@@ -228,6 +229,67 @@ export function registerSharedAgentCommands(program: Command, _getConfigDir: () 
         for (const l of out.labels) {
           console.log(`  ${l.name} → ${l.path} [${l.default_access}]`);
         }
+      }
+    });
+
+  // -------------------------------------------------------------------------
+  // install — generate systemd unit for the shared agent
+  // -------------------------------------------------------------------------
+
+  sharedAgent
+    .command("install")
+    .description("Print a systemd unit file for the shared agent (system-level)")
+    .requiredOption("--config <path>", "Path to shared agent config file")
+    .option("--unit-name <name>", "Systemd unit name", "constellation-shared-agent")
+    .option("--user <user>", "Service user to run as (must have CAP_SETUID/CAP_SETGID)", "constellation")
+    .action((opts: { config: string; unitName: string; user: string }) => {
+      const execLine = `${process.execPath} ${process.argv[1]} shared-agent start --config ${opts.config}`;
+      const unit = `[Unit]
+Description=Constellation Shared Agent
+After=network.target nss-lookup.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=${opts.user}
+ExecStart=${execLine}
+Restart=on-failure
+RestartSec=5
+Environment=CONSTELLATION_SHARED_AGENT_CONFIG=${opts.config}
+# The service user needs CAP_SETUID and CAP_SETGID to spawn per-user subagents.
+AmbientCapabilities=CAP_SETUID CAP_SETGID
+CapabilityBoundingSet=CAP_SETUID CAP_SETGID
+NoNewPrivileges=no
+ProtectSystem=strict
+ReadWritePaths=/var/log/constellation
+
+[Install]
+WantedBy=multi-user.target
+`;
+      console.log(unit);
+      console.log("# Install steps:");
+      console.log(`# sudo tee /etc/systemd/system/${opts.unitName}.service > /dev/null << 'EOF'`);
+      console.log("# <paste the unit above>");
+      console.log("# EOF");
+      console.log(`# sudo systemctl daemon-reload`);
+      console.log(`# sudo systemctl enable --now ${opts.unitName}`);
+    });
+
+  // -------------------------------------------------------------------------
+  // stop
+  // -------------------------------------------------------------------------
+
+  sharedAgent
+    .command("stop")
+    .description("Stop the shared agent (sends SIGTERM to the running process)")
+    .option("--unit-name <name>", "Systemd unit name to stop", "constellation-shared-agent")
+    .action((opts: { unitName: string }) => {
+      try {
+        execFileSync("systemctl", ["stop", opts.unitName], { stdio: "inherit" });
+      } catch {
+        console.error(`Failed to stop ${opts.unitName} via systemctl.`);
+        console.error("If the agent is not running as a systemd service, send SIGTERM to the agent process manually.");
+        process.exit(1);
       }
     });
 
