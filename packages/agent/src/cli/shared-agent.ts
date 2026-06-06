@@ -238,7 +238,10 @@ export function registerSharedAgentCommands(program: Command, _getConfigDir: () 
     .option("--unit-name <name>", "Systemd unit name", "constellation-shared-agent")
     .option("--user <user>", "Service user to run as (must have CAP_SETUID/CAP_SETGID)", "constellation")
     .action((opts: { config: string; unitName: string; user: string }) => {
-      const execLine = `${process.execPath} ${process.argv[1]} shared-agent start --config ${opts.config}`;
+      const isPkg = (process as typeof process & { pkg?: unknown }).pkg !== undefined;
+      const execLine = isPkg
+        ? `${process.execPath} shared-agent start --config ${opts.config}`
+        : `${process.execPath} ${process.argv[1]} shared-agent start --config ${opts.config}`;
       const unit = `[Unit]
 Description=Constellation Shared Agent
 After=network.target nss-lookup.target
