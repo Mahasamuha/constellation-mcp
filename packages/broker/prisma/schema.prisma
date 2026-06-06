@@ -68,14 +68,14 @@ enum DisconnectReason {
 
 model Agent {
   id                   String            @id @default(cuid())
-  userId               String            @map("user_id")
+  userId               String?           @map("user_id")
   agentTokenId         String            @map("agent_token_id")
   host                 String
   registeredAt         DateTime          @default(now()) @map("registered_at")
   lastHeartbeatAt      DateTime?         @map("last_heartbeat_at")
   lastDisconnectReason DisconnectReason? @map("last_disconnect_reason")
 
-  user          User               @relation(fields: [userId], references: [id])
+  user          User?              @relation(fields: [userId], references: [id])
   agentToken    AgentToken         @relation(fields: [agentTokenId], references: [id])
   pathLabels    PathLabel[]
   brokerFilters BrokerPathFilter[]

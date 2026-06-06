@@ -1,6 +1,7 @@
 import { IncomingMessage, Server } from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
 import { prisma } from "./db.js";
+import { AgentTokenType } from "./generated/prisma/client.js";
 import { hashToken, generateToken, createLogger } from "@constellation/shared";
 import { config } from "./config.js";
 
@@ -30,7 +31,8 @@ interface UpdateHostMessage {
 interface ConnectedAgent {
   ws: WebSocket;
   agentId: string;
-  userId: string;
+  userId: string | null;
+  tokenType: AgentTokenType;
   host: string;
   tokenId: string;
   lastPongAt: number;
@@ -197,6 +199,7 @@ export function attachHub(server: Server): void {
       wss.emit("connection", ws, req, {
         agentId: agent.id,
         userId: agent.userId,
+        tokenType: agentToken.tokenType,
         host: agent.host,
         tokenId: agentToken.id,
         pendingRotation,
@@ -206,7 +209,8 @@ export function attachHub(server: Server): void {
 
   wss.on("connection", (ws: WebSocket, _req: IncomingMessage, meta: {
     agentId: string;
-    userId: string;
+    userId: string | null;
+    tokenType: AgentTokenType;
     host: string;
     tokenId: string;
     pendingRotation?: PendingRotationEntry;
@@ -219,12 +223,13 @@ export function attachHub(server: Server): void {
 
 async function handleConnection(ws: WebSocket, meta: {
   agentId: string;
-  userId: string;
+  userId: string | null;
+  tokenType: AgentTokenType;
   host: string;
   tokenId: string;
   pendingRotation?: PendingRotationEntry;
 }): Promise<void> {
-    const { agentId, userId, host, tokenId, pendingRotation } = meta;
+    const { agentId, userId, tokenType, host, tokenId, pendingRotation } = meta;
 
     // Complete a pending token rotation: atomically update agentTokenId and revoke the old token,
     // then cancel the expiry timer.
@@ -258,6 +263,7 @@ async function handleConnection(ws: WebSocket, meta: {
       ws,
       agentId,
       userId,
+      tokenType,
       host,
       tokenId,
       lastPongAt: Date.now(),
@@ -370,6 +376,12 @@ interface PathEntry {
 }
 
 async function handleConfigUpdate(conn: ConnectedAgent, msg: ConfigUpdateMessage): Promise<void> {
+  if (conn.tokenType === AgentTokenType.SHARED) {
+    send(conn.ws, { type: "config_update_error", error: "Shared agents use admin-defined labels; config_update is not supported" });
+    return;
+  }
+  // After SHARED guard: userId is guaranteed non-null for PERSONAL connections.
+  const userId = conn.userId!;
   const paths = msg.paths;
   if (!Array.isArray(paths)) {
     send(conn.ws, { type: "config_update_error", error: "paths must be an array" });
@@ -405,7 +417,7 @@ async function handleConfigUpdate(conn: ConnectedAgent, msg: ConfigUpdateMessage
       for (const entry of entries) {
         const conflict = await tx.pathLabel.findFirst({
           where: {
-            userId: conn.userId,
+            userId,
             label: entry.label,
             NOT: { agentId: conn.agentId },
           },
@@ -415,9 +427,9 @@ async function handleConfigUpdate(conn: ConnectedAgent, msg: ConfigUpdateMessage
 
       for (const entry of entries) {
         await tx.pathLabel.upsert({
-          where: { userId_label: { userId: conn.userId, label: entry.label } },
+          where: { userId_label: { userId, label: entry.label } },
           create: {
-            userId: conn.userId,
+            userId,
             agentId: conn.agentId,
             label: entry.label,
             reportedPath: entry.reported_path,
@@ -451,6 +463,12 @@ async function handleConfigUpdate(conn: ConnectedAgent, msg: ConfigUpdateMessage
 }
 
 async function handleUpdateHost(conn: ConnectedAgent, msg: UpdateHostMessage): Promise<void> {
+  if (conn.tokenType === AgentTokenType.SHARED) {
+    send(conn.ws, { type: "update_host_error", error: "Shared agents use a fixed host (machine ID); update_host is not supported" });
+    return;
+  }
+  // After SHARED guard: userId is guaranteed non-null for PERSONAL connections.
+  const userId = conn.userId!;
   const newHost = typeof msg.host === "string" ? msg.host.trim() : "";
 
   if (!newHost) {
@@ -464,7 +482,7 @@ async function handleUpdateHost(conn: ConnectedAgent, msg: UpdateHostMessage): P
   }
 
   const conflict = await prisma.agent.findFirst({
-    where: { userId: conn.userId, host: newHost, NOT: { id: conn.agentId } },
+    where: { userId, host: newHost, NOT: { id: conn.agentId } },
   });
 
   if (conflict) {
@@ -484,7 +502,7 @@ async function handleRotateToken(conn: ConnectedAgent): Promise<void> {
   const newTokenHash = hashToken(newToken);
 
   const newAgentToken = await prisma.agentToken.create({
-    data: { userId: conn.userId, tokenHash: newTokenHash },
+    data: { userId: conn.userId, tokenType: conn.tokenType, tokenHash: newTokenHash },
     select: { id: true },
   });
 
