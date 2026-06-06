@@ -201,7 +201,7 @@ function parseSubagentUid(raw: Record<string, unknown>): SubagentUidConfig {
   }
 
   if (Array.isArray(raw["blocked_uids"])) {
-    cfg.blocked_uids = (raw["blocked_uids"] as unknown[]).filter((v) => typeof v === "number") as number[];
+    cfg.blocked_uids = (raw["blocked_uids"] as unknown[]).filter((v): v is number => typeof v === "number");
   }
 
   return cfg;
@@ -209,7 +209,7 @@ function parseSubagentUid(raw: Record<string, unknown>): SubagentUidConfig {
 
 function parseIdentity(raw: Record<string, unknown>): IdentityConfig {
   const claims = Array.isArray(raw["claims"])
-    ? (raw["claims"] as unknown[]).filter((c) => typeof c === "string") as string[]
+    ? (raw["claims"] as unknown[]).filter((c): c is string => typeof c === "string")
     : [];
 
   const user_map = Array.isArray(raw["user_map"])
