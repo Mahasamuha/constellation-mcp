@@ -5,6 +5,7 @@ import { Router, Request, Response, IRouter } from "express";
 import { z } from "zod/v4";
 import { prisma } from "./db.js";
 import { routeToolCall, RouterError } from "./router.js";
+import { evaluatePermissionBlob } from "@constellation/shared";
 import { lookupOAuthSession } from "./middleware.js";
 import { config } from "./config.js";
 
@@ -238,17 +239,6 @@ function registerListHosts(server: McpServer): void {
 // ---------------------------------------------------------------------------
 // list_labels
 // ---------------------------------------------------------------------------
-
-function evaluatePermissionBlob(
-  blob: { default: string; overrides?: Array<{ oidc_sub: string; access: string }> },
-  userOidcSub: string | null
-): string {
-  if (userOidcSub && blob.overrides) {
-    const override = blob.overrides.find((o) => o.oidc_sub === userOidcSub);
-    if (override) return override.access;
-  }
-  return blob.default;
-}
 
 function registerListLabels(server: McpServer): void {
   const sharedDiscoveryEnabled = config.listLabelsTool === "enabled";

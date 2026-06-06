@@ -4,7 +4,7 @@ import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { prisma } from "./db.js";
 import { dispatchRpc, getConnection, type RpcEnvelope, type RpcError } from "./hub.js";
-import { createLogger, type PermissionBlob } from "@constellation/shared";
+import { createLogger, evaluatePermissionBlob, type PermissionBlob } from "@constellation/shared";
 import { config } from "./config.js";
 
 const log = createLogger("router");
@@ -137,7 +137,7 @@ async function resolveSharedLabel(
   });
 
   for (const sl of sharedLabels) {
-    const access = evaluateSharedAccess(sl.permissionBlob as unknown as PermissionBlob, userOidcSub);
+    const access = evaluatePermissionBlob(sl.permissionBlob as unknown as PermissionBlob, userOidcSub);
     if (access !== "none") {
       return {
         agentId: sl.agent.id,
@@ -151,13 +151,6 @@ async function resolveSharedLabel(
   return null;
 }
 
-function evaluateSharedAccess(blob: PermissionBlob, userOidcSub?: string | null): string {
-  if (userOidcSub && blob.overrides) {
-    const override = blob.overrides.find((o) => o.oidc_sub === userOidcSub);
-    if (override) return override.access;
-  }
-  return blob.default || "none";
-}
 
 // ---------------------------------------------------------------------------
 // Broker path filter evaluation
