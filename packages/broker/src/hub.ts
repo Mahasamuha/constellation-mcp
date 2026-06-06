@@ -367,6 +367,8 @@ async function handleAgentMessage(
     await handleUpdateHost(conn, msg as unknown as UpdateHostMessage);
   } else if (type === "rotate_token") {
     await handleRotateToken(conn);
+  } else if (type === "shared_label_sync") {
+    await handleSharedLabelSync(conn, msg as unknown as SharedLabelSyncMessage);
   } else {
     log.warn({ agentId: conn.agentId, type }, "Unknown control message from agent — dropping");
   }
@@ -536,6 +538,88 @@ async function handleRotateToken(conn: ConnectedAgent): Promise<void> {
 
   log.info({ agentId: conn.agentId }, "Token rotation prepared");
   send(conn.ws, { type: "token_rotated", token: newToken });
+}
+
+// ---------------------------------------------------------------------------
+// Shared label sync
+// ---------------------------------------------------------------------------
+
+interface SharedLabelEntry {
+  name: string;
+  reported_path: string;
+  permission_blob: object;
+}
+
+interface SharedLabelSyncMessage {
+  type: "shared_label_sync";
+  labels: unknown;
+}
+
+async function handleSharedLabelSync(conn: ConnectedAgent, msg: SharedLabelSyncMessage): Promise<void> {
+  if (conn.tokenType !== AgentTokenType.SHARED) {
+    send(conn.ws, { type: "shared_label_sync_error", error: "shared_label_sync is only valid for SHARED agent tokens" });
+    return;
+  }
+
+  const rawLabels = msg.labels;
+  if (!Array.isArray(rawLabels)) {
+    send(conn.ws, { type: "shared_label_sync_error", error: "labels must be an array" });
+    return;
+  }
+
+  const labels = rawLabels as SharedLabelEntry[];
+
+  // Validate shape
+  for (const entry of labels) {
+    if (typeof entry.name !== "string" || !entry.name) {
+      send(conn.ws, { type: "shared_label_sync_error", error: "Each label entry must have a name string" });
+      return;
+    }
+    if (typeof entry.reported_path !== "string" || !entry.reported_path) {
+      send(conn.ws, { type: "shared_label_sync_error", error: `Label '${entry.name}': reported_path must be a non-empty string` });
+      return;
+    }
+    if (typeof entry.permission_blob !== "object" || entry.permission_blob === null) {
+      send(conn.ws, { type: "shared_label_sync_error", error: `Label '${entry.name}': permission_blob must be an object` });
+      return;
+    }
+  }
+
+  // Upsert labels and remove stale entries in a transaction
+  try {
+    await prisma.$transaction(async (tx) => {
+      for (const entry of labels) {
+        await tx.sharedPathLabel.upsert({
+          where: { agentId_label: { agentId: conn.agentId, label: entry.name } },
+          create: {
+            agentId: conn.agentId,
+            label: entry.name,
+            reportedPath: entry.reported_path,
+            permissionBlob: entry.permission_blob,
+          },
+          update: {
+            reportedPath: entry.reported_path,
+            permissionBlob: entry.permission_blob,
+          },
+        });
+      }
+
+      const activeLabels = labels.map((e) => e.name);
+      await tx.sharedPathLabel.deleteMany({
+        where: {
+          agentId: conn.agentId,
+          label: { notIn: activeLabels },
+        },
+      });
+    });
+  } catch (err) {
+    log.error({ err, agentId: conn.agentId }, "Failed to sync shared labels");
+    send(conn.ws, { type: "shared_label_sync_error", error: "Internal error during label sync" });
+    return;
+  }
+
+  log.info({ agentId: conn.agentId, count: labels.length }, "Shared labels synced");
+  send(conn.ws, { type: "shared_label_sync_ok" });
 }
 
 // ---------------------------------------------------------------------------

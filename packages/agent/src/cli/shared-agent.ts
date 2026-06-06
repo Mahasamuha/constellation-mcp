@@ -2,8 +2,12 @@ import { Command } from "commander";
 import { hostname } from "node:os";
 import { readFileSync, writeFileSync, mkdirSync, statSync } from "node:fs";
 import { dirname } from "node:path";
+import WebSocket from "ws";
 import open from "open";
 import { poll } from "./util.js";
+import { loadSharedConfig, validateSharedConfig } from "../shared/config.js";
+import { getpwnam } from "../shared/identity.js";
+import { runSharedAgent } from "../shared/index.js";
 
 // ---------------------------------------------------------------------------
 // Register all shared-agent commands
@@ -114,46 +118,199 @@ export function registerSharedAgentCommands(program: Command, _getConfigDir: () 
     .description("Validate a shared agent config file (dry run)")
     .requiredOption("--config <path>", "Path to shared agent config file")
     .action(async (opts: { config: string }) => {
-      // Phase 3 implementation: validate the YAML config (label paths, uid ranges, etc.)
-      console.error("validate-config is not yet implemented (requires Phase 3).");
-      process.exit(1);
+      let cfg;
+      try {
+        cfg = loadSharedConfig(opts.config);
+      } catch (err) {
+        console.error(`Error loading config: ${(err as Error).message}`);
+        process.exit(1);
+      }
+
+      const result = validateSharedConfig(cfg);
+      let hasError = !result.ok;
+
+      // Check label paths exist on disk
+      for (const label of cfg.labels) {
+        try {
+          const st = statSync(label.path);
+          if (!st.isDirectory()) {
+            console.error(`Error: label '${label.name}' path '${label.path}' is not a directory`);
+            hasError = true;
+          }
+        } catch {
+          console.error(`Error: label '${label.name}' path '${label.path}' does not exist`);
+          hasError = true;
+        }
+      }
+
+      // Check user_map usernames resolve via getent
+      for (const entry of cfg.identity.user_map) {
+        const pw = getpwnam(entry.local_username);
+        if (!pw) {
+          console.error(`Error: user_map entry for oidc_sub '${entry.oidc_sub}' maps to '${entry.local_username}' which does not exist on this system`);
+          hasError = true;
+        }
+      }
+
+      // Check token is available (env or env_file specified)
+      const hasTokenInEnv = !!process.env["CONSTELLATION_AGENT_TOKEN"];
+      const hasEnvFile = !!cfg.env_file;
+      if (!hasTokenInEnv && !hasEnvFile) {
+        console.error("Error: CONSTELLATION_AGENT_TOKEN is not set and no env_file is configured");
+        hasError = true;
+      }
+
+      for (const w of result.warnings) console.warn(`Warning: ${w}`);
+      for (const e of result.errors) console.error(`Error: ${e}`);
+
+      if (!hasError) {
+        console.log(`Config '${opts.config}' is valid.`);
+        console.log(`  agent_name: ${cfg.agent_name}`);
+        console.log(`  broker_url: ${cfg.broker_url}`);
+        console.log(`  labels: ${cfg.labels.map((l) => l.name).join(", ")}`);
+      } else {
+        process.exit(1);
+      }
     });
 
   // -------------------------------------------------------------------------
-  // start / stop / status / rotate-token stubs (Phase 3)
+  // start
   // -------------------------------------------------------------------------
 
   sharedAgent
     .command("start")
-    .description("Start the shared agent service [Phase 3]")
-    .option("--config <path>", "Path to shared agent config file")
-    .action(async () => {
-      console.error("shared-agent start is not yet implemented (requires Phase 3).");
-      process.exit(1);
+    .description("Start the shared agent service")
+    .requiredOption("--config <path>", "Path to shared agent config file", process.env["CONSTELLATION_SHARED_AGENT_CONFIG"])
+    .option("--foreground", "Run in the foreground (default; for systemd use Type=simple)")
+    .action(async (opts: { config: string }) => {
+      if (!opts.config) {
+        console.error("Error: --config <path> is required (or set CONSTELLATION_SHARED_AGENT_CONFIG)");
+        process.exit(1);
+      }
+      await runSharedAgent(opts.config);
     });
 
-  sharedAgent
-    .command("stop")
-    .description("Stop the shared agent service [Phase 3]")
-    .action(async () => {
-      console.error("shared-agent stop is not yet implemented (requires Phase 3).");
-      process.exit(1);
-    });
+  // -------------------------------------------------------------------------
+  // status
+  // -------------------------------------------------------------------------
 
   sharedAgent
     .command("status")
-    .description("Show shared agent status [Phase 3]")
-    .action(async () => {
-      console.error("shared-agent status is not yet implemented (requires Phase 3).");
-      process.exit(1);
+    .description("Show shared agent config and label status")
+    .option("--config <path>", "Path to shared agent config file", process.env["CONSTELLATION_SHARED_AGENT_CONFIG"])
+    .option("--json", "Output as JSON")
+    .action((opts: { config?: string; json?: boolean }) => {
+      if (!opts.config) {
+        console.error("Error: --config <path> is required (or set CONSTELLATION_SHARED_AGENT_CONFIG)");
+        process.exit(1);
+      }
+
+      let cfg;
+      try {
+        cfg = loadSharedConfig(opts.config);
+      } catch (err) {
+        console.error(`Error loading config: ${(err as Error).message}`);
+        process.exit(1);
+      }
+
+      const out = {
+        agent_name: cfg.agent_name,
+        broker_url: cfg.broker_url,
+        labels: cfg.labels.map((l) => ({ name: l.name, path: l.path, default_access: l.permissions.default })),
+      };
+
+      if (opts.json) {
+        console.log(JSON.stringify(out, null, 2));
+      } else {
+        console.log(`Agent name: ${out.agent_name}`);
+        console.log(`Broker:     ${out.broker_url}`);
+        console.log(`Labels:`);
+        for (const l of out.labels) {
+          console.log(`  ${l.name} → ${l.path} [${l.default_access}]`);
+        }
+      }
     });
+
+  // -------------------------------------------------------------------------
+  // rotate-token
+  // -------------------------------------------------------------------------
 
   sharedAgent
     .command("rotate-token")
-    .description("Rotate the shared agent token [Phase 3]")
-    .action(async () => {
-      console.error("shared-agent rotate-token is not yet implemented (requires Phase 3).");
-      process.exit(1);
+    .description("Request a new agent token from the broker and write it to the env file")
+    .option("--config <path>", "Path to shared agent config file", process.env["CONSTELLATION_SHARED_AGENT_CONFIG"])
+    .action(async (opts: { config?: string }) => {
+      if (!opts.config) {
+        console.error("Error: --config <path> is required (or set CONSTELLATION_SHARED_AGENT_CONFIG)");
+        process.exit(1);
+      }
+
+      let cfg;
+      try {
+        cfg = loadSharedConfig(opts.config);
+      } catch (err) {
+        console.error(`Error loading config: ${(err as Error).message}`);
+        process.exit(1);
+      }
+
+      // Source env_file to get the current token
+      if (cfg.env_file) {
+        try {
+          const lines = readFileSync(cfg.env_file, "utf8").split("\n");
+          for (const line of lines) {
+            const eq = line.indexOf("=");
+            if (eq === -1) continue;
+            const key = line.slice(0, eq).trim();
+            const value = line.slice(eq + 1).trim();
+            if (key && !(key in process.env)) process.env[key] = value;
+          }
+        } catch { /* env_file may not exist */ }
+      }
+
+      const token = process.env["CONSTELLATION_AGENT_TOKEN"];
+      if (!token) {
+        console.error("Error: CONSTELLATION_AGENT_TOKEN is not set (check env_file or environment)");
+        process.exit(1);
+      }
+
+      const wsUrl = cfg.broker_url.replace(/^http/, "ws") + "/agent/connect";
+
+      const newToken = await new Promise<string | null>((resolve) => {
+        const ws = new WebSocket(wsUrl, { headers: { Authorization: `Bearer ${token}` } });
+        const timeout = setTimeout(() => { ws.terminate(); resolve(null); }, 15_000);
+
+        ws.on("open", () => ws.send(JSON.stringify({ type: "rotate_token" })));
+        ws.on("message", (data: Buffer) => {
+          const msg = JSON.parse(data.toString()) as Record<string, unknown>;
+          if (msg["type"] === "token_rotated" && typeof msg["token"] === "string") {
+            clearTimeout(timeout);
+            ws.close();
+            resolve(msg["token"]);
+          }
+        });
+        ws.on("error", (err) => {
+          clearTimeout(timeout);
+          console.error("Error:", err.message);
+          resolve(null);
+        });
+      });
+
+      if (!newToken) {
+        console.error("Failed to rotate token (timeout or connection error)");
+        process.exit(1);
+      }
+
+      if (cfg.env_file) {
+        writeEnvToken(cfg.env_file, newToken);
+        warnIfEnvFileInsecure(cfg.env_file);
+        console.log(`Token rotated and written to: ${cfg.env_file}`);
+      } else {
+        console.error("No env_file configured — cannot persist new token.");
+        console.error("Manually set CONSTELLATION_AGENT_TOKEN to the new value (not printed for security).");
+        process.exit(1);
+      }
+
+      console.log("Restart the shared agent to reconnect with the new token.");
     });
 }
 
