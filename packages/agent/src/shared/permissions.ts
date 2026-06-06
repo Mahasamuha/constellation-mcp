@@ -1,4 +1,5 @@
 import type { AccessLevel, LabelConfig } from "./config.js";
+import type { PermissionBlob } from "@constellation/shared";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -67,7 +68,7 @@ export function checkPermission(
  * shared agent when syncing labels to the broker so the broker can evaluate
  * optimistic discovery without a round-trip to the agent.
  */
-export function buildPermissionBlob(label: LabelConfig): object {
+export function buildPermissionBlob(label: LabelConfig): PermissionBlob {
   return {
     default: label.permissions.default,
     overrides: label.permissions.overrides,

@@ -2,7 +2,7 @@ import { IncomingMessage, Server } from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
 import { prisma } from "./db.js";
 import { AgentTokenType } from "./generated/prisma/client.js";
-import { hashToken, generateToken, createLogger } from "@constellation/shared";
+import { hashToken, generateToken, createLogger, type RpcError, type RpcResponse } from "@constellation/shared";
 import { config } from "./config.js";
 
 const log = createLogger("hub");
@@ -372,7 +372,7 @@ async function handleAgentMessage(
   }
 }
 
-interface PathEntry {
+interface ConfigUpdateEntry {
   label: string;
   reported_path: string;
 }
@@ -390,7 +390,7 @@ async function handleConfigUpdate(conn: ConnectedAgent, msg: ConfigUpdateMessage
     return;
   }
 
-  const entries = paths as PathEntry[];
+  const entries = paths as ConfigUpdateEntry[];
 
   // Validate all labels before writing anything.
   const seen = new Set<string>();
@@ -624,21 +624,7 @@ async function handleSharedLabelSync(conn: ConnectedAgent, msg: SharedLabelSyncM
 // RPC dispatch (used by the request router in section 5)
 // ---------------------------------------------------------------------------
 
-export interface RpcError {
-  message: string;
-  code?: string;
-  edit_index?: number;
-  match_count?: number;
-  read_size_kb?: number;
-  max_file_size_kb?: number;
-  path?: string;
-}
-
-interface RpcResponse {
-  request_id: string;
-  result?: object;
-  error?: RpcError;
-}
+export type { RpcError };
 
 const pendingRpcs = new Map<string, {
   resolve: (r: RpcResponse) => void;

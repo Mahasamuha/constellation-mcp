@@ -1,36 +1,17 @@
 import { promises as fs } from "node:fs";
-import { createLogger } from "@constellation/shared";
-import type { AgentConfig, PathEntry } from "./config.js";
+import { createLogger, type RpcError, type RpcResponse, type PathEntry } from "@constellation/shared";
+import type { AgentConfig } from "./config.js";
 import { AgentExecutor } from "./executor/index.js";
 
 const log = createLogger("agent:rpc");
+
+export type { RpcError, RpcResponse };
 
 export interface RpcEnvelope {
   request_id: string;
   tool: string;
   absolute_root: string;
   [key: string]: unknown;
-}
-
-export interface RpcError {
-  message: string;
-  code?: string;
-  /** edit_file: 0-based index of the failing edit */
-  edit_index?: number;
-  /** edit_file: how many times old_text matched (0 or >1) */
-  match_count?: number;
-  /** read_file: actual file size in KB */
-  read_size_kb?: number;
-  /** read_file: configured cap in KB */
-  max_file_size_kb?: number;
-  /** copy/move: destination path that already exists */
-  path?: string;
-}
-
-export interface RpcResponse {
-  request_id: string;
-  result?: object;
-  error?: RpcError;
 }
 
 // Cache the realpath-resolved label registry so we don't re-stat every path

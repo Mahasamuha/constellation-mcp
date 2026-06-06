@@ -4,7 +4,7 @@ import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { prisma } from "./db.js";
 import { dispatchRpc, getConnection, type RpcEnvelope, type RpcError } from "./hub.js";
-import { createLogger } from "@constellation/shared";
+import { createLogger, type PermissionBlob } from "@constellation/shared";
 import { config } from "./config.js";
 
 const log = createLogger("router");
@@ -146,11 +146,6 @@ async function resolveSharedLabel(
   }
 
   return null;
-}
-
-interface PermissionBlob {
-  default: string;
-  overrides?: Array<{ oidc_sub: string; access: string }>;
 }
 
 function evaluateSharedAccess(blob: PermissionBlob, userOidcSub?: string | null): string {
