@@ -1,5 +1,5 @@
 import WebSocket from "ws";
-import { promises as fs } from "node:fs";
+import { checkLabelPath } from "./paths.js";
 import { readFileSync, writeFileSync, statSync } from "node:fs";
 import { createLogger } from "@constellation/shared";
 import { loadSharedConfig, validateSharedConfig, type SharedAgentConfig } from "./config.js";
@@ -122,18 +122,12 @@ export async function runSharedAgent(configPath: string): Promise<void> {
   // Resolve label paths via realpath (config load-time)
   const labelRegistry: Record<string, string> = {};
   for (const label of cfg.labels) {
-    let resolved: string;
-    try {
-      resolved = await fs.realpath(label.path);
-    } catch {
-      log.error({ label: label.name, path: label.path }, "Label path does not exist or cannot be resolved — skipping");
+    const result = await checkLabelPath(label.name, label.path);
+    if (!result.ok) {
+      log.error({ label: label.name, path: label.path }, result.error + " — skipping");
       continue;
     }
-    if (resolved !== label.path) {
-      log.error({ label: label.name, path: label.path, resolved }, "Label path is not canonical — use the resolved path in the config; skipping");
-      continue;
-    }
-    labelRegistry[label.name] = resolved;
+    labelRegistry[label.name] = result.resolved;
   }
 
   if (Object.keys(labelRegistry).length === 0) {
