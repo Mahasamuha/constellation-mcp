@@ -2,7 +2,7 @@ import { Router, Request, Response, IRouter } from "express";
 import escHtml from "escape-html";
 import { randomBytes } from "node:crypto";
 import { prisma } from "./db.js";
-import { BrokerRole } from "./generated/prisma/client.js";
+import { AgentTokenType, BrokerRole } from "./generated/prisma/client.js";
 import { buildAuthorizationUrl, exchangeCodeAndUpsertUser } from "./oidc.js";
 import { generateToken, hashToken, createLogger, requireEnv } from "@constellation/shared";
 import { checkBruteForce, recordFailure, validateLocalUser } from "./local-auth.js";
@@ -18,7 +18,7 @@ export const deviceRouter: IRouter = Router();
 // Device authorization state (in-memory, 15 min TTL)
 // ---------------------------------------------------------------------------
 
-export type DeviceScope = "agent:register" | "broker:manage" | "agent:escalate";
+export type DeviceScope = "agent:register" | "broker:manage" | "agent:escalate" | "agent:register:shared";
 
 /** Removes expired device code rows. Called on new issuance and periodically from index.ts. */
 export async function pruneDeviceCodes(): Promise<void> {
@@ -53,8 +53,8 @@ deviceRouter.post("/oauth/device/code", async (req: Request, res: Response) => {
   const body = req.body as Record<string, string>;
   const scope = body["scope"] as DeviceScope | undefined;
 
-  if (scope !== "agent:register" && scope !== "broker:manage" && scope !== "agent:escalate") {
-    res.status(400).json({ error: "invalid_scope", error_description: "scope must be agent:register, broker:manage, or agent:escalate" });
+  if (scope !== "agent:register" && scope !== "broker:manage" && scope !== "agent:escalate" && scope !== "agent:register:shared") {
+    res.status(400).json({ error: "invalid_scope", error_description: "scope must be agent:register, broker:manage, agent:escalate, or agent:register:shared" });
     return;
   }
 
@@ -65,6 +65,16 @@ deviceRouter.post("/oauth/device/code", async (req: Request, res: Response) => {
 
   if (scope === "agent:escalate" && !elevateSessionId) {
     res.status(400).json({ error: "invalid_request", error_description: "elevate_session_id is required for agent:escalate scope" });
+    return;
+  }
+
+  // For agent:register:shared, the agent provides host_name upfront (not entered in browser).
+  const sharedHostName = scope === "agent:register:shared"
+    ? (typeof body["host_name"] === "string" ? body["host_name"].trim() : "")
+    : undefined;
+
+  if (scope === "agent:register:shared" && !sharedHostName) {
+    res.status(400).json({ error: "invalid_request", error_description: "host_name is required for agent:register:shared scope" });
     return;
   }
 
@@ -82,6 +92,7 @@ deviceRouter.post("/oauth/device/code", async (req: Request, res: Response) => {
       scope,
       expiresAt: new Date(Date.now() + expiresIn * 1000),
       ...(elevateSessionId ? { elevateSessionId } : {}),
+      ...(sharedHostName ? { hostName: sharedHostName } : {}),
     },
   });
 
@@ -178,7 +189,7 @@ deviceRouter.post("/activate/login", async (req: Request, res: Response) => {
     sameSite: "strict",
     maxAge: 15 * 60 * 1000,
   });
-  res.send(consentPage(deviceCode, entry.scope as DeviceScope, undefined, csrfToken));
+  res.send(consentPage(deviceCode, entry.scope as DeviceScope, entry.hostName, undefined, csrfToken));
 });
 
 // ---------------------------------------------------------------------------
@@ -248,7 +259,7 @@ deviceRouter.get("/activate/callback", async (req: Request, res: Response) => {
     sameSite: "strict",
     maxAge: 15 * 60 * 1000,
   });
-  res.send(consentPage(stored.deviceCode, entry.scope as DeviceScope, undefined, csrfToken));
+  res.send(consentPage(stored.deviceCode, entry.scope as DeviceScope, entry.hostName, undefined, csrfToken));
 });
 
 // ---------------------------------------------------------------------------
@@ -300,7 +311,7 @@ deviceRouter.post("/activate/confirm", async (req: Request, res: Response) => {
         sameSite: "strict",
         maxAge: 15 * 60 * 1000,
       });
-      res.send(consentPage(device_code, entry.scope as DeviceScope, errorMsg, freshCsrf));
+      res.send(consentPage(device_code, entry.scope as DeviceScope, entry.hostName, errorMsg, freshCsrf));
       return;
     }
     await prisma.deviceCode.update({ ...byCode(device_code), data: { hostName: resolvedHost, userId: verifiedUserId, status: "approved" } });
@@ -330,6 +341,20 @@ deviceRouter.post("/activate/confirm", async (req: Request, res: Response) => {
       res.send(activateDonePage("Access denied. You can close this tab."));
       return;
     }
+    await prisma.deviceCode.update({ ...byCode(device_code), data: { userId: verifiedUserId, status: "approved" } });
+  } else if (entry.scope === "agent:register:shared") {
+    // Role check: ADMIN only — never reveal whether the user lacks the role.
+    const user = await prisma.user.findUnique({
+      where: { id: verifiedUserId },
+      select: { role: true },
+    });
+    if (!user || user.role !== BrokerRole.ADMIN) {
+      res.clearCookie("csrf_activate");
+      await prisma.deviceCode.update({ ...byCode(device_code), data: { status: "denied" } });
+      res.send(activateDonePage("Access denied. You can close this tab."));
+      return;
+    }
+    // Record the approving admin's userId for audit trail.
     await prisma.deviceCode.update({ ...byCode(device_code), data: { userId: verifiedUserId, status: "approved" } });
   } else {
     await prisma.deviceCode.update({ ...byCode(device_code), data: { userId: verifiedUserId, status: "approved" } });
@@ -416,6 +441,59 @@ export async function handleDeviceCodeGrant(
     });
     log.info({ userId, targetSessionId, adminUntil }, "Session elevated to admin");
     res.status(204).end();
+    return;
+  }
+
+  if (entry.scope === "agent:register:shared") {
+    const token = generateToken();
+    const tokenHash = hashToken(token);
+
+    await prisma.$transaction(async (tx) => {
+      // Revoke any existing active SHARED token for this host.
+      const existingAgent = await tx.agent.findFirst({
+        where: {
+          userId: null,
+          host: entry.hostName!,
+          agentToken: { tokenType: AgentTokenType.SHARED, revokedAt: null },
+        },
+        select: { agentTokenId: true, id: true },
+      });
+      if (existingAgent) {
+        await tx.agentToken.update({
+          where: { id: existingAgent.agentTokenId },
+          data: { revokedAt: new Date() },
+        });
+      }
+
+      const agentToken = await tx.agentToken.create({
+        data: {
+          userId: null,
+          tokenType: AgentTokenType.SHARED,
+          tokenHash,
+          approvedByUserId: userId,
+        },
+        select: { id: true },
+      });
+
+      if (existingAgent) {
+        await tx.agent.update({
+          where: { id: existingAgent.id },
+          data: { agentTokenId: agentToken.id, lastHeartbeatAt: null, lastDisconnectReason: null },
+        });
+      } else {
+        await tx.agent.create({
+          data: { userId: null, agentTokenId: agentToken.id, host: entry.hostName! },
+        });
+      }
+    });
+
+    log.info({ approvedByUserId: userId, host: entry.hostName }, "Shared agent registered via device flow");
+
+    res.json({
+      access_token: token,
+      token_type: "agent",
+      host: entry.hostName,
+    });
     return;
   }
 
@@ -568,15 +646,21 @@ function activateEntryPage(error?: string): string {
 </html>`;
 }
 
-function consentPage(deviceCode: string, scope: DeviceScope, error?: string, csrfToken?: string): string {
+function consentPage(deviceCode: string, scope: DeviceScope, hostName: string | null | undefined, error?: string, csrfToken?: string): string {
   const isAgent = scope === "agent:register";
   const isEscalate = scope === "agent:escalate";
-  const title = isAgent ? "Register Agent" : isEscalate ? "Authorize Admin Escalation" : "Authorize Management Access";
+  const isSharedAgent = scope === "agent:register:shared";
+  const title = isAgent ? "Register Agent"
+    : isEscalate ? "Authorize Admin Escalation"
+    : isSharedAgent ? "Register Shared Agent"
+    : "Authorize Management Access";
   const description = isAgent
     ? "A <strong>Constellation agent</strong> is requesting access to connect to this broker."
     : isEscalate
       ? "The <strong>Constellation CLI</strong> is requesting temporary admin access. This elevates your session for a limited time window."
-      : "The <strong>Constellation CLI</strong> is requesting management access to this broker.";
+      : isSharedAgent
+        ? `A <strong>Constellation shared agent</strong> on host <strong>${escHtml(hostName ?? "unknown")}</strong> is requesting registration. Approving will allow this agent to handle file access requests on behalf of multiple users. <strong>This requires admin privileges.</strong>`
+        : "The <strong>Constellation CLI</strong> is requesting management access to this broker.";
 
   return `<!DOCTYPE html>
 <html lang="en">

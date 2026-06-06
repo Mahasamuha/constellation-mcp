@@ -53,13 +53,14 @@ enum AgentTokenType {
 }
 
 model AgentToken {
-  id         String         @id @default(cuid())
-  userId     String?        @map("user_id")
-  tokenType  AgentTokenType @default(PERSONAL) @map("token_type")
-  tokenHash  String         @unique @map("token_hash")
-  createdAt  DateTime       @default(now()) @map("created_at")
-  lastUsedAt DateTime?      @map("last_used_at")
-  revokedAt  DateTime?      @map("revoked_at")
+  id                String         @id @default(cuid())
+  userId            String?        @map("user_id")
+  tokenType         AgentTokenType @default(PERSONAL) @map("token_type")
+  tokenHash         String         @unique @map("token_hash")
+  approvedByUserId  String?        @map("approved_by_user_id")
+  createdAt         DateTime       @default(now()) @map("created_at")
+  lastUsedAt        DateTime?      @map("last_used_at")
+  revokedAt         DateTime?      @map("revoked_at")
 
   user   User?   @relation(fields: [userId], references: [id])
   agents Agent[]

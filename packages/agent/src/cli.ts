@@ -3,6 +3,7 @@ import { Command } from "commander";
 import { configDir } from "./config.js";
 import { registerAgentCommands } from "./cli/agent.js";
 import { registerBrokerCommands } from "./cli/broker.js";
+import { registerSharedAgentCommands } from "./cli/shared-agent.js";
 
 declare const __PKG_VERSION__: string;
 
@@ -23,6 +24,7 @@ function getConfigDir(): string {
 
 registerAgentCommands(program, getConfigDir);
 registerBrokerCommands(program, getConfigDir);
+registerSharedAgentCommands(program, getConfigDir);
 
 program.parseAsync(process.argv).catch((err: Error) => {
   console.error(err.message);
