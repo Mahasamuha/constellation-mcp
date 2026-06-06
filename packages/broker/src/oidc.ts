@@ -1,5 +1,5 @@
 import * as client from "openid-client";
-import { PrismaClient } from "./generated/prisma/client.js";
+import { PrismaClient, Prisma } from "./generated/prisma/client.js";
 import { createLogger, requireEnv } from "@constellation/shared";
 import { randomBytes } from "node:crypto";
 
@@ -102,10 +102,17 @@ export async function exchangeCodeAndUpsertUser(
   const issuer = requireEnv("OIDC_ISSUER");
   const email = typeof claims.email === "string" ? claims.email : "";
 
+  // Store claims for RPC envelope forwarding — strip JWT-internal fields.
+  const claimsToStore = Object.fromEntries(
+    Object.entries(claims as Record<string, unknown>).filter(
+      ([k]) => !["iat", "exp", "nbf", "nonce", "at_hash", "c_hash", "auth_time"].includes(k)
+    )
+  );
+
   const user = await prisma.user.upsert({
     where: { oidcSub_oidcIssuer: { oidcSub: sub, oidcIssuer: issuer } },
-    create: { oidcSub: sub, oidcIssuer: issuer, email },
-    update: { email },
+    create: { oidcSub: sub, oidcIssuer: issuer, email, lastKnownClaims: claimsToStore as Prisma.InputJsonObject },
+    update: { email, lastKnownClaims: claimsToStore as Prisma.InputJsonObject },
     select: { id: true, deactivatedAt: true },
   });
 

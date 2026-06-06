@@ -2,6 +2,11 @@ import { parseEnvInt } from "@constellation/shared";
 
 export const config = {
   port: parseEnvInt("PORT", 3000),
+  // Comma-separated list of OIDC claim names to forward in RPC envelopes.
+  // Empty = forward all claims from last known session.
+  forwardedClaims: process.env["FORWARDED_CLAIMS"]
+    ? process.env["FORWARDED_CLAIMS"].split(",").map((s) => s.trim()).filter(Boolean)
+    : [] as string[],
   rateLimits: {
     toolCallsPerMin: parseEnvInt("RATE_LIMIT_TOOL_CALLS_PER_MIN", 60),
     expensiveToolsPerMin: parseEnvInt("RATE_LIMIT_EXPENSIVE_TOOLS_PER_MIN", 20),

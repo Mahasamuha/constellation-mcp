@@ -183,7 +183,9 @@ export async function routeToolCall(
   tool: string,
   label: string,
   params: ToolParams,
-  host?: string
+  host?: string,
+  userOidcSub?: string | null,
+  userClaims?: Record<string, unknown>
 ): Promise<DispatchResult | RouterError> {
   if (!checkToolRateLimit(userId, tool, params)) {
     return { code: "rate_limited", message: "Rate limit exceeded. Please slow down." };
@@ -240,10 +242,19 @@ export async function routeToolCall(
 
   const requestId = randomBytes(16).toString("hex");
   const timeoutMs = config.rpcTimeoutMs;
+
+  const { forwardedClaims } = config;
+  const allClaims = userClaims ?? {};
+  const filteredClaims = forwardedClaims.length > 0
+    ? Object.fromEntries(Object.entries(allClaims).filter(([k]) => forwardedClaims.includes(k)))
+    : allClaims;
+
   const envelope: RpcEnvelope = {
     request_id: requestId,
     tool,
     absolute_root: absoluteRoot,
+    user_oidc_sub: userOidcSub ?? null,
+    user_claims: filteredClaims,
     ...effectiveParams,
   };
 

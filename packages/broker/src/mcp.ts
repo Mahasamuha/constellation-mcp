@@ -103,7 +103,11 @@ mcpRouter.all("/mcp", async (req: Request, res: Response) => {
     clientId: session.mcpClientId,
     scopes: [],
     expiresAt: Math.floor(session.expiresAt.getTime() / 1000),
-    extra: { userId: session.userId },
+    extra: {
+      userId: session.userId,
+      userOidcSub: session.oidcSub,
+      userClaims: session.lastKnownClaims ?? {},
+    },
   };
 
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
@@ -146,10 +150,21 @@ export function buildMcpServer(): McpServer {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function userId(extra: { authInfo?: { extra?: { userId?: unknown } } }): string {
-  const id = extra.authInfo?.extra?.userId;
-  if (typeof id !== "string") throw new Error("Missing userId in auth context");
-  return id;
+interface UserIdentity {
+  userId: string;
+  userOidcSub: string | null;
+  userClaims: Record<string, unknown>;
+}
+
+function identity(extra: { authInfo?: { extra?: Record<string, unknown> } }): UserIdentity {
+  const e = extra.authInfo?.extra ?? {};
+  const uid = e["userId"];
+  if (typeof uid !== "string") throw new Error("Missing userId in auth context");
+  return {
+    userId: uid,
+    userOidcSub: typeof e["userOidcSub"] === "string" ? e["userOidcSub"] : null,
+    userClaims: (e["userClaims"] as Record<string, unknown>) ?? {},
+  };
 }
 
 function isRouterError(v: unknown): v is RouterError {
@@ -173,13 +188,13 @@ function toolError(message: string): never {
 }
 
 async function dispatch(
-  uid: string,
+  id: UserIdentity,
   tool: string,
   label: string,
   params: Record<string, unknown>,
   host?: string
 ): Promise<ToolResult<Record<string, unknown>>> {
-  const result = await routeToolCall(uid, tool, label, params, host);
+  const result = await routeToolCall(id.userId, tool, label, params, host, id.userOidcSub, id.userClaims);
   if (isRouterError(result)) toolError(result.message);
   if (result.error) toolError(result.error.message);
   return ok(result.result as Record<string, unknown>);
@@ -199,7 +214,7 @@ function registerListHosts(server: McpServer): void {
       annotations: { readOnlyHint: true },
     },
     async (extra) => {
-      const uid = userId(extra);
+      const uid = identity(extra).userId;
       const thresholdMs =
         parseInt(process.env["HEARTBEAT_INTERVAL_SECONDS"] ?? "60", 10) *
         parseInt(process.env["HEARTBEAT_MAX_MISSED"] ?? "3", 10) *
@@ -235,7 +250,7 @@ function registerListLabels(server: McpServer): void {
       annotations: { readOnlyHint: true },
     },
     async ({ host }, extra) => {
-      const uid = userId(extra);
+      const uid = identity(extra).userId;
       const labels = await prisma.pathLabel.findMany({
         where: { userId: uid, ...(host ? { agent: { host } } : {}) },
         include: { agent: { select: { host: true } } },
@@ -267,7 +282,7 @@ function registerListDirectory(server: McpServer): void {
       outputSchema: ListDirectoryOutput,
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    async ({ label, host, ...params }, extra) => dispatch(userId(extra), "list_directory", label, params, host)
+    async ({ label, host, ...params }, extra) => dispatch(identity(extra), "list_directory", label, params, host)
   );
 }
 
@@ -289,7 +304,7 @@ function registerFileInfo(server: McpServer): void {
       outputSchema: FileInfoOutput,
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    async ({ label, host, ...params }, extra) => dispatch(userId(extra), "file_info", label, params, host)
+    async ({ label, host, ...params }, extra) => dispatch(identity(extra), "file_info", label, params, host)
   );
 }
 
@@ -313,7 +328,7 @@ function registerFindFiles(server: McpServer): void {
       outputSchema: FindFilesOutput,
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    async ({ label, host, ...params }, extra) => dispatch(userId(extra), "find_files", label, params, host)
+    async ({ label, host, ...params }, extra) => dispatch(identity(extra), "find_files", label, params, host)
   );
 }
 
@@ -337,7 +352,7 @@ function registerReadFile(server: McpServer): void {
       outputSchema: ReadFileOutput,
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    async ({ label, host, ...params }, extra) => dispatch(userId(extra), "read_file", label, params, host)
+    async ({ label, host, ...params }, extra) => dispatch(identity(extra), "read_file", label, params, host)
   );
 }
 
@@ -362,7 +377,7 @@ function registerGrepFiles(server: McpServer): void {
       outputSchema: GrepFilesOutput,
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    async ({ label, host, ...params }, extra) => dispatch(userId(extra), "grep_files", label, params, host)
+    async ({ label, host, ...params }, extra) => dispatch(identity(extra), "grep_files", label, params, host)
   );
 }
 
@@ -386,7 +401,7 @@ function registerWriteFile(server: McpServer): void {
       outputSchema: OkOutput,
       annotations: { idempotentHint: true, destructiveHint: true, openWorldHint: true },
     },
-    async ({ label, host, ...params }, extra) => dispatch(userId(extra), "write_file", label, params, host)
+    async ({ label, host, ...params }, extra) => dispatch(identity(extra), "write_file", label, params, host)
   );
 }
 
@@ -410,7 +425,7 @@ function registerEditFile(server: McpServer): void {
       outputSchema: EditFileOutput,
       annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: true },
     },
-    async ({ label, host, ...params }, extra) => dispatch(userId(extra), "edit_file", label, params, host)
+    async ({ label, host, ...params }, extra) => dispatch(identity(extra), "edit_file", label, params, host)
   );
 }
 
@@ -434,7 +449,7 @@ function registerCopy(server: McpServer): void {
       outputSchema: OkOutput,
       annotations: { openWorldHint: true },
     },
-    async ({ label, host, ...params }, extra) => dispatch(userId(extra), "copy", label, params, host)
+    async ({ label, host, ...params }, extra) => dispatch(identity(extra), "copy", label, params, host)
   );
 }
 
@@ -456,7 +471,7 @@ function registerCreateDirectory(server: McpServer): void {
       outputSchema: OkOutput,
       annotations: { idempotentHint: true, openWorldHint: true },
     },
-    async ({ label, host, ...params }, extra) => dispatch(userId(extra), "create_directory", label, params, host)
+    async ({ label, host, ...params }, extra) => dispatch(identity(extra), "create_directory", label, params, host)
   );
 }
 
@@ -479,7 +494,7 @@ function registerDelete(server: McpServer): void {
       outputSchema: DeleteOutput,
       annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: true },
     },
-    async ({ label, host, ...params }, extra) => dispatch(userId(extra), "delete", label, params, host)
+    async ({ label, host, ...params }, extra) => dispatch(identity(extra), "delete", label, params, host)
   );
 }
 
@@ -503,6 +518,6 @@ function registerMove(server: McpServer): void {
       outputSchema: OkOutput,
       annotations: { openWorldHint: true },
     },
-    async ({ label, host, ...params }, extra) => dispatch(userId(extra), "move", label, params, host)
+    async ({ label, host, ...params }, extra) => dispatch(identity(extra), "move", label, params, host)
   );
 }

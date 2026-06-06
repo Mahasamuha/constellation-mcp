@@ -7,6 +7,8 @@ export async function lookupOAuthSession(token: string): Promise<{
   expiresAt: Date;
   mcpClientId: string;
   userId: string;
+  oidcSub: string | null;
+  lastKnownClaims: Record<string, unknown> | null;
 } | null> {
   const session = await prisma.oauthSession.findUnique({
     where: { accessTokenHash: hashToken(token) },
@@ -14,7 +16,7 @@ export async function lookupOAuthSession(token: string): Promise<{
       id: true,
       expiresAt: true,
       mcpClientId: true,
-      user: { select: { id: true, deactivatedAt: true } },
+      user: { select: { id: true, deactivatedAt: true, oidcSub: true, lastKnownClaims: true } },
     },
   });
 
@@ -22,7 +24,14 @@ export async function lookupOAuthSession(token: string): Promise<{
   if (session.expiresAt < new Date()) return null;
   if (session.user.deactivatedAt !== null) return null;
 
-  return { id: session.id, expiresAt: session.expiresAt, mcpClientId: session.mcpClientId, userId: session.user.id };
+  return {
+    id: session.id,
+    expiresAt: session.expiresAt,
+    mcpClientId: session.mcpClientId,
+    userId: session.user.id,
+    oidcSub: session.user.oidcSub ?? null,
+    lastKnownClaims: session.user.lastKnownClaims as Record<string, unknown> | null,
+  };
 }
 
 /**
@@ -40,6 +49,8 @@ export function verifyCsrfToken(req: Request, cookieName: string): boolean {
 export interface AuthenticatedRequest extends Request {
   userId: string;
   sessionId: string;
+  userOidcSub: string | null;
+  userClaims: Record<string, unknown>;
 }
 
 async function resolveSession(req: Request, res: Response) {
@@ -68,6 +79,8 @@ export async function requireBearerAuth(
 
   (req as AuthenticatedRequest).userId = session.userId;
   (req as AuthenticatedRequest).sessionId = session.id;
+  (req as AuthenticatedRequest).userOidcSub = session.oidcSub;
+  (req as AuthenticatedRequest).userClaims = session.lastKnownClaims ?? {};
   next();
 }
 

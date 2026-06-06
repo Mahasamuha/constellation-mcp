@@ -15,6 +15,8 @@ export interface RpcEnvelope {
   request_id: string;
   tool: string;
   absolute_root: string;
+  user_oidc_sub: string | null;
+  user_claims: Record<string, unknown>;
   [key: string]: unknown;
 }
 

@@ -8,12 +8,13 @@ datasource db {
 }
 
 model User {
-  id            String    @id @default(cuid())
-  oidcSub       String?   @map("oidc_sub")
-  oidcIssuer    String?   @map("oidc_issuer")
-  email         String
-  createdAt     DateTime  @default(now()) @map("created_at")
-  deactivatedAt DateTime? @map("deactivated_at")
+  id              String    @id @default(cuid())
+  oidcSub         String?   @map("oidc_sub")
+  oidcIssuer      String?   @map("oidc_issuer")
+  email           String
+  createdAt       DateTime  @default(now()) @map("created_at")
+  deactivatedAt   DateTime? @map("deactivated_at")
+  lastKnownClaims Json?     @map("last_known_claims")
 
   agents          Agent[]
   agentTokens     AgentToken[]
