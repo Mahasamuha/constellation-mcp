@@ -504,7 +504,12 @@ async function handleRotateToken(conn: ConnectedAgent): Promise<void> {
   const newTokenHash = hashToken(newToken);
 
   const newAgentToken = await prisma.agentToken.create({
-    data: { userId: conn.userId, tokenType: conn.tokenType, tokenHash: newTokenHash },
+    data: {
+      userId: conn.userId,
+      tokenType: conn.tokenType,
+      tokenHash: newTokenHash,
+      expiresAt: new Date(Date.now() + ROTATION_TTL_MS),
+    },
     select: { id: true },
   });
 
@@ -637,11 +642,13 @@ export function getConnection(agentId: string): ConnectedAgent | undefined {
   return connections.get(agentId);
 }
 
-/** Revokes AgentToken rows that are not referenced by any Agent and were never revoked.
- * These are left behind when the broker restarts mid-rotation. Called once at startup. */
+/** Revokes AgentToken rows that are not referenced by any Agent, were never revoked, and have
+ * passed their expiry. These are left behind when the broker restarts mid-rotation. Fresh
+ * rotation tokens (expiresAt in the future) are left intact so the agent can complete rotation.
+ * Called once at startup. */
 export async function revokeOrphanedTokens(): Promise<void> {
   const result = await prisma.agentToken.updateMany({
-    where: { revokedAt: null, agents: { none: {} } },
+    where: { revokedAt: null, agents: { none: {} }, expiresAt: { lt: new Date() } },
     data: { revokedAt: new Date() },
   });
   if (result.count > 0) {
