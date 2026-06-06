@@ -122,11 +122,18 @@ export async function runSharedAgent(configPath: string): Promise<void> {
   // Resolve label paths via realpath (config load-time)
   const labelRegistry: Record<string, string> = {};
   for (const label of cfg.labels) {
+    let resolved: string;
     try {
-      labelRegistry[label.name] = await fs.realpath(label.path);
+      resolved = await fs.realpath(label.path);
     } catch {
-      log.warn({ label: label.name, path: label.path }, "Label path does not exist or cannot be resolved — skipping");
+      log.error({ label: label.name, path: label.path }, "Label path does not exist or cannot be resolved — skipping");
+      continue;
     }
+    if (resolved !== label.path) {
+      log.error({ label: label.name, path: label.path, resolved }, "Label path is not canonical — use the resolved path in the config; skipping");
+      continue;
+    }
+    labelRegistry[label.name] = resolved;
   }
 
   if (Object.keys(labelRegistry).length === 0) {

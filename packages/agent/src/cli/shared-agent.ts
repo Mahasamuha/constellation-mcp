@@ -1,7 +1,7 @@
 import { Command } from "commander";
 import { hostname } from "node:os";
 import { execFileSync } from "node:child_process";
-import { readFileSync, writeFileSync, mkdirSync, statSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, realpathSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 import WebSocket from "ws";
 import open from "open";
@@ -130,16 +130,21 @@ export function registerSharedAgentCommands(program: Command, _getConfigDir: () 
       const result = validateSharedConfig(cfg);
       let hasError = !result.ok;
 
-      // Check label paths exist on disk
+      // Check label paths exist on disk and are canonical absolute paths
       for (const label of cfg.labels) {
+        let resolved: string;
         try {
-          const st = statSync(label.path);
-          if (!st.isDirectory()) {
-            console.error(`Error: label '${label.name}' path '${label.path}' is not a directory`);
-            hasError = true;
-          }
+          resolved = realpathSync(label.path);
         } catch {
           console.error(`Error: label '${label.name}' path '${label.path}' does not exist`);
+          hasError = true;
+          continue;
+        }
+        if (!statSync(resolved).isDirectory()) {
+          console.error(`Error: label '${label.name}' path '${label.path}' is not a directory`);
+          hasError = true;
+        } else if (resolved !== label.path) {
+          console.error(`Error: label '${label.name}' path '${label.path}' is not canonical — use '${resolved}' in the config`);
           hasError = true;
         }
       }
