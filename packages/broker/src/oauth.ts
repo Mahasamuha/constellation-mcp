@@ -260,24 +260,8 @@ oauthRouter.post("/auth/login", async (req: Request, res: Response) => {
 
   res.clearCookie(cookieName);
 
-  const code = generateToken();
-  await prisma.authCode.create({
-    data: {
-      codeHash: hashToken(code),
-      userId,
-      clientId: pending.clientId,
-      redirectUri: pending.redirectUri,
-      codeChallenge: pending.downstreamCodeChallenge ?? null,
-      codeChallengeMethod: pending.downstreamCodeChallengeMethod ?? null,
-      expiresAt: new Date(Date.now() + 10 * 60 * 1000),
-    },
-  });
-
-  const redirectParams = new URLSearchParams({ code });
-  if (pending.downstreamState) redirectParams.set("state", pending.downstreamState);
-
   log.info({ userId, clientId: pending.clientId }, "Authorization code issued (local auth)");
-  res.redirect(`${pending.redirectUri}?${redirectParams.toString()}`);
+  await issueAuthCode(pending, userId, res);
 });
 
 // ---------------------------------------------------------------------------
@@ -349,25 +333,8 @@ oauthRouter.get("/oauth/callback", async (req: Request, res: Response) => {
     return;
   }
 
-  // Issue a short-lived authorization code to hand back to the MCP client.
-  const code = generateToken();
-  await prisma.authCode.create({
-    data: {
-      codeHash: hashToken(code),
-      userId,
-      clientId: pending.clientId,
-      redirectUri: pending.redirectUri,
-      codeChallenge: pending.downstreamCodeChallenge ?? null,
-      codeChallengeMethod: pending.downstreamCodeChallengeMethod ?? null,
-      expiresAt: new Date(Date.now() + 10 * 60 * 1000),
-    },
-  });
-
-  const redirectParams = new URLSearchParams({ code });
-  if (pending.downstreamState) redirectParams.set("state", pending.downstreamState);
-
   log.info({ userId, clientId: pending.clientId }, "Authorization code issued");
-  res.redirect(`${pending.redirectUri}?${redirectParams.toString()}`);
+  await issueAuthCode(pending, userId, res);
 });
 
 // ---------------------------------------------------------------------------
@@ -448,36 +415,21 @@ async function handleAuthorizationCodeGrant(
     }
   }
 
-  const accessToken = generateToken();
-  const accessTokenHash = hashToken(accessToken);
-  const refreshToken = generateToken();
-  const refreshTokenHash = hashToken(refreshToken);
-
-  const accessTtlHours = config.oauthAccessTokenTtlHours;
-  const refreshTtlDays = config.oauthRefreshTokenTtlDays;
-  const now = new Date();
-  const expiresAt = new Date(now.getTime() + accessTtlHours * 3600 * 1000);
-  const refreshExpiresAt = new Date(now.getTime() + refreshTtlDays * 86400 * 1000);
+  const tokens = makeTokenPair();
 
   await prisma.oauthSession.create({
     data: {
       userId: entry.userId,
       mcpClientId: client_id,
-      accessTokenHash,
-      expiresAt,
-      refreshTokenHash,
-      refreshTokenExpiresAt: refreshExpiresAt,
+      accessTokenHash: tokens.accessTokenHash,
+      expiresAt: tokens.expiresAt,
+      refreshTokenHash: tokens.refreshTokenHash,
+      refreshTokenExpiresAt: tokens.refreshExpiresAt,
     },
   });
 
   log.info({ userId: entry.userId, clientId: client_id }, "Access token issued (authorization_code)");
-
-  res.json({
-    access_token: accessToken,
-    token_type: "Bearer",
-    expires_in: accessTtlHours * 3600,
-    refresh_token: refreshToken,
-  });
+  sendTokenResponse(res, tokens);
 }
 
 async function handleRefreshTokenGrant(
@@ -512,35 +464,20 @@ async function handleRefreshTokenGrant(
     return;
   }
 
-  const accessToken = generateToken();
-  const accessTokenHash = hashToken(accessToken);
-  const newRefreshToken = generateToken();
-  const newRefreshTokenHash = hashToken(newRefreshToken);
-
-  const accessTtlHours = config.oauthAccessTokenTtlHours;
-  const refreshTtlDays = config.oauthRefreshTokenTtlDays;
-  const now = new Date();
-  const expiresAt = new Date(now.getTime() + accessTtlHours * 3600 * 1000);
-  const refreshExpiresAt = new Date(now.getTime() + refreshTtlDays * 86400 * 1000);
+  const tokens = makeTokenPair();
 
   await prisma.oauthSession.update({
     where: { id: session.id },
     data: {
-      accessTokenHash,
-      expiresAt,
-      refreshTokenHash: newRefreshTokenHash,
-      refreshTokenExpiresAt: refreshExpiresAt,
+      accessTokenHash: tokens.accessTokenHash,
+      expiresAt: tokens.expiresAt,
+      refreshTokenHash: tokens.refreshTokenHash,
+      refreshTokenExpiresAt: tokens.refreshExpiresAt,
     },
   });
 
   log.info({ userId: session.userId, clientId: client_id }, "Access token issued (refresh_token)");
-
-  res.json({
-    access_token: accessToken,
-    token_type: "Bearer",
-    expires_in: accessTtlHours * 3600,
-    refresh_token: newRefreshToken,
-  });
+  sendTokenResponse(res, tokens);
 }
 
 // ---------------------------------------------------------------------------
@@ -604,5 +541,59 @@ function asStringArray(val: unknown): string[] {
   if (Array.isArray(val)) return val.filter((v): v is string => typeof v === "string");
   if (typeof val === "string") return [val];
   return [];
+}
+
+interface TokenPair {
+  accessToken: string;
+  accessTokenHash: string;
+  refreshToken: string;
+  refreshTokenHash: string;
+  expiresAt: Date;
+  refreshExpiresAt: Date;
+  expiresInSec: number;
+}
+
+function makeTokenPair(): TokenPair {
+  const accessToken = generateToken();
+  const refreshToken = generateToken();
+  const accessTtlHours = config.oauthAccessTokenTtlHours;
+  const refreshTtlDays = config.oauthRefreshTokenTtlDays;
+  const now = new Date();
+  return {
+    accessToken,
+    accessTokenHash: hashToken(accessToken),
+    refreshToken,
+    refreshTokenHash: hashToken(refreshToken),
+    expiresAt: new Date(now.getTime() + accessTtlHours * 3600 * 1000),
+    refreshExpiresAt: new Date(now.getTime() + refreshTtlDays * 86400 * 1000),
+    expiresInSec: accessTtlHours * 3600,
+  };
+}
+
+function sendTokenResponse(res: Response, tokens: TokenPair): void {
+  res.json({
+    access_token: tokens.accessToken,
+    token_type: "Bearer",
+    expires_in: tokens.expiresInSec,
+    refresh_token: tokens.refreshToken,
+  });
+}
+
+async function issueAuthCode(pending: LoginPending, userId: string, res: Response): Promise<void> {
+  const code = generateToken();
+  await prisma.authCode.create({
+    data: {
+      codeHash: hashToken(code),
+      userId,
+      clientId: pending.clientId,
+      redirectUri: pending.redirectUri,
+      codeChallenge: pending.downstreamCodeChallenge ?? null,
+      codeChallengeMethod: pending.downstreamCodeChallengeMethod ?? null,
+      expiresAt: new Date(Date.now() + 10 * 60 * 1000),
+    },
+  });
+  const redirectParams = new URLSearchParams({ code });
+  if (pending.downstreamState) redirectParams.set("state", pending.downstreamState);
+  res.redirect(`${pending.redirectUri}?${redirectParams.toString()}`);
 }
 

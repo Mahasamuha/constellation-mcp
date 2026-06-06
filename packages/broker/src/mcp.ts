@@ -5,6 +5,7 @@ import { Router, Request, Response, IRouter } from "express";
 import { z } from "zod/v4";
 import { prisma } from "./db.js";
 import { routeToolCall, RouterError } from "./router.js";
+import { isOnline } from "./api.js";
 import { evaluatePermissionBlob } from "@constellation/shared";
 import { lookupOAuthSession } from "./middleware.js";
 import { config } from "./config.js";
@@ -219,8 +220,6 @@ function registerListHosts(server: McpServer): void {
     },
     async (extra) => {
       const uid = identity(extra).userId;
-      const thresholdMs = config.heartbeat.intervalMs * config.heartbeat.maxMissed;
-
       const agents = await prisma.agent.findMany({
         where: { userId: uid },
         include: { pathLabels: { select: { label: true } } },
@@ -228,7 +227,7 @@ function registerListHosts(server: McpServer): void {
 
       return ok({ hosts: agents.map((a) => ({
         host: a.host,
-        online: a.lastHeartbeatAt !== null && Date.now() - a.lastHeartbeatAt.getTime() < thresholdMs,
+        online: isOnline(a.lastHeartbeatAt),
         last_seen: a.lastHeartbeatAt?.toISOString() ?? null,
         labels: a.pathLabels.map((pl) => pl.label),
       })) });

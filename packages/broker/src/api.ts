@@ -25,7 +25,7 @@ apiRouter.use(requireBearerAuth);
 
 const HEARTBEAT_THRESHOLD_MS = config.heartbeat.intervalMs * config.heartbeat.maxMissed;
 
-function isOnline(lastHeartbeatAt: Date | null): boolean {
+export function isOnline(lastHeartbeatAt: Date | null): boolean {
   if (!lastHeartbeatAt) return false;
   return Date.now() - lastHeartbeatAt.getTime() < HEARTBEAT_THRESHOLD_MS;
 }
