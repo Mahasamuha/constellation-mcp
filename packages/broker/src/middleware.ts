@@ -84,3 +84,25 @@ export async function requireBearerAuth(
   next();
 }
 
+/**
+ * Requires an active admin elevation window on the current session.
+ * Must run after requireBearerAuth. Returns ESCALATION_REQUIRED if the session
+ * is not elevated or the elevation has expired.
+ */
+export async function requireAdmin(
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  const sessionId = (req as AuthenticatedRequest).sessionId;
+  const session = await prisma.oauthSession.findUnique({
+    where: { id: sessionId },
+    select: { adminUntil: true },
+  });
+  if (!session?.adminUntil || session.adminUntil < new Date()) {
+    res.status(403).json({ error: "ESCALATION_REQUIRED" });
+    return;
+  }
+  next();
+}
+

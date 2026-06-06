@@ -7,6 +7,13 @@ export const config = {
   forwardedClaims: process.env["FORWARDED_CLAIMS"]
     ? process.env["FORWARDED_CLAIMS"].split(",").map((s) => s.trim()).filter(Boolean)
     : [] as string[],
+  // Comma-separated list of OIDC group names that grant ADMIN role on login.
+  // Empty = no OIDC group → role mapping (use CLI promote/demote for bootstrap).
+  adminGroups: process.env["ADMIN_GROUPS"]
+    ? process.env["ADMIN_GROUPS"].split(",").map((s) => s.trim()).filter(Boolean)
+    : [] as string[],
+  // How long an elevated session window lasts in milliseconds. Default 1 hour.
+  adminSessionDurationMs: parseEnvInt("ADMIN_SESSION_DURATION", 3600) * 1000,
   rateLimits: {
     toolCallsPerMin: parseEnvInt("RATE_LIMIT_TOOL_CALLS_PER_MIN", 60),
     expensiveToolsPerMin: parseEnvInt("RATE_LIMIT_EXPENSIVE_TOOLS_PER_MIN", 20),

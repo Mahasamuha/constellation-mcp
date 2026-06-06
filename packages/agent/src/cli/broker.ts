@@ -168,7 +168,17 @@ async function apiPost<T>(
 }
 
 function die(res: Response): never {
-  res.text().then((t) => console.error(`API error ${res.status}: ${t}`)).catch(() => {});
+  res.json().then((body: unknown) => {
+    if (
+      typeof body === "object" && body !== null &&
+      (body as Record<string, unknown>)["error"] === "ESCALATION_REQUIRED"
+    ) {
+      console.error("This operation requires admin privileges.");
+      console.error("Run 'constellation broker elevate' to request temporary admin access, then retry.");
+    } else {
+      console.error(`API error ${res.status}: ${JSON.stringify(body)}`);
+    }
+  }).catch(() => { console.error(`API error ${res.status}`); });
   process.exit(1);
 }
 
@@ -511,6 +521,144 @@ export function registerBrokerCommands(program: Command, getConfigDir: () => str
       await apiPost(session, "/api/account/deactivate", { confirm: "deactivate my account" });
       deleteBrokerSession(cfgDir());
       console.log("Account deactivated.");
+    });
+
+  // -------------------------------------------------------------------------
+  // elevate — request temporary admin session elevation
+  // -------------------------------------------------------------------------
+
+  broker
+    .command("elevate")
+    .description("Request temporary admin access via browser approval (step-up authentication)")
+    .option("--broker <url>", "Override broker URL")
+    .action(async (opts: { broker?: string }, cmd: Command) => {
+      const session = await getValidSession(cfgDir);
+      const brokerUrl = resolveBrokerUrl(
+        opts.broker ?? (cmd.parent?.opts() as { broker?: string }).broker,
+        getConfigDir
+      );
+
+      // Fetch the current session ID from the broker (not stored locally).
+      const meRes = await apiFetch(session, "/api/me");
+      if (!meRes.ok) { console.error("Failed to fetch session info."); process.exit(1); }
+      const me = await meRes.json() as { session_id: string };
+
+      const dcRes = await fetch(`${brokerUrl}/oauth/device/code`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          scope: "agent:escalate",
+          elevate_session_id: me.session_id,
+        }),
+      });
+
+      if (!dcRes.ok) {
+        console.error("Failed to start escalation flow:", await dcRes.text());
+        process.exit(1);
+      }
+      const dc = await dcRes.json() as {
+        device_code: string;
+        user_code: string;
+        verification_uri_complete: string;
+        expires_in: number;
+        interval: number;
+      };
+
+      console.log(`\nOpen the following URL to approve admin access (opening browser automatically):`);
+      console.log(`  ${dc.verification_uri_complete}\n`);
+      console.log(`If the browser did not open, enter this code: ${dc.user_code}\n`);
+      try { await open(dc.verification_uri_complete); } catch { /* ignore */ }
+
+      const result = await poll(
+        async () => {
+          const r = await fetch(`${brokerUrl}/oauth/token`, {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams({
+              grant_type: "urn:ietf:params:oauth:grant-type:device_code",
+              device_code: dc.device_code,
+            }),
+          });
+          if (r.status === 400) {
+            const body = await r.json() as { error: string };
+            if (body.error === "authorization_pending") return null;
+            if (body.error === "access_denied") {
+              console.error("\nEscalation denied. Ensure your account has admin privileges.");
+              process.exit(1);
+            }
+            console.error("\nEscalation flow error:", body.error);
+            process.exit(1);
+          }
+          if (r.status === 204) return {};
+          if (!r.ok) return null;
+          return {};
+        },
+        dc.interval * 1000,
+        dc.expires_in * 1000
+      );
+
+      if (!result) {
+        console.error("Timed out waiting for approval.");
+        process.exit(1);
+      }
+
+      console.log("Admin access granted. Retry your command.");
+    });
+
+  // -------------------------------------------------------------------------
+  // user promote/demote — bootstrap role management (requires BROKER_ADMIN_TOKEN)
+  // -------------------------------------------------------------------------
+
+  const userAdmin = broker.command("user").description("Manage user roles (requires BROKER_ADMIN_TOKEN)");
+
+  userAdmin
+    .command("promote")
+    .argument("<identifier>", "OIDC sub or (local mode) username to promote to admin")
+    .description("Grant admin role — requires BROKER_ADMIN_TOKEN env var or --admin-token flag")
+    .option("--broker <url>", "Override broker URL")
+    .option("--admin-token <token>", "Broker admin token (defaults to BROKER_ADMIN_TOKEN env var)")
+    .action(async (identifier: string, opts: { broker?: string; adminToken?: string }, cmd: Command) => {
+      const adminToken = opts.adminToken ?? process.env["BROKER_ADMIN_TOKEN"];
+      if (!adminToken) {
+        console.error("BROKER_ADMIN_TOKEN is not set. Pass --admin-token or set the env var.");
+        process.exit(1);
+      }
+      const brokerUrl = resolveBrokerUrl(
+        opts.broker ?? (cmd.parent?.opts() as { broker?: string }).broker,
+        getConfigDir
+      );
+      const res = await fetch(`${brokerUrl}/api/admin/users/${encodeURIComponent(identifier)}/promote`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${adminToken}` },
+      });
+      if (res.status === 404) { console.error("User not found."); process.exit(1); }
+      if (!res.ok) { console.error(`Error ${res.status}:`, await res.text()); process.exit(1); }
+      console.log(`User '${identifier}' promoted to admin.`);
+    });
+
+  userAdmin
+    .command("demote")
+    .argument("<identifier>", "OIDC sub or (local mode) username to demote")
+    .description("Revoke admin role — requires BROKER_ADMIN_TOKEN env var or --admin-token flag")
+    .option("--broker <url>", "Override broker URL")
+    .option("--admin-token <token>", "Broker admin token (defaults to BROKER_ADMIN_TOKEN env var)")
+    .action(async (identifier: string, opts: { broker?: string; adminToken?: string }, cmd: Command) => {
+      const adminToken = opts.adminToken ?? process.env["BROKER_ADMIN_TOKEN"];
+      if (!adminToken) {
+        console.error("BROKER_ADMIN_TOKEN is not set. Pass --admin-token or set the env var.");
+        process.exit(1);
+      }
+      const brokerUrl = resolveBrokerUrl(
+        opts.broker ?? (cmd.parent?.opts() as { broker?: string }).broker,
+        getConfigDir
+      );
+      const res = await fetch(`${brokerUrl}/api/admin/users/${encodeURIComponent(identifier)}/demote`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${adminToken}` },
+      });
+      if (res.status === 404) { console.error("User not found."); process.exit(1); }
+      if (!res.ok) { console.error(`Error ${res.status}:`, await res.text()); process.exit(1); }
+      console.log(`User '${identifier}' demoted to regular user.`);
     });
 
   // -------------------------------------------------------------------------

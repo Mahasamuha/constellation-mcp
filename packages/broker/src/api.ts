@@ -1,9 +1,9 @@
 import { createRequire } from "node:module";
 import RE2 from "re2";
 import { Router, Request, Response, IRouter } from "express";
-import { AgentTokenType } from "./generated/prisma/client.js";
+import { AgentTokenType, BrokerRole } from "./generated/prisma/client.js";
 import { prisma } from "./db.js";
-import { requireBearerAuth, AuthenticatedRequest } from "./middleware.js";
+import { requireBearerAuth, requireAdmin, AuthenticatedRequest } from "./middleware.js";
 import { getConnection } from "./hub.js";
 import { createLogger, generateToken, hashToken } from "@constellation/shared";
 import { config } from "./config.js";
@@ -42,6 +42,16 @@ apiRouter.get("/api/status", (_req: Request, res: Response) => {
     uptime_seconds: Math.floor((Date.now() - startedAt.getTime()) / 1000),
     version,
   });
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/me — return current session info (used by CLI to get session_id
+// before initiating an escalation device code flow)
+// ---------------------------------------------------------------------------
+
+apiRouter.get("/api/me", (req: Request, res: Response) => {
+  const ar = req as AuthenticatedRequest;
+  res.json({ session_id: ar.sessionId, user_id: ar.userId });
 });
 
 // ---------------------------------------------------------------------------
@@ -341,7 +351,7 @@ apiRouter.delete("/api/sessions/:id", async (req: Request, res: Response) => {
 // TODO: add requireAdmin once §2.5 session elevation is implemented.
 // ---------------------------------------------------------------------------
 
-apiRouter.post("/api/tokens/shared", async (_req: Request, res: Response) => {
+apiRouter.post("/api/tokens/shared", requireAdmin, async (_req: Request, res: Response) => {
   const token = generateToken();
   const tokenHash = hashToken(token);
 
@@ -370,7 +380,7 @@ function requireLocalMode(res: Response): boolean {
   return true;
 }
 
-apiRouter.get("/api/users", async (req: Request, res: Response) => {
+apiRouter.get("/api/users", requireAdmin, async (req: Request, res: Response) => {
   if (!requireLocalMode(res)) return;
 
   const { limit, offset } = parsePagination(req);
@@ -398,7 +408,7 @@ apiRouter.get("/api/users", async (req: Request, res: Response) => {
   });
 });
 
-apiRouter.post("/api/users", async (req: Request, res: Response) => {
+apiRouter.post("/api/users", requireAdmin, async (req: Request, res: Response) => {
   if (!requireLocalMode(res)) return;
 
   const body = req.body as Record<string, unknown>;
@@ -435,7 +445,7 @@ apiRouter.post("/api/users", async (req: Request, res: Response) => {
   }
 });
 
-apiRouter.post("/api/users/:username/deactivate", async (req: Request, res: Response) => {
+apiRouter.post("/api/users/:username/deactivate", requireAdmin, async (req: Request, res: Response) => {
   if (!requireLocalMode(res)) return;
 
   const username = req.params["username"] as string;
@@ -459,7 +469,7 @@ apiRouter.post("/api/users/:username/deactivate", async (req: Request, res: Resp
   res.status(204).end();
 });
 
-apiRouter.post("/api/users/:username/reset-password", async (req: Request, res: Response) => {
+apiRouter.post("/api/users/:username/reset-password", requireAdmin, async (req: Request, res: Response) => {
   if (!requireLocalMode(res)) return;
 
   const username = req.params["username"] as string;
@@ -496,6 +506,63 @@ apiRouter.post("/api/users/:username/reset-password", async (req: Request, res: 
   log.info({ username }, "Local user password reset");
   res.status(204).end();
 });
+
+// ---------------------------------------------------------------------------
+// Role management (promote/demote) — protected by BROKER_ADMIN_TOKEN env var.
+// For bootstrap before OIDC groups are configured, or in AUTH_MODE=local.
+// Never exposed via an OAuth-gated route — requires the operator's admin token.
+// ---------------------------------------------------------------------------
+
+function requireBrokerAdminToken(req: Request, res: Response): boolean {
+  const adminToken = process.env["BROKER_ADMIN_TOKEN"];
+  if (!adminToken) {
+    res.status(404).json({ error: "not_found" });
+    return false;
+  }
+  const authHeader = req.headers["authorization"];
+  if (!authHeader?.startsWith("Bearer ") || authHeader.slice(7) !== adminToken) {
+    res.status(401).json({ error: "unauthorized" });
+    return false;
+  }
+  return true;
+}
+
+apiRouter.post("/api/admin/users/:identifier/promote", async (req: Request, res: Response) => {
+  if (!requireBrokerAdminToken(req, res)) return;
+  const identifier = req.params["identifier"] as string;
+  const user = await resolveUserByIdentifier(identifier);
+  if (!user) { res.status(404).json({ error: "not_found" }); return; }
+  await prisma.user.update({ where: { id: user.id }, data: { role: BrokerRole.ADMIN } });
+  log.info({ userId: user.id, identifier }, "User promoted to ADMIN via admin token");
+  res.status(204).end();
+});
+
+apiRouter.post("/api/admin/users/:identifier/demote", async (req: Request, res: Response) => {
+  if (!requireBrokerAdminToken(req, res)) return;
+  const identifier = req.params["identifier"] as string;
+  const user = await resolveUserByIdentifier(identifier);
+  if (!user) { res.status(404).json({ error: "not_found" }); return; }
+  await prisma.user.update({ where: { id: user.id }, data: { role: BrokerRole.USER } });
+  log.info({ userId: user.id, identifier }, "User demoted to USER via admin token");
+  res.status(204).end();
+});
+
+/** Resolves a user by oidc_sub or (in AUTH_MODE=local) username. */
+async function resolveUserByIdentifier(identifier: string): Promise<{ id: string } | null> {
+  // Try oidc_sub first (format: "provider|sub" or just the sub string).
+  const byOidcSub = await prisma.user.findFirst({
+    where: { oidcSub: identifier },
+    select: { id: true },
+  });
+  if (byOidcSub) return byOidcSub;
+
+  // Fall back to local username lookup.
+  const byUsername = await prisma.localUser.findUnique({
+    where: { username: identifier },
+    select: { userId: true },
+  });
+  return byUsername ? { id: byUsername.userId } : null;
+}
 
 // ---------------------------------------------------------------------------
 // POST /api/account/deactivate
