@@ -150,15 +150,16 @@ model AuthCode {
 }
 
 model DeviceCode {
-  deviceCode    String   @id @map("device_code")
-  userCode      String   @unique @map("user_code")
-  scope         String
-  expiresAt     DateTime @map("expires_at")
-  status        String   @default("pending")
-  userId        String?  @map("user_id")
-  hostName      String?  @map("host_name")
-  pendingUserId String?  @map("pending_user_id")
-  createdAt     DateTime @default(now()) @map("created_at")
+  deviceCode       String   @id @map("device_code")
+  userCode         String   @unique @map("user_code")
+  scope            String
+  expiresAt        DateTime @map("expires_at")
+  status           String   @default("pending")
+  userId           String?  @map("user_id")
+  hostName         String?  @map("host_name")
+  pendingUserId    String?  @map("pending_user_id")
+  elevateSessionId String?  @map("elevate_session_id")
+  createdAt        DateTime @default(now()) @map("created_at")
 
   @@map("device_codes")
 }
@@ -185,6 +186,7 @@ model OauthSession {
   expiresAt             DateTime  @map("expires_at")
   refreshTokenHash      String?   @unique @map("refresh_token_hash")
   refreshTokenExpiresAt DateTime? @map("refresh_token_expires_at")
+  adminUntil            DateTime? @map("admin_until")
 
   user      User        @relation(fields: [userId], references: [id])
   mcpClient OauthClient @relation(fields: [mcpClientId], references: [id])
