@@ -43,6 +43,18 @@ interface SessionEntry {
   has_refresh_token: boolean;
 }
 
+interface SharedLabelEntry {
+  agent_id: string;
+  agent_host: string;
+  label: string;
+  reported_path: string;
+  permission_blob: {
+    default: string;
+    overrides?: Array<{ oidc_sub: string; access: string }>;
+  };
+  updated_at: string;
+}
+
 // ---------------------------------------------------------------------------
 // Broker URL resolution
 // ---------------------------------------------------------------------------
@@ -659,6 +671,42 @@ export function registerBrokerCommands(program: Command, getConfigDir: () => str
       if (res.status === 404) { console.error("User not found."); process.exit(1); }
       if (!res.ok) { console.error(`Error ${res.status}:`, await res.text()); process.exit(1); }
       console.log(`User '${identifier}' demoted to regular user.`);
+    });
+
+  // -------------------------------------------------------------------------
+  // shared-labels — admin view of the shared label registry
+  // -------------------------------------------------------------------------
+
+  const sharedLabels = broker.command("shared-labels").description("View shared agent labels (requires admin session)");
+
+  sharedLabels
+    .command("list")
+    .description("List all shared labels synced to the broker")
+    .option("--agent <id>", "Filter to a specific shared agent by ID")
+    .option("--json", "Output as JSON")
+    .action(async (opts: { agent?: string; json?: boolean }) => {
+      const session = await getValidSession(cfgDir);
+      const qs = opts.agent ? `?agent=${encodeURIComponent(opts.agent)}` : "";
+      const data = await apiGet<{ data: SharedLabelEntry[] }>(session, `/api/admin/shared-labels${qs}`);
+      if (opts.json) { console.log(JSON.stringify(data.data, null, 2)); return; }
+
+      if (data.data.length === 0) {
+        console.log("No shared labels found.");
+        return;
+      }
+
+      let lastAgentId = "";
+      for (const l of data.data) {
+        if (l.agent_id !== lastAgentId) {
+          console.log(`\nAgent: ${l.agent_host} (${l.agent_id})`);
+          lastAgentId = l.agent_id;
+        }
+        const overrides = l.permission_blob.overrides ?? [];
+        const overrideStr = overrides.length > 0
+          ? `  overrides: ${overrides.map((o) => `${o.oidc_sub}=${o.access}`).join(", ")}`
+          : "";
+        console.log(`  ${l.label}  →  ${l.reported_path}  [default: ${l.permission_blob.default}]${overrideStr}`);
+      }
     });
 
   // -------------------------------------------------------------------------

@@ -25,6 +25,8 @@ const LabelEntry = {
   label: z.string(),
   host: z.string(),
   reported_path: z.string(),
+  modality: z.enum(["personal", "shared"]),
+  access: z.string(),
 };
 
 const DirNode = {
@@ -237,23 +239,77 @@ function registerListHosts(server: McpServer): void {
 // list_labels
 // ---------------------------------------------------------------------------
 
+function evaluatePermissionBlob(
+  blob: { default: string; overrides?: Array<{ oidc_sub: string; access: string }> },
+  userOidcSub: string | null
+): string {
+  if (userOidcSub && blob.overrides) {
+    const override = blob.overrides.find((o) => o.oidc_sub === userOidcSub);
+    if (override) return override.access;
+  }
+  return blob.default;
+}
+
 function registerListLabels(server: McpServer): void {
+  const sharedDiscoveryEnabled = config.listLabelsTool === "enabled";
+  const description = sharedDiscoveryEnabled
+    ? "List path labels — personal labels you own and shared labels you have access to. Shared label access is evaluated optimistically and may be further restricted by the agent."
+    : "List path labels, optionally filtered by host";
+
   server.registerTool(
     "list_labels",
     {
       title: "List Labels",
-      description: "List path labels, optionally filtered by host",
+      description,
       inputSchema: { host: z.string().optional() },
       outputSchema: { labels: z.array(z.object(LabelEntry)) },
       annotations: { readOnlyHint: true },
     },
     async ({ host }, extra) => {
-      const uid = identity(extra).userId;
-      const labels = await prisma.pathLabel.findMany({
-        where: { userId: uid, ...(host ? { agent: { host } } : {}) },
+      const { userId, userOidcSub } = identity(extra);
+
+      const personalLabels = await prisma.pathLabel.findMany({
+        where: { userId, ...(host ? { agent: { host } } : {}) },
         include: { agent: { select: { host: true } } },
       });
-      return ok({ labels: labels.map((l) => ({ label: l.label, host: l.agent.host, reported_path: l.reportedPath })) });
+
+      const labels: Array<{
+        label: string;
+        host: string;
+        reported_path: string;
+        modality: "personal" | "shared";
+        access: string;
+      }> = personalLabels.map((l) => ({
+        label: l.label,
+        host: l.agent.host,
+        reported_path: l.reportedPath,
+        modality: "personal",
+        access: "read-write",
+      }));
+
+      if (sharedDiscoveryEnabled) {
+        const sharedLabels = await prisma.sharedPathLabel.findMany({
+          where: host ? { agent: { host } } : {},
+          include: { agent: { select: { host: true } } },
+        });
+
+        for (const l of sharedLabels) {
+          const blob = l.permissionBlob as { default: string; overrides?: Array<{ oidc_sub: string; access: string }> };
+          const access = evaluatePermissionBlob(blob, userOidcSub);
+          if (access === "none") continue;
+          labels.push({
+            label: l.label,
+            host: l.agent.host,
+            reported_path: l.reportedPath,
+            modality: "shared",
+            access,
+          });
+        }
+
+        labels.sort((a, b) => a.label.localeCompare(b.label));
+      }
+
+      return ok({ labels });
     }
   );
 }

@@ -31,4 +31,11 @@ export const config = {
   rpcTimeoutMs: parseEnvInt("RPC_TIMEOUT_MS", 30_000),
   oauthAccessTokenTtlHours: parseEnvInt("OAUTH_ACCESS_TOKEN_TTL_HOURS", 24),
   oauthRefreshTokenTtlDays: parseEnvInt("OAUTH_REFRESH_TOKEN_TTL_DAYS", 30),
+  // Controls availability of the list_available_labels MCP tool.
+  // "disabled" = not registered; "advertised" = registered but returns error (default); "enabled" = fully functional.
+  listLabelsTool: ((): "disabled" | "advertised" | "enabled" => {
+    const v = process.env["LIST_LABELS_TOOL"] ?? "advertised";
+    if (v === "disabled" || v === "enabled") return v;
+    return "advertised";
+  })(),
 };

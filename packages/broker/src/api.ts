@@ -564,6 +564,31 @@ async function resolveUserByIdentifier(identifier: string): Promise<{ id: string
 }
 
 // ---------------------------------------------------------------------------
+// GET /api/admin/shared-labels — full shared label registry (admin-gated)
+// ---------------------------------------------------------------------------
+
+apiRouter.get("/api/admin/shared-labels", requireAdmin, async (req: Request, res: Response) => {
+  const agentId = typeof req.query["agent"] === "string" ? req.query["agent"] : undefined;
+
+  const labels = await prisma.sharedPathLabel.findMany({
+    where: agentId ? { agentId } : {},
+    include: { agent: { select: { id: true, host: true } } },
+    orderBy: [{ agentId: "asc" }, { label: "asc" }],
+  });
+
+  res.json({
+    data: labels.map((l) => ({
+      agent_id: l.agentId,
+      agent_host: l.agent.host,
+      label: l.label,
+      reported_path: l.reportedPath,
+      permission_blob: l.permissionBlob,
+      updated_at: l.updatedAt.toISOString(),
+    })),
+  });
+});
+
+// ---------------------------------------------------------------------------
 // POST /api/account/deactivate
 // ---------------------------------------------------------------------------
 
