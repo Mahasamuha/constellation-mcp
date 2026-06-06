@@ -104,11 +104,10 @@ export function isDispatchError(v: DispatchResult | DispatchError): v is Dispatc
   return "kind" in v;
 }
 
-// In a pkg binary, import.meta.url is undefined (esbuild CJS); worker is
-// placed at shared/subagent-worker.js next to the binary by the CI packaging scripts.
+// In a pkg binary the worker is placed at shared/subagent-worker.cjs next to the binary.
 const workerPath = (process as { pkg?: unknown }).pkg
-  ? join(dirname(process.execPath), "shared", "subagent-worker.js")
-  : join(dirname(fileURLToPath(import.meta.url)), "subagent-worker.js");
+  ? join(dirname(process.execPath), "shared", "subagent-worker.cjs")
+  : join(dirname(fileURLToPath(import.meta.url)), "subagent-worker.cjs");
 
 export class SubagentPool {
   private pool = new Map<string, PoolEntry>();

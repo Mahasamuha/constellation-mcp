@@ -16,12 +16,13 @@ export default defineConfig([
     },
   },
   {
-    // Subagent worker — separate bundle so the shared agent can fork it as a child process
+    // Subagent worker — CJS so pino's dynamic require('node:*') works without an ESM shim
     entry: { "shared/subagent-worker": "src/shared/subagent-worker.ts" },
-    format: ["esm"],
+    format: ["cjs"],
     outDir: "dist",
     sourcemap: true,
     noExternal: ["@constellation/shared"],
+    outExtension: () => ({ js: ".cjs" }),
     banner: {
       js: "// Constellation shared agent subagent worker — do not run directly",
     },
