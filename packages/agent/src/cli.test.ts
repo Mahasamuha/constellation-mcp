@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+
+declare const __PKG_VERSION__: string;
 import { Command } from "commander";
 import { promises as fs } from "node:fs";
 import { existsSync } from "node:fs";
@@ -39,7 +41,7 @@ async function runCli(args: string[], dir: string): Promise<RunResult> {
   const errSpy = vi.spyOn(console, "error").mockImplementation((...a) => {
     errLines.push(a.map(String).join(" "));
   });
-  const exitSpy = vi.spyOn(process, "exit").mockImplementation((code?: number | string) => {
+  const exitSpy = vi.spyOn(process, "exit").mockImplementation((code?: number | string | null) => {
     throw new ExitError(typeof code === "number" ? code : 0);
   });
 

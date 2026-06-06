@@ -2,7 +2,8 @@ import { readFileSync, writeFileSync, mkdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { homedir, platform } from "node:os";
 import yaml from "js-yaml";
-export type { PathEntry } from "@constellation/shared";
+import type { PathEntry } from "@constellation/shared";
+export type { PathEntry };
 
 // ---------------------------------------------------------------------------
 // Paths
