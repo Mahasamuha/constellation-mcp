@@ -83,6 +83,8 @@ constellation agent install && constellation agent start
 
 For self-hosted options see [Self-hosted with Cloudflare Tunnel](docs/self-hosted-cloudflare-tunnel.md).
 
+To expose a shared multi-user machine (NAS, dev server, domain host) see [Shared Agent Quick Start](SHARED_AGENT_QUICKSTART.md).
+
 ## Configuration
 
 ### Server (broker)
