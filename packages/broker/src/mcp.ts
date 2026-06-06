@@ -6,6 +6,7 @@ import { z } from "zod/v4";
 import { prisma } from "./db.js";
 import { routeToolCall, RouterError } from "./router.js";
 import { lookupOAuthSession } from "./middleware.js";
+import { config } from "./config.js";
 
 const { version } = createRequire(import.meta.url)("../package.json") as { version: string };
 
@@ -215,10 +216,7 @@ function registerListHosts(server: McpServer): void {
     },
     async (extra) => {
       const uid = identity(extra).userId;
-      const thresholdMs =
-        parseInt(process.env["HEARTBEAT_INTERVAL_SECONDS"] ?? "60", 10) *
-        parseInt(process.env["HEARTBEAT_MAX_MISSED"] ?? "3", 10) *
-        1000;
+      const thresholdMs = config.heartbeat.intervalMs * config.heartbeat.maxMissed;
 
       const agents = await prisma.agent.findMany({
         where: { userId: uid },

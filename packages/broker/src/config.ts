@@ -29,4 +29,6 @@ export const config = {
     maxMessageBytes: parseEnvInt("WS_MAX_MESSAGE_BYTES", 10_485_760),
   },
   rpcTimeoutMs: parseEnvInt("RPC_TIMEOUT_MS", 30_000),
+  oauthAccessTokenTtlHours: parseEnvInt("OAUTH_ACCESS_TOKEN_TTL_HOURS", 24),
+  oauthRefreshTokenTtlDays: parseEnvInt("OAUTH_REFRESH_TOKEN_TTL_DAYS", 30),
 };

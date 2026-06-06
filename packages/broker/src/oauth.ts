@@ -6,6 +6,7 @@ import { buildAuthorizationUrl, exchangeCodeAndUpsertUser } from "./oidc.js";
 import { handleDeviceCodeGrant } from "./device.js";
 import { generateToken, hashToken, safeEqual, createLogger, requireEnv } from "@constellation/shared";
 import { checkBruteForce, recordFailure, validateLocalUser } from "./local-auth.js";
+import { config } from "./config.js";
 
 const log = createLogger("oauth");
 
@@ -64,7 +65,8 @@ oauthRouter.post("/oauth/register", async (req: Request, res: Response) => {
     }
   }
 
-  const grantTypes = asStringArray(body["grant_types"]) || ["authorization_code"];
+  const grantTypesRaw = asStringArray(body["grant_types"]);
+  const grantTypes = grantTypesRaw.length > 0 ? grantTypesRaw : ["authorization_code"];
   const tokenEndpointAuthMethod = typeof body["token_endpoint_auth_method"] === "string"
     ? body["token_endpoint_auth_method"]
     : "client_secret_basic";
@@ -451,8 +453,8 @@ async function handleAuthorizationCodeGrant(
   const refreshToken = generateToken();
   const refreshTokenHash = hashToken(refreshToken);
 
-  const accessTtlHours = parseInt(process.env["OAUTH_ACCESS_TOKEN_TTL_HOURS"] ?? "24", 10);
-  const refreshTtlDays = parseInt(process.env["OAUTH_REFRESH_TOKEN_TTL_DAYS"] ?? "30", 10);
+  const accessTtlHours = config.oauthAccessTokenTtlHours;
+  const refreshTtlDays = config.oauthRefreshTokenTtlDays;
   const now = new Date();
   const expiresAt = new Date(now.getTime() + accessTtlHours * 3600 * 1000);
   const refreshExpiresAt = new Date(now.getTime() + refreshTtlDays * 86400 * 1000);
@@ -515,8 +517,8 @@ async function handleRefreshTokenGrant(
   const newRefreshToken = generateToken();
   const newRefreshTokenHash = hashToken(newRefreshToken);
 
-  const accessTtlHours = parseInt(process.env["OAUTH_ACCESS_TOKEN_TTL_HOURS"] ?? "24", 10);
-  const refreshTtlDays = parseInt(process.env["OAUTH_REFRESH_TOKEN_TTL_DAYS"] ?? "30", 10);
+  const accessTtlHours = config.oauthAccessTokenTtlHours;
+  const refreshTtlDays = config.oauthRefreshTokenTtlDays;
   const now = new Date();
   const expiresAt = new Date(now.getTime() + accessTtlHours * 3600 * 1000);
   const refreshExpiresAt = new Date(now.getTime() + refreshTtlDays * 86400 * 1000);

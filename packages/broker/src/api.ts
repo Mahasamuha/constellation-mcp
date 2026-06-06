@@ -5,7 +5,7 @@ import { AgentTokenType, BrokerRole } from "./generated/prisma/client.js";
 import { prisma } from "./db.js";
 import { requireBearerAuth, requireAdmin, AuthenticatedRequest } from "./middleware.js";
 import { getConnection } from "./hub.js";
-import { createLogger, generateToken, hashToken } from "@constellation/shared";
+import { createLogger, generateToken, hashToken, safeEqual } from "@constellation/shared";
 import { config } from "./config.js";
 import { createLocalUser } from "./local-auth.js";
 
@@ -348,7 +348,6 @@ apiRouter.delete("/api/sessions/:id", async (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 // POST /api/tokens/shared — break-glass shared agent token creation
 // Preferred path is constellation shared-agent register (§2.6, device code flow).
-// TODO: add requireAdmin once §2.5 session elevation is implemented.
 // ---------------------------------------------------------------------------
 
 apiRouter.post("/api/tokens/shared", requireAdmin, async (_req: Request, res: Response) => {
@@ -520,7 +519,7 @@ function requireBrokerAdminToken(req: Request, res: Response): boolean {
     return false;
   }
   const authHeader = req.headers["authorization"];
-  if (!authHeader?.startsWith("Bearer ") || authHeader.slice(7) !== adminToken) {
+  if (!authHeader?.startsWith("Bearer ") || !safeEqual(authHeader.slice(7), adminToken)) {
     res.status(401).json({ error: "unauthorized" });
     return false;
   }

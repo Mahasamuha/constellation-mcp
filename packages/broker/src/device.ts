@@ -408,14 +408,16 @@ export async function handleDeviceCodeGrant(
     return;
   }
 
-  // Approved — consume the entry.
-  await prisma.deviceCode.delete(byCode(device_code));
+  // Guard before consuming — an approved entry must have a userId set at approval time.
   const userId = entry.userId;
   if (!userId) {
     log.error({ deviceCode: device_code }, "Approved device code missing userId — possible data corruption");
     res.status(500).json({ error: "server_error" });
     return;
   }
+
+  // Consume the entry.
+  await prisma.deviceCode.delete(byCode(device_code));
 
   if (entry.scope === "agent:escalate") {
     // Set adminUntil on the target session. The target session was verified at
@@ -552,8 +554,8 @@ export async function handleDeviceCodeGrant(
     const refreshToken = generateToken();
     const refreshTokenHash = hashToken(refreshToken);
 
-    const accessTtlHours = parseInt(process.env["OAUTH_ACCESS_TOKEN_TTL_HOURS"] ?? "24", 10);
-    const refreshTtlDays = parseInt(process.env["OAUTH_REFRESH_TOKEN_TTL_DAYS"] ?? "30", 10);
+    const accessTtlHours = config.oauthAccessTokenTtlHours;
+    const refreshTtlDays = config.oauthRefreshTokenTtlDays;
     const now = new Date();
     const expiresAt = new Date(now.getTime() + accessTtlHours * 3600 * 1000);
     const refreshExpiresAt = new Date(now.getTime() + refreshTtlDays * 86400 * 1000);

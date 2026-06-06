@@ -33,6 +33,29 @@ export interface RpcResponse {
   error?: RpcError;
 }
 
+// Cache the realpath-resolved label registry so we don't re-stat every path
+// on each RPC. Keyed on a JSON fingerprint of the current paths list; invalidated
+// automatically when paths change (e.g. after a config_update).
+let _registryKey = "";
+let _registryCache: Record<string, string> = {};
+
+async function buildLabelRegistry(paths: PathEntry[]): Promise<Record<string, string>> {
+  const key = JSON.stringify(paths);
+  if (key === _registryKey) return _registryCache;
+
+  const registry: Record<string, string> = {};
+  for (const p of paths) {
+    try {
+      registry[p.label] = await fs.realpath(p.path);
+    } catch {
+      // skip paths that can't be resolved at this moment
+    }
+  }
+  _registryKey = key;
+  _registryCache = registry;
+  return registry;
+}
+
 /**
  * Validates absolute_root against the local paths allowlist, builds the label
  * registry, and delegates execution to AgentExecutor.
@@ -50,15 +73,7 @@ export async function handleRpc(
     return { request_id, error: { message: "Path rejected by agent" } };
   }
 
-  // Build label registry with realpath-resolved roots.
-  const labelRegistry: Record<string, string> = {};
-  for (const p of paths) {
-    try {
-      labelRegistry[p.label] = await fs.realpath(p.path);
-    } catch {
-      // skip paths that can't be resolved at this moment
-    }
-  }
+  const labelRegistry = await buildLabelRegistry(paths);
 
   if (labelRegistry[allowed.label] === undefined) {
     log.warn({ tool, absolute_root }, "Path rejected by agent — realpath failed");
