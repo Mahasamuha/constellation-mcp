@@ -15,6 +15,11 @@ const log = createLogger("api");
 
 export const apiRouter: IRouter = Router();
 
+// Routes protected by BROKER_ADMIN_TOKEN (not OAuth) must be on a separate
+// router so that requireBearerAuth (applied to apiRouter below) does not reject
+// the admin token before the route handler can validate it.
+export const adminTokenRouter: IRouter = Router();
+
 function parsePagination(req: Request): { limit: number; offset: number } {
   const limit = Math.min(Math.max(1, parseInt(String(req.query["limit"] ?? "100"), 10) || 100), 1000);
   const offset = Math.max(0, parseInt(String(req.query["offset"] ?? "0"), 10) || 0);
@@ -526,7 +531,7 @@ function requireBrokerAdminToken(req: Request, res: Response): boolean {
   return true;
 }
 
-apiRouter.post("/api/admin/users/:identifier/promote", async (req: Request, res: Response) => {
+adminTokenRouter.post("/api/admin/users/:identifier/promote", async (req: Request, res: Response) => {
   if (!requireBrokerAdminToken(req, res)) return;
   const identifier = req.params["identifier"] as string;
   const user = await resolveUserByIdentifier(identifier);
@@ -536,7 +541,7 @@ apiRouter.post("/api/admin/users/:identifier/promote", async (req: Request, res:
   res.status(204).end();
 });
 
-apiRouter.post("/api/admin/users/:identifier/demote", async (req: Request, res: Response) => {
+adminTokenRouter.post("/api/admin/users/:identifier/demote", async (req: Request, res: Response) => {
   if (!requireBrokerAdminToken(req, res)) return;
   const identifier = req.params["identifier"] as string;
   const user = await resolveUserByIdentifier(identifier);

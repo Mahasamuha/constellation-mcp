@@ -6,7 +6,7 @@ import { rateLimit } from "express-rate-limit";
 import { oauthRouter } from "./oauth.js";
 import { deviceRouter } from "./device.js";
 import { mcpRouter } from "./mcp.js";
-import { apiRouter } from "./api.js";
+import { apiRouter, adminTokenRouter } from "./api.js";
 import { setupRouter, setupMiddleware } from "./setup.js";
 import { prisma } from "./db.js";
 import { createLogger } from "@constellation/shared";
@@ -117,6 +117,7 @@ app.use("/", setupRouter);
 app.use("/", oauthRouter);
 app.use("/", deviceRouter);
 app.use("/", mcpRouter);
+app.use("/", adminTokenRouter);
 app.use("/", apiRouter);
 
 // Must be last — 4-argument signature is how Express identifies error handlers.

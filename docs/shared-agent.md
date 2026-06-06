@@ -1,7 +1,5 @@
 # Shared Agent
 
-> **Draft — requires review and expansion before publishing.**
-
 The shared agent is a Constellation agent type for machines shared by multiple users (NAS, dev server, domain-joined host). Unlike the personal agent — which runs under the user's own OS identity and manages their own labels — the shared agent runs as a dedicated service user and dispatches each tool call under the requesting user's OS identity.
 
 ---
@@ -52,6 +50,7 @@ The agent controls access at the label (share root) level only. Access to specif
 
 The agent refuses to spawn subagents as:
 - UID 0 (root) — always blocked, not configurable
+- The shared agent's own UID — always blocked
 - UIDs outside `subagent_uid.allowed_range` (if configured)
 - UIDs within `subagent_uid.blocked_range` (if configured)
 - UIDs in `subagent_uid.blocked_uids` (if configured)
@@ -115,10 +114,18 @@ Access levels:
 Register the shared agent with the broker using the device code flow (preferred):
 
 ```sh
-constellation shared-agent register --broker-url https://broker.example.com
+constellation shared-agent register \
+  --broker-url https://broker.example.com \
+  --host-name nas-shared \
+  --env-file /etc/constellation/shared-agent.env
 ```
 
-An admin must approve the registration in the browser. The token is written to the env file automatically — the operator never sees the raw token.
+The browser opens automatically for admin approval. The token is written to the env file — the operator never sees the raw token.
+
+Options:
+- `--broker-url` — required (or set `BROKER_URL`)
+- `--host-name` — defaults to `hostname()`; used as the agent's display name in the broker
+- `--env-file` — where to write `CONSTELLATION_AGENT_TOKEN` (default: `/etc/constellation/shared-agent.env`)
 
 Break-glass alternative (scripted provisioning or token recovery):
 
@@ -126,6 +133,8 @@ Break-glass alternative (scripted provisioning or token recovery):
 constellation broker token create --shared
 # Requires admin session (run 'constellation broker elevate' first)
 ```
+
+The token is displayed once and must be stored immediately.
 
 ### Config file
 
@@ -148,19 +157,81 @@ identity:
     - constellation_username
 ```
 
-Full config reference: see `plans/shared-modality.md` §3.1.
+Full config reference:
+
+```yaml
+# Required
+broker_url: wss://broker.example.com       # WebSocket URL of the broker
+agent_name: nas-shared                     # Display name in the broker UI
+audit_log: /var/log/constellation/shared-agent-audit.jsonl
+
+# Optional
+env_file: /etc/constellation/shared-agent.env  # Source CONSTELLATION_AGENT_TOKEN from this file
+subagent_idle_timeout_seconds: 300         # Kill idle subagent workers after N seconds (default: 300)
+subagent_rpc_timeout_seconds: 30           # Timeout per tool call (default: 30)
+
+subagent_uid:
+  allowed_range:
+    min: 1000                              # Only spawn subagents for UIDs >= 1000
+    max: 65534
+  blocked_range:
+    min: 60000                             # Block UIDs in this range even if in allowed_range
+    max: 65534
+  blocked_uids: [999]                      # Block specific UIDs
+
+labels:
+  - name: projects
+    path: /srv/projects
+    permissions:
+      default: read-write                  # read-only | read-write | none
+      overrides:
+        - oidc_sub: auth0|abc123           # Per-user access override
+          access: read-only
+
+identity:
+  claims:
+    - constellation_username               # OIDC claim names to try (Tier 1)
+  user_map:
+    - oidc_sub: auth0|abc123              # Tier 2: explicit oidc_sub → local username map
+      local_username: alice
+  allow_preferred_username: false          # Tier 3: use preferred_username claim (risky — see §2)
+```
 
 ### Systemd unit
 
-Generate and install a systemd unit:
+Generate the unit file:
 
 ```sh
-constellation shared-agent install --config /etc/constellation/shared-agent.yaml | sudo tee /etc/systemd/system/constellation-shared-agent.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now constellation-shared-agent
+constellation shared-agent install \
+  --config /etc/constellation/shared-agent.yaml \
+  --user constellation \
+  --unit-name constellation-shared-agent
 ```
 
-The service user needs `AmbientCapabilities=CAP_SETUID CAP_SETGID` and `NoNewPrivileges=no`.
+This prints the unit to stdout followed by install instructions. Follow the printed steps to install and enable the service.
+
+Options:
+- `--config` — required; path to config file
+- `--user` — service user (default: `constellation`); must have `CAP_SETUID`/`CAP_SETGID`
+- `--unit-name` — systemd unit name (default: `constellation-shared-agent`)
+
+The generated unit sets `AmbientCapabilities=CAP_SETUID CAP_SETGID`, `NoNewPrivileges=no`, and `ProtectSystem=strict` with `ReadWritePaths` covering the audit log directory.
+
+### Start / stop
+
+```sh
+# Start (direct, non-systemd)
+constellation shared-agent start --config /etc/constellation/shared-agent.yaml
+
+# Via systemd
+sudo systemctl start constellation-shared-agent
+sudo systemctl stop constellation-shared-agent
+
+# Stop shortcut (calls systemctl stop)
+constellation shared-agent stop --unit-name constellation-shared-agent
+```
+
+`start` also reads `CONSTELLATION_SHARED_AGENT_CONFIG` from the environment as a fallback for `--config`.
 
 ---
 
@@ -172,7 +243,14 @@ The service user needs `AmbientCapabilities=CAP_SETUID CAP_SETGID` and `NoNewPri
 constellation shared-agent validate-config --config /etc/constellation/shared-agent.yaml
 ```
 
-Checks: label paths exist on disk; `user_map` usernames resolve locally; uid range logic is consistent; token is available.
+Checks: required fields are present; label paths exist on disk; `user_map` usernames resolve locally; UID range bounds are consistent; token is available (env or env_file).
+
+### Show running config summary
+
+```sh
+constellation shared-agent status --config /etc/constellation/shared-agent.yaml
+constellation shared-agent status --config /etc/constellation/shared-agent.yaml --json
+```
 
 ### Apply a config change
 
@@ -188,6 +266,8 @@ sudo systemctl restart constellation-shared-agent
 constellation shared-agent rotate-token --config /etc/constellation/shared-agent.yaml
 sudo systemctl restart constellation-shared-agent
 ```
+
+The command connects to the broker via WebSocket, requests a new token, and writes it to `env_file`. The agent must be restarted to reconnect with the new token.
 
 ### Revoke a shared agent
 

@@ -1,6 +1,7 @@
 # Constellation Reference
 
 - [Agent CLI](#agent-cli)
+- [Shared Agent CLI](#shared-agent-cli)
 - [Agent GUI](#agent-gui)
 - [Broker CLI](#broker-cli)
 - [MCP Tools](#mcp-tools)
@@ -91,6 +92,79 @@ Appends an entry to `paths.yaml` and syncs to the broker immediately.
 ### `agent paths remove <label>`
 
 Removes an entry from `paths.yaml` and syncs to the broker immediately.
+
+---
+
+## Shared Agent CLI
+
+The shared agent is a system-level daemon that serves files to multiple users from a single process. It reads from a YAML config file and authenticates via `CONSTELLATION_AGENT_TOKEN` in the environment (typically sourced from an env file).
+
+### `shared-agent register`
+
+```sh
+constellation shared-agent register --broker-url <url> [--host-name <name>] [--env-file <path>]
+```
+
+Starts a device code OAuth flow that requires admin approval. Once approved, writes the service token to the env file (default `/etc/constellation/shared-agent.env`, mode 0600). The token is never printed to the terminal.
+
+| Flag | Default | Description |
+|---|---|---|
+| `--broker-url` | `$BROKER_URL` | Broker URL (required) |
+| `--host-name` | system hostname | Name for this agent on the broker |
+| `--env-file` | `/etc/constellation/shared-agent.env` | Path to write `CONSTELLATION_AGENT_TOKEN` |
+
+### `shared-agent validate-config`
+
+```sh
+constellation shared-agent validate-config --config <path>
+```
+
+Dry-run validation of a shared agent config file. Checks schema, label path existence, `user_map` username resolution, and token availability. Exits non-zero on error.
+
+### `shared-agent start`
+
+```sh
+constellation shared-agent start --config <path>
+```
+
+Starts the shared agent daemon. `--config` can also be supplied via `CONSTELLATION_SHARED_AGENT_CONFIG`.
+
+### `shared-agent status [--json]`
+
+```sh
+constellation shared-agent status --config <path>
+```
+
+Prints agent name, broker URL, and label list from the config file.
+
+### `shared-agent install`
+
+```sh
+constellation shared-agent install --config <path> [--unit-name <name>] [--user <user>]
+```
+
+Prints a systemd system unit file to stdout. Redirect it to `/etc/systemd/system/<unit-name>.service` and run `systemctl daemon-reload && systemctl enable --now <unit-name>`.
+
+| Flag | Default | Description |
+|---|---|---|
+| `--unit-name` | `constellation-shared-agent` | Systemd unit name |
+| `--user` | `constellation` | Service user (must have `CAP_SETUID`/`CAP_SETGID`) |
+
+### `shared-agent stop`
+
+```sh
+constellation shared-agent stop [--unit-name <name>]
+```
+
+Stops the systemd unit (calls `systemctl stop`). If the agent is not managed by systemd, send `SIGTERM` to the process manually.
+
+### `shared-agent rotate-token`
+
+```sh
+constellation shared-agent rotate-token --config <path>
+```
+
+Rotates the agent token via a WebSocket connection and writes the new token to the `env_file` specified in the config. Restart the agent afterwards to reconnect.
 
 ---
 
@@ -211,6 +285,42 @@ Sets a new password for a local user and immediately invalidates all of their ex
 ### `broker account deactivate`
 
 Deactivates your account after an interactive confirmation prompt. All agent connections and MCP client sessions are immediately blocked. Re-running `constellation agent init` is required to restore access.
+
+### `broker elevate`
+
+```sh
+constellation broker elevate [--broker <url>]
+```
+
+Requests temporary admin access via a browser-approved device code flow (step-up authentication). Opens the approval URL automatically. On success, the current `broker:manage` session is elevated and subsequent admin-required commands succeed. Admin approval is required; the request is denied if the account does not have admin privileges.
+
+### `broker user promote <identifier>`
+
+```sh
+constellation broker user promote <identifier> [--admin-token <token>] [--broker <url>]
+```
+
+Grants admin role to a user. `<identifier>` is the OIDC sub or (in `AUTH_MODE=local`) the username. Requires `BROKER_ADMIN_TOKEN` env var or `--admin-token` flag — this is a bootstrap operation not gated by OAuth.
+
+### `broker user demote <identifier>`
+
+```sh
+constellation broker user demote <identifier> [--admin-token <token>] [--broker <url>]
+```
+
+Revokes admin role from a user. Same auth requirements as `broker user promote`.
+
+### `broker shared-labels list [--agent <id>] [--json]`
+
+Lists all shared labels synced to the broker. Requires an elevated admin session (`broker elevate` first). `--agent` filters to a specific shared agent by ID.
+
+### `broker token create --shared`
+
+```sh
+constellation broker token create --shared
+```
+
+Break-glass operation: creates a shared agent service token without going through the device code flow. Use only when `constellation shared-agent register` is unavailable (e.g. scripted provisioning). Requires an elevated admin session. The token is shown once — store it immediately. Displays a prominent warning before proceeding.
 
 ---
 
@@ -480,9 +590,16 @@ Delete a file or directory. If the target is a directory and `recursive` is abse
 
 All `/api/*` endpoints require a `broker:manage`-scoped Bearer token obtained via `constellation broker login`. Tokens without that scope receive `403 insufficient_scope`.
 
+Admin-only endpoints additionally require the session to be elevated (see `broker elevate`). Requests without admin privileges receive `403 ESCALATION_REQUIRED`.
+
 All error responses follow:
 ```json
 { "error": "<code>", "error_description": "<human-readable>" }
+```
+
+List endpoints support pagination via `limit` (default 100, max 1000) and `offset` (default 0) query parameters and return:
+```json
+{ "data": [...], "total": <n>, "limit": <n>, "offset": <n> }
 ```
 
 ### `GET /api/status`
@@ -496,11 +613,22 @@ Broker health check. No auth required.
 
 ---
 
+### `GET /api/me`
+
+Returns the current session ID and user ID. Used internally by `broker elevate` to identify the session to escalate.
+
+**Response `200`**
+```json
+{ "session_id": "...", "user_id": "..." }
+```
+
+---
+
 ### `GET /api/agents`
 
 List all agents registered to the authenticated user.
 
-**Response `200`** — array:
+**Response `200`** — paginated:
 
 | Field | Type | Description |
 |---|---|---|
@@ -508,6 +636,7 @@ List all agents registered to the authenticated user.
 | `host` | string | Host name |
 | `registered_at` | ISO 8601 | When the agent was first registered |
 | `last_heartbeat_at` | ISO 8601 \| null | Last successful heartbeat pong |
+| `last_disconnect_reason` | string \| null | Reason for last WebSocket disconnect, if any |
 | `online` | boolean | Whether the last heartbeat is within the threshold |
 | `connected` | boolean | Whether a live WebSocket is open right now |
 | `token_id` | string | Current agent token ID |
@@ -534,7 +663,7 @@ List path labels for the authenticated user.
 
 **Query params**: `agent_id` — filter to a specific agent (optional).
 
-**Response `200`** — array:
+**Response `200`** — paginated:
 
 | Field | Type |
 |---|---|
@@ -550,7 +679,7 @@ List path labels for the authenticated user.
 
 List active broker path filters.
 
-**Response `200`** — array:
+**Response `200`** — paginated:
 
 | Field | Type | Description |
 |---|---|---|
@@ -599,7 +728,7 @@ Remove a path filter.
 
 List active MCP client OAuth sessions (non-expired only).
 
-**Response `200`** — array:
+**Response `200`** — paginated:
 
 | Field | Type | Description |
 |---|---|---|
@@ -624,13 +753,24 @@ Revoke an OAuth session. Both access and refresh tokens are invalidated immediat
 
 ---
 
-### `GET /api/users` · `POST /api/users` · `DELETE /api/users/:username` · `POST /api/users/:username/reset-password`
+### `POST /api/tokens/shared`
 
-User management endpoints. Available in `AUTH_MODE=local` only — return `404` in `AUTH_MODE=oidc`.
+Break-glass shared agent token creation. Requires an elevated admin session. Creates a user-less `SHARED` token that a shared agent can use to authenticate. The preferred path is `constellation shared-agent register` — use this endpoint only when the device code flow is unavailable.
 
-**`GET /api/users`** — list all local users.
+**Response `201`**
+```json
+{ "token": "...", "token_id": "...", "created_at": "..." }
+```
 
-Query params: `limit` (default 100, max 1000), `offset` (default 0).
+The token is returned once and not stored. Revoke via `DELETE /api/agents/:id/token`.
+
+---
+
+### `GET /api/users` · `POST /api/users` · `POST /api/users/:username/deactivate` · `POST /api/users/:username/reset-password`
+
+User management endpoints. Available in `AUTH_MODE=local` only — return `404` in `AUTH_MODE=oidc`. All require an elevated admin session.
+
+**`GET /api/users`** — list all local users. Paginated.
 
 **Response `200`**
 ```json
@@ -652,9 +792,60 @@ Query params: `limit` (default 100, max 1000), `offset` (default 0).
 
 **`POST /api/users`** — create a new local user. Body: `{ username, password }`. Password must be at least 12 characters. Returns `409` if the username is already taken.
 
-**`DELETE /api/users/:username`** — deactivate a user. Blocks all future logins. Existing sessions expire normally.
+**`POST /api/users/:username/deactivate`** — deactivate a user. Blocks all future logins and marks the user account as deactivated. Existing sessions expire normally.
 
 **`POST /api/users/:username/reset-password`** — set a new password. Body: `{ password }`. Immediately invalidates all existing OAuth sessions for that user.
+
+---
+
+### `POST /api/admin/users/:identifier/promote`
+
+Grant admin role to a user. `<identifier>` is the OIDC sub or (in `AUTH_MODE=local`) the username. Protected by `BROKER_ADMIN_TOKEN` — not an OAuth-gated route.
+
+| Status | Meaning |
+|---|---|
+| `204` | Role updated |
+| `401` | Invalid or missing admin token |
+| `404` | User not found, or `BROKER_ADMIN_TOKEN` not set |
+
+---
+
+### `POST /api/admin/users/:identifier/demote`
+
+Revoke admin role from a user. Same auth requirements as promote.
+
+| Status | Meaning |
+|---|---|
+| `204` | Role updated |
+| `401` | Invalid or missing admin token |
+| `404` | User not found, or `BROKER_ADMIN_TOKEN` not set |
+
+---
+
+### `GET /api/admin/shared-labels`
+
+List all shared labels synced to the broker. Requires an elevated admin session.
+
+**Query params**: `agent` — filter to a specific shared agent by ID (optional).
+
+**Response `200`**
+```json
+{
+  "data": [
+    {
+      "agent_id": "...",
+      "agent_host": "prod-server",
+      "label": "projects",
+      "reported_path": "/srv/projects",
+      "permission_blob": {
+        "default": "read",
+        "overrides": [{ "oidc_sub": "user|abc", "access": "write" }]
+      },
+      "updated_at": "2026-06-01T10:00:00.000Z"
+    }
+  ]
+}
+```
 
 ---
 
