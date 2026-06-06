@@ -154,7 +154,7 @@ export function attachHub(server: Server): void {
       },
     });
 
-    if (!agentToken || agentToken.revokedAt !== null) {
+    if (!agentToken || agentToken.revokedAt !== null || (agentToken.expiresAt !== null && agentToken.expiresAt < new Date())) {
       socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
       socket.destroy();
       return;
