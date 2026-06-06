@@ -1,4 +1,5 @@
 import { fork, type ChildProcess } from "node:child_process";
+import { userInfo } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { createLogger } from "@constellation/shared";
@@ -58,7 +59,7 @@ interface PoolEntry {
 function checkUidRestrictions(uid: number, cfg: SharedAgentConfig): string | null {
   if (uid === 0) return "UID 0 (root) is always blocked";
 
-  const agentUid = process.getuid!();
+  const agentUid = userInfo().uid;
   if (uid === agentUid) return `UID ${uid} matches the shared agent process UID — subagents cannot run as the agent itself`;
 
   const { allowed_range, blocked_range, blocked_uids } = cfg.subagent_uid;
