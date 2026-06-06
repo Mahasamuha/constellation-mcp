@@ -28,7 +28,7 @@ export function sourceEnvFile(path: string): void {
   try {
     contents = readFileSync(path, "utf8");
   } catch (err) {
-    throw new Error(`Failed to read env_file '${path}': ${(err as Error).message}`);
+    throw new Error(`Failed to read env_file '${path}': ${(err as Error).message}`, { cause: err });
   }
 
   // Warn if file permissions are too broad
@@ -143,9 +143,6 @@ export async function runSharedAgent(configPath: string): Promise<void> {
   let pingInterval: ReturnType<typeof setInterval> | null = null;
   let pingTimeoutTimer: ReturnType<typeof setTimeout> | null = null;
 
-  // Track in-flight RPCs for graceful shutdown
-  let inFlightRpcs = 0;
-
   function clearPingTimers(): void {
     if (pingInterval) { clearInterval(pingInterval); pingInterval = null; }
     if (pingTimeoutTimer) { clearTimeout(pingTimeoutTimer); pingTimeoutTimer = null; }
@@ -240,14 +237,12 @@ export async function runSharedAgent(configPath: string): Promise<void> {
         send({ request_id: msg["request_id"], error: { message: "AGENT_SHUTTING_DOWN — retry after 45 seconds" } });
         return;
       }
-      inFlightRpcs++;
       handleRpc(msg as RpcEnvelope)
         .then((response) => send(response))
         .catch((err) => {
           log.error({ err }, "Unhandled error in RPC handler");
           send({ request_id: msg["request_id"], error: { message: "Internal agent error" } });
-        })
-        .finally(() => { inFlightRpcs--; });
+        });
       return;
     }
 

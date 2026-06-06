@@ -80,6 +80,7 @@ export default function Status() {
   }
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     refresh();
     const id = setInterval(refresh, 5000);
     return () => clearInterval(id);
