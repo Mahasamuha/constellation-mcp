@@ -115,7 +115,16 @@ function fatal(msg: string): never {
 // ---------------------------------------------------------------------------
 
 process.on("message", (rawMsg: unknown) => {
-  if (shuttingDown) return;
+  if (shuttingDown) {
+    // Respond immediately so the parent doesn't wait for a full RPC timeout.
+    if (typeof rawMsg === "object" && rawMsg !== null) {
+      const m = rawMsg as Record<string, unknown>;
+      if (typeof m["request_id"] === "string") {
+        send({ type: "response", request_id: m["request_id"], error: { message: "SUBAGENT_SHUTTING_DOWN" } });
+      }
+    }
+    return;
+  }
 
   if (!isValidMessage(rawMsg)) {
     fatal(`Received invalid message from parent: ${JSON.stringify(rawMsg)}`);

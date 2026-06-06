@@ -8,7 +8,7 @@ import open from "open";
 import { poll } from "./util.js";
 import { loadSharedConfig, validateSharedConfig } from "../shared/config.js";
 import { getpwnam } from "../shared/identity.js";
-import { runSharedAgent } from "../shared/index.js";
+import { runSharedAgent, sourceEnvFile } from "../shared/index.js";
 
 // ---------------------------------------------------------------------------
 // Register all shared-agent commands
@@ -146,7 +146,7 @@ export function registerSharedAgentCommands(program: Command, _getConfigDir: () 
 
       // Check user_map usernames resolve via getent
       for (const entry of cfg.identity.user_map) {
-        const pw = getpwnam(entry.local_username);
+        const pw = await getpwnam(entry.local_username);
         if (!pw) {
           console.error(`Error: user_map entry for oidc_sub '${entry.oidc_sub}' maps to '${entry.local_username}' which does not exist on this system`);
           hasError = true;
@@ -182,7 +182,6 @@ export function registerSharedAgentCommands(program: Command, _getConfigDir: () 
     .command("start")
     .description("Start the shared agent service")
     .requiredOption("--config <path>", "Path to shared agent config file", process.env["CONSTELLATION_SHARED_AGENT_CONFIG"])
-    .option("--foreground", "Run in the foreground (default; for systemd use Type=simple)")
     .action(async (opts: { config: string }) => {
       if (!opts.config) {
         console.error("Error: --config <path> is required (or set CONSTELLATION_SHARED_AGENT_CONFIG)");
@@ -318,14 +317,7 @@ WantedBy=multi-user.target
       // Source env_file to get the current token
       if (cfg.env_file) {
         try {
-          const lines = readFileSync(cfg.env_file, "utf8").split("\n");
-          for (const line of lines) {
-            const eq = line.indexOf("=");
-            if (eq === -1) continue;
-            const key = line.slice(0, eq).trim();
-            const value = line.slice(eq + 1).trim();
-            if (key && !(key in process.env)) process.env[key] = value;
-          }
+          sourceEnvFile(cfg.env_file);
         } catch { /* env_file may not exist */ }
       }
 

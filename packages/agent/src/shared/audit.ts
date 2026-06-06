@@ -17,8 +17,7 @@ export interface AuditEntry {
 export function writeAuditEntry(logPath: string, entry: AuditEntry): void {
   try {
     appendFileSync(logPath, JSON.stringify(entry) + "\n");
-  } catch {
-    // Best-effort: don't crash the agent if the audit log is temporarily unavailable.
-    // The caller should log a warning separately if this is critical.
+  } catch (err) {
+    process.stderr.write(`[audit] Failed to write audit entry to '${logPath}': ${(err as Error).message}\n`);
   }
 }

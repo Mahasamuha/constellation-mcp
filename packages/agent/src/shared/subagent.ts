@@ -102,7 +102,6 @@ export function isDispatchError(v: DispatchResult | DispatchError): v is Dispatc
 
 const workerPath = join(
   dirname(fileURLToPath(import.meta.url)),
-  "shared",
   "subagent-worker.js"
 );
 
@@ -370,8 +369,9 @@ export class SubagentPool {
   async shutdown(drainTimeoutMs = 30_000): Promise<void> {
     this.shuttingDown = true;
 
-    // Immediately terminate idle workers (no in-flight RPCs)
-    for (const [username, entry] of this.pool) {
+    // Immediately terminate idle workers (no in-flight RPCs).
+    // Snapshot first — terminateEntry deletes from the pool during iteration.
+    for (const [username, entry] of [...this.pool]) {
       if (entry.pending.size === 0) {
         this.terminateEntry(username, "shutdown");
       }

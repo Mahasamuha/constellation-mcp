@@ -101,10 +101,6 @@ export function validateSharedConfig(cfg: SharedAgentConfig): ValidationResult {
   const errors: string[] = [];
   const warnings: string[] = [];
 
-  if (!cfg.broker_url) errors.push("broker_url is required");
-  if (!cfg.agent_name) errors.push("agent_name is required");
-  if (!cfg.audit_log) errors.push("audit_log is required");
-
   if (cfg.subagent_rpc_timeout_seconds <= 0) {
     errors.push("subagent_rpc_timeout_seconds must be a positive integer");
   }

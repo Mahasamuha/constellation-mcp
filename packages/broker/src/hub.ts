@@ -293,16 +293,14 @@ async function handleConnection(ws: WebSocket, meta: {
       }).catch((err) => log.error({ err, agentId }, "Failed to update last_heartbeat_at"));
     });
 
-    const MAX_MESSAGE_BYTES = WS_MAX_MESSAGE_BYTES;
-
     ws.on("message", (data) => {
       const byteLength = Buffer.isBuffer(data)
         ? data.length
         : Array.isArray(data)
           ? data.reduce((sum, b) => sum + b.length, 0)
           : data.byteLength;
-      if (byteLength > MAX_MESSAGE_BYTES) {
-        log.warn({ agentId, size: byteLength, limit: MAX_MESSAGE_BYTES }, "Agent message exceeds size limit — terminating");
+      if (byteLength > WS_MAX_MESSAGE_BYTES) {
+        log.warn({ agentId, size: byteLength, limit: WS_MAX_MESSAGE_BYTES }, "Agent message exceeds size limit — terminating");
         conn.disconnectReason = "error";
         ws.terminate();
         return;
@@ -653,8 +651,6 @@ export function getConnection(agentId: string): ConnectedAgent | undefined {
   return connections.get(agentId);
 }
 
-/** Rejects all pending RPCs for a given agent — called on disconnect. */
-/** Removes expired reconnect timestamp entries. Called periodically from index.ts. */
 /** Revokes AgentToken rows that are not referenced by any Agent and were never revoked.
  * These are left behind when the broker restarts mid-rotation. Called once at startup. */
 export async function revokeOrphanedTokens(): Promise<void> {
@@ -667,6 +663,7 @@ export async function revokeOrphanedTokens(): Promise<void> {
   }
 }
 
+/** Removes expired reconnect timestamp entries. Called periodically from index.ts. */
 export function pruneReconnectTimestamps(): void {
   const now = Date.now();
   const window = 60_000;
@@ -677,6 +674,7 @@ export function pruneReconnectTimestamps(): void {
   }
 }
 
+/** Rejects all pending RPCs for a given agent — called on disconnect. */
 export function rejectAgentRpcs(agentId: string): void {
   for (const [requestId, pending] of pendingRpcs) {
     if (pending.agentId === agentId) {

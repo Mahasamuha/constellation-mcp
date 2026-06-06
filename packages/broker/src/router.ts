@@ -158,7 +158,7 @@ function evaluateSharedAccess(blob: PermissionBlob, userOidcSub?: string | null)
     const override = blob.overrides.find((o) => o.oidc_sub === userOidcSub);
     if (override) return override.access;
   }
-  return blob.default ?? "none";
+  return blob.default || "none";
 }
 
 // ---------------------------------------------------------------------------

@@ -5,7 +5,7 @@ import type { AccessLevel, LabelConfig } from "./config.js";
 // ---------------------------------------------------------------------------
 
 export type PermissionResult =
-  | { permitted: true; access: AccessLevel; labelPath: string }
+  | { permitted: true; access: AccessLevel }
   | { permitted: false; reason: string };
 
 // Tools that require write access (all others are read-only)
@@ -59,7 +59,7 @@ export function checkPermission(
     };
   }
 
-  return { permitted: true, access, labelPath: labelConfig.path };
+  return { permitted: true, access };
 }
 
 /**

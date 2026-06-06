@@ -22,7 +22,7 @@ const PING_TIMEOUT_MS = 10_000;
 // Env file sourcing
 // ---------------------------------------------------------------------------
 
-function sourceEnvFile(path: string): void {
+export function sourceEnvFile(path: string): void {
   let contents: string;
   try {
     contents = readFileSync(path, "utf8");
@@ -299,7 +299,7 @@ export async function runSharedAgent(configPath: string): Promise<void> {
     const label = typeof envelope["label"] === "string" ? envelope["label"] : guessLabel(envelope.absolute_root, labelRegistry);
 
     // Resolve OS identity
-    const identity = resolveIdentity(userClaims, userOidcSub, cfg.identity);
+    const identity = await resolveIdentity(userClaims, userOidcSub, cfg.identity);
 
     if (isIdentityError(identity)) {
       log.warn({ request_id, tool, label, error: identity.message }, "Identity resolution failed");
@@ -335,14 +335,12 @@ export async function runSharedAgent(configPath: string): Promise<void> {
       return { request_id, error: { message: permission.reason } };
     }
 
-    // Build the subagent params (everything except broker-routing fields)
-    const params: Record<string, unknown> = { ...envelope };
-    delete params["request_id"];
-    delete params["tool"];
-    delete params["absolute_root"];
-    delete params["user_oidc_sub"];
-    delete params["user_claims"];
-    delete params["label"];
+    // Build tool params from the envelope, excluding all broker-routing fields.
+    // Named exclusion keeps this explicit — new routing fields must be listed here.
+    const ROUTING_FIELDS = new Set(["request_id", "tool", "absolute_root", "user_oidc_sub", "user_claims", "label"]);
+    const params: Record<string, unknown> = Object.fromEntries(
+      Object.entries(envelope).filter(([k]) => !ROUTING_FIELDS.has(k))
+    );
 
     // Dispatch to subagent
     const dispatchResult = await pool.dispatch(identity, tool, label, params, request_id);

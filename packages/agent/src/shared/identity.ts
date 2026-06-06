@@ -1,5 +1,8 @@
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import type { IdentityConfig } from "./config.js";
+
+const execFileAsync = promisify(execFile);
 
 // ---------------------------------------------------------------------------
 // Types
@@ -25,13 +28,14 @@ export function isIdentityError(v: ResolvedIdentity | IdentityResolutionError): 
 // ---------------------------------------------------------------------------
 
 /**
- * Resolves a username to uid/gid via getent passwd.
+ * Resolves a username to uid/gid via getent passwd (NSS-aware; works with LDAP/SSSD).
  * Returns null if the user does not exist on this system.
  */
-export function getpwnam(username: string): { uid: number; gid: number } | null {
+export async function getpwnam(username: string): Promise<{ uid: number; gid: number } | null> {
   if (!username) return null;
   try {
-    const out = execFileSync("getent", ["passwd", username], { encoding: "utf8" }).trim();
+    const { stdout } = await execFileAsync("getent", ["passwd", username]);
+    const out = stdout.trim();
     if (!out) return null;
     const parts = out.split(":");
     if (parts.length < 4) return null;
@@ -57,16 +61,16 @@ export function getpwnam(username: string): { uid: number; gid: number } | null 
  * Returns a typed error if no tier resolves. Never falls through to the
  * agent's own identity.
  */
-export function resolveIdentity(
+export async function resolveIdentity(
   userClaims: Record<string, unknown>,
   userOidcSub: string | null,
   config: IdentityConfig
-): ResolvedIdentity | IdentityResolutionError {
+): Promise<ResolvedIdentity | IdentityResolutionError> {
   // Tier 1: custom OIDC claims in config order
   for (const claimName of config.claims) {
     const claimValue = userClaims[claimName];
     if (typeof claimValue === "string" && claimValue) {
-      const pw = getpwnam(claimValue);
+      const pw = await getpwnam(claimValue);
       if (pw) {
         return { username: claimValue, uid: pw.uid, gid: pw.gid };
       }
@@ -77,11 +81,12 @@ export function resolveIdentity(
   if (userOidcSub) {
     const entry = config.user_map.find((e) => e.oidc_sub === userOidcSub);
     if (entry) {
-      const pw = getpwnam(entry.local_username);
+      const pw = await getpwnam(entry.local_username);
       if (pw) {
         return { username: entry.local_username, uid: pw.uid, gid: pw.gid };
       }
-      // user_map entry found but the mapped username doesn't exist on this OS
+      // user_map entry found but the mapped username doesn't exist on this OS — hard rejection,
+      // no fallthrough to Tier 3. The admin explicitly mapped this sub; ambiguity is worse than failure.
       return {
         kind: "identity_error",
         message: `user_map entry for oidc_sub '${userOidcSub}' maps to '${entry.local_username}' which does not exist on this system`,
@@ -93,7 +98,7 @@ export function resolveIdentity(
   if (config.allow_preferred_username) {
     const preferred = userClaims["preferred_username"];
     if (typeof preferred === "string" && preferred) {
-      const pw = getpwnam(preferred);
+      const pw = await getpwnam(preferred);
       if (pw) {
         return { username: preferred, uid: pw.uid, gid: pw.gid };
       }
