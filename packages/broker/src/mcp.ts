@@ -8,7 +8,6 @@ import { routeToolCall, RouterError } from "./router.js";
 import { isOnline } from "./api.js";
 import { evaluatePermissionBlob } from "@constellation/shared";
 import { lookupOAuthSession } from "./middleware.js";
-import { config } from "./config.js";
 
 const { version } = createRequire(import.meta.url)("../package.json") as { version: string };
 
