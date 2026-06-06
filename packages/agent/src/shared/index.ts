@@ -1,6 +1,7 @@
 import WebSocket from "ws";
 import { checkLabelPath } from "./paths.js";
 import { readFileSync, writeFileSync, statSync } from "node:fs";
+import { userInfo } from "node:os";
 import { createLogger } from "@constellation/shared";
 import { loadSharedConfig, validateSharedConfig, type SharedAgentConfig } from "./config.js";
 import { resolveIdentity, isIdentityError } from "./identity.js";
@@ -81,7 +82,7 @@ export async function runSharedAgent(configPath: string): Promise<void> {
     process.exit(1);
   }
 
-  if (process.getuid!() === 0) {
+  if (userInfo().uid === 0) {
     log.error("Shared agent must not run as root. Use a dedicated low-privilege service user with CAP_SETUID/CAP_SETGID.");
     process.exit(1);
   }
