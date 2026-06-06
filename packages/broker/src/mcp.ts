@@ -273,16 +273,11 @@ function registerListHosts(server: McpServer): void {
 // ---------------------------------------------------------------------------
 
 function registerListLabels(server: McpServer): void {
-  const sharedDiscoveryEnabled = config.listLabelsTool === "enabled";
-  const description = sharedDiscoveryEnabled
-    ? "List path labels — personal labels you own and shared labels you have access to. Shared label access is evaluated optimistically and may be further restricted by the agent."
-    : "List path labels, optionally filtered by host";
-
   server.registerTool(
     "list_labels",
     {
       title: "List Labels",
-      description,
+      description: "List path labels — personal labels you own and shared labels you have access to. Shared label access is evaluated optimistically and may be further restricted by the agent.",
       inputSchema: { host: z.string().optional() },
       outputSchema: { labels: z.array(z.object(LabelEntry)) },
       annotations: { readOnlyHint: true },
@@ -290,10 +285,16 @@ function registerListLabels(server: McpServer): void {
     async ({ host }, extra) => {
       const { userId, userOidcSub } = identity(extra);
 
-      const personalLabels = await prisma.pathLabel.findMany({
-        where: { userId, ...(host ? { agent: { host } } : {}) },
-        include: { agent: { select: { host: true } } },
-      });
+      const [personalLabels, sharedLabels] = await Promise.all([
+        prisma.pathLabel.findMany({
+          where: { userId, ...(host ? { agent: { host } } : {}) },
+          include: { agent: { select: { host: true } } },
+        }),
+        prisma.sharedPathLabel.findMany({
+          where: host ? { agent: { host } } : {},
+          include: { agent: { select: { host: true } } },
+        }),
+      ]);
 
       const labels: Array<{
         label: string;
@@ -309,27 +310,20 @@ function registerListLabels(server: McpServer): void {
         access: "read-write",
       }));
 
-      if (sharedDiscoveryEnabled) {
-        const sharedLabels = await prisma.sharedPathLabel.findMany({
-          where: host ? { agent: { host } } : {},
-          include: { agent: { select: { host: true } } },
+      for (const l of sharedLabels) {
+        const blob = l.permissionBlob as { default: string; overrides?: Array<{ oidc_sub: string; access: string }> };
+        const access = evaluatePermissionBlob(blob, userOidcSub);
+        if (access === "none") continue;
+        labels.push({
+          label: l.label,
+          host: l.agent.host,
+          reported_path: l.reportedPath,
+          modality: "shared",
+          access,
         });
-
-        for (const l of sharedLabels) {
-          const blob = l.permissionBlob as { default: string; overrides?: Array<{ oidc_sub: string; access: string }> };
-          const access = evaluatePermissionBlob(blob, userOidcSub);
-          if (access === "none") continue;
-          labels.push({
-            label: l.label,
-            host: l.agent.host,
-            reported_path: l.reportedPath,
-            modality: "shared",
-            access,
-          });
-        }
-
-        labels.sort((a, b) => a.label.localeCompare(b.label));
       }
+
+      labels.sort((a, b) => a.label.localeCompare(b.label));
 
       return ok({ labels });
     }
