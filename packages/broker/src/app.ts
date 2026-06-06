@@ -117,7 +117,9 @@ app.use("/", setupRouter);
 app.use("/", oauthRouter);
 app.use("/", deviceRouter);
 app.use("/", mcpRouter);
-app.use("/", adminTokenRouter);
+if (process.env["BROKER_ADMIN_TOKEN"]) {
+  app.use("/", adminTokenRouter);
+}
 app.use("/", apiRouter);
 
 // Must be last — 4-argument signature is how Express identifies error handlers.
