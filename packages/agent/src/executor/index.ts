@@ -73,6 +73,8 @@ export class AgentExecutor {
       pathsToValidate.push({ field: "dst_relative_path", relPath: dstRelPath, boundaryRoot: resolvedDstRoot ?? root });
     }
 
+    const resolvedPaths = new Map<string, string>();
+
     for (const { field, relPath: rp, boundaryRoot } of pathsToValidate) {
       const candidate = join(boundaryRoot, rp);
       try {
@@ -81,9 +83,34 @@ export class AgentExecutor {
           log.warn({ tool, field, resolved, boundaryRoot }, "Path traversal attempt rejected");
           return { content: { message: "Path rejected by agent" }, isError: true };
         }
+        resolvedPaths.set(field, resolved);
       } catch (err) {
         log.warn({ tool, field, rp, err }, "safeRealpath failed");
         return { content: { message: "Path rejected by agent" }, isError: true };
+      }
+    }
+
+    // Mutation operations must not target a label root directory itself.
+    // "relative_path" / "src_relative_path" / "dst_relative_path" that resolve
+    // to the root of their respective label are rejected.
+    const MUTATION_ROOT_FIELDS: Record<string, string[]> = {
+      write_file:       ["relative_path"],
+      edit_file:        ["relative_path"],
+      create_directory: ["relative_path"],
+      delete:           ["relative_path"],
+      move:             ["src_relative_path", "dst_relative_path"],
+      copy:             ["dst_relative_path"],
+    };
+    const mutationFields = MUTATION_ROOT_FIELDS[tool];
+    if (mutationFields) {
+      for (const field of mutationFields) {
+        const resolved = resolvedPaths.get(field);
+        if (resolved === undefined) continue;
+        const fieldRoot = field === "dst_relative_path" ? (resolvedDstRoot ?? root) : root;
+        if (resolved === fieldRoot) {
+          log.warn({ tool, field }, "Mutation targeting label root rejected");
+          return { content: { message: "Path rejected by agent" }, isError: true };
+        }
       }
     }
 
