@@ -219,18 +219,51 @@ function registerListHosts(server: McpServer): void {
       annotations: { readOnlyHint: true },
     },
     async (extra) => {
-      const uid = identity(extra).userId;
-      const agents = await prisma.agent.findMany({
-        where: { userId: uid },
-        include: { pathLabels: { select: { label: true } } },
-      });
+      const { userId, userOidcSub } = identity(extra);
 
-      return ok({ hosts: agents.map((a) => ({
-        host: a.host,
-        online: isOnline(a.lastHeartbeatAt),
-        last_seen: a.lastHeartbeatAt?.toISOString() ?? null,
-        labels: a.pathLabels.map((pl) => pl.label),
-      })) });
+      const [personalAgents, sharedLabels] = await Promise.all([
+        prisma.agent.findMany({
+          where: { userId },
+          include: { pathLabels: { select: { label: true } } },
+        }),
+        prisma.sharedPathLabel.findMany({
+          include: { agent: { select: { id: true, host: true, lastHeartbeatAt: true } } },
+        }),
+      ]);
+
+      // Group accessible shared labels by agent
+      const sharedAgentMap = new Map<string, { host: string; lastHeartbeatAt: Date | null; labels: string[] }>();
+      for (const sl of sharedLabels) {
+        const blob = sl.permissionBlob as { default: string; overrides?: Array<{ oidc_sub: string; access: string }> };
+        if (evaluatePermissionBlob(blob, userOidcSub) === "none") continue;
+        const entry = sharedAgentMap.get(sl.agentId);
+        if (entry) {
+          entry.labels.push(sl.label);
+        } else {
+          sharedAgentMap.set(sl.agentId, {
+            host: sl.agent.host,
+            lastHeartbeatAt: sl.agent.lastHeartbeatAt,
+            labels: [sl.label],
+          });
+        }
+      }
+
+      return ok({
+        hosts: [
+          ...personalAgents.map((a) => ({
+            host: a.host,
+            online: isOnline(a.lastHeartbeatAt),
+            last_seen: a.lastHeartbeatAt?.toISOString() ?? null,
+            labels: a.pathLabels.map((pl) => pl.label),
+          })),
+          ...[...sharedAgentMap.values()].map((a) => ({
+            host: a.host,
+            online: isOnline(a.lastHeartbeatAt),
+            last_seen: a.lastHeartbeatAt?.toISOString() ?? null,
+            labels: a.labels,
+          })),
+        ],
+      });
     }
   );
 }
