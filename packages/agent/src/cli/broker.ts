@@ -99,7 +99,7 @@ async function tryRefresh(session: BrokerSession): Promise<BrokerSession | null>
     body: new URLSearchParams({
       grant_type: "refresh_token",
       refresh_token: session.refresh_token,
-      client_id: "broker-manage",
+      client_id: "constellation-cli",
     }),
   });
 

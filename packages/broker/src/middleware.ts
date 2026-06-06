@@ -71,24 +71,3 @@ export async function requireBearerAuth(
   next();
 }
 
-export async function requireBrokerManage(
-  req: Request,
-  res: Response,
-  next: NextFunction
-): Promise<void> {
-  const session = await resolveSession(req, res);
-  if (!session) return;
-
-  const client = await prisma.oauthClient.findUnique({
-    where: { id: session.mcpClientId },
-    select: { grantTypes: true },
-  });
-  if (!client?.grantTypes.includes("broker:manage")) {
-    res.status(403).json({ error: "insufficient_scope", error_description: "broker:manage scope required" });
-    return;
-  }
-
-  (req as AuthenticatedRequest).userId = session.userId;
-  (req as AuthenticatedRequest).sessionId = session.id;
-  next();
-}

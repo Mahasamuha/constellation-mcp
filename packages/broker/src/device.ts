@@ -306,7 +306,7 @@ deviceRouter.post("/activate/confirm", async (req: Request, res: Response) => {
 
 /**
  * Handles the device_code grant type. Issues an agent token (agent:register)
- * or an OAuth session (broker:manage) when the device entry is approved.
+ * or an OAuth session (broker:manage scope) when the device entry is approved.
  */
 export async function handleDeviceCodeGrant(
   body: Record<string, string>,
@@ -393,7 +393,7 @@ export async function handleDeviceCodeGrant(
       host: entry.hostName,
     });
   } else {
-    // broker:manage — issue a standard OAuth session
+    // broker:manage scope — issue a standard OAuth session for the CLI
     const accessToken = generateToken();
     const accessTokenHash = hashToken(accessToken);
     const refreshToken = generateToken();
@@ -405,7 +405,6 @@ export async function handleDeviceCodeGrant(
     const expiresAt = new Date(now.getTime() + accessTtlHours * 3600 * 1000);
     const refreshExpiresAt = new Date(now.getTime() + refreshTtlDays * 86400 * 1000);
 
-    // broker:manage uses a well-known static client id since it's first-party.
     const clientId = await ensureBrokerClient();
 
     await prisma.oauthSession.create({
@@ -419,7 +418,7 @@ export async function handleDeviceCodeGrant(
       },
     });
 
-    log.info({ userId }, "Broker manage session issued via device flow");
+    log.info({ userId }, "CLI session issued via device flow");
 
     res.json({
       access_token: accessToken,
@@ -430,10 +429,10 @@ export async function handleDeviceCodeGrant(
   }
 }
 
-const BROKER_CLIENT_ID = "constellation-broker-manage";
+const BROKER_CLIENT_ID = "constellation-cli";
 let _brokerClientEnsured = false;
 
-/** Returns the id of the static broker-manage OAuth client, creating it if absent. */
+/** Returns the id of the static CLI OAuth client, creating it if absent. */
 async function ensureBrokerClient(): Promise<string> {
   if (!_brokerClientEnsured) {
     await prisma.oauthClient.upsert({
@@ -441,7 +440,7 @@ async function ensureBrokerClient(): Promise<string> {
       create: {
         id: BROKER_CLIENT_ID,
         redirectUris: [],
-        grantTypes: ["broker:manage", "urn:ietf:params:oauth:grant-type:device_code", "refresh_token"],
+        grantTypes: ["urn:ietf:params:oauth:grant-type:device_code", "refresh_token"],
         isDynamic: false,
       },
       update: {},

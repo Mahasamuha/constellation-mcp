@@ -2,7 +2,7 @@ import { createRequire } from "node:module";
 import RE2 from "re2";
 import { Router, Request, Response, IRouter } from "express";
 import { prisma } from "./db.js";
-import { requireBrokerManage, AuthenticatedRequest } from "./middleware.js";
+import { requireBearerAuth, AuthenticatedRequest } from "./middleware.js";
 import { getConnection } from "./hub.js";
 import { createLogger } from "@constellation/shared";
 import { config } from "./config.js";
@@ -20,7 +20,7 @@ function parsePagination(req: Request): { limit: number; offset: number } {
   return { limit, offset };
 }
 
-apiRouter.use(requireBrokerManage);
+apiRouter.use(requireBearerAuth);
 
 const HEARTBEAT_THRESHOLD_MS = config.heartbeat.intervalMs * config.heartbeat.maxMissed;
 
@@ -337,12 +337,6 @@ apiRouter.delete("/api/sessions/:id", async (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 // User management — AUTH_MODE=local only
 // ---------------------------------------------------------------------------
-//
-// Any broker:manage token grants full user-management access (list, create,
-// deactivate, reset password). There is no separate admin role. This is
-// intentional for single-user/small-team deployments where every operator is
-// effectively an admin. A role-based access model would be needed if the broker
-// were to support mixed-trust users with delegated management.
 
 function requireLocalMode(res: Response): boolean {
   if (process.env["AUTH_MODE"] !== "local") {
