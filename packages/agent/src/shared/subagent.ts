@@ -58,6 +58,9 @@ interface PoolEntry {
 function checkUidRestrictions(uid: number, cfg: SharedAgentConfig): string | null {
   if (uid === 0) return "UID 0 (root) is always blocked";
 
+  const agentUid = process.getuid!();
+  if (uid === agentUid) return `UID ${uid} matches the shared agent process UID — subagents cannot run as the agent itself`;
+
   const { allowed_range, blocked_range, blocked_uids } = cfg.subagent_uid;
 
   if (blocked_uids && blocked_uids.includes(uid)) {
