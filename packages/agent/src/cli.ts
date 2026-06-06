@@ -13,7 +13,8 @@ program
   .name("constellation")
   .description("Constellation MCP file broker CLI")
   .version(__PKG_VERSION__)
-  .option("--config <dir>", "Override config directory");
+  .option("--config <dir>", "Override config directory")
+  .enablePositionalOptions();
 
 function getConfigDir(): string {
   return configDir(
