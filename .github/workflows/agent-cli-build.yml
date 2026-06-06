@@ -59,6 +59,20 @@ jobs:
             "--define:__PKG_VERSION__=\"${VERSION}\"" \
             --outfile=cli-bundle.cjs
 
+      # The shared agent forks this worker as a child process at runtime.
+      # It must be a separate JS bundle (pkg cannot fork from within a compiled binary).
+      - name: Bundle shared-agent worker
+        shell: bash
+        run: |
+          mkdir -p shared
+          npx esbuild packages/agent/src/shared/subagent-worker.ts \
+            --bundle \
+            --platform=node \
+            --format=esm \
+            --external:*.node \
+            --alias:@constellation/shared=./packages/shared/src/index.ts \
+            --outfile=shared/subagent-worker.js
+
       - name: Compile to native binary
         run: npx @yao-pkg/pkg cli-bundle.cjs --target ${{ matrix.pkg_target }} --output ${{ matrix.binary }}
 
@@ -68,10 +82,11 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           VERSION=$(node -p "require('./packages/agent/package.json').version")
-          mkdir -p pkg-root/usr/local/bin
+          mkdir -p pkg-root/usr/local/bin/shared
           mkdir -p pkg-root/DEBIAN
           cp constellation pkg-root/usr/local/bin/constellation
           chmod 755 pkg-root/usr/local/bin/constellation
+          cp shared/subagent-worker.js pkg-root/usr/local/bin/shared/subagent-worker.js
           cat > pkg-root/DEBIAN/control <<EOF
           Package: constellation-agent
           Version: ${VERSION}
@@ -95,7 +110,7 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           VERSION=$(node -p "require('./packages/agent/package.json').version")
-          tar -czf "constellation-agent_${VERSION}_macos-arm64.tar.gz" constellation
+          tar -czf "constellation-agent_${VERSION}_macos-arm64.tar.gz" constellation shared/subagent-worker.js
 
       - name: Upload artifact (macOS)
         if: runner.os == 'macOS'
@@ -111,7 +126,7 @@ jobs:
         shell: pwsh
         run: |
           $VERSION = node -p "require('./packages/agent/package.json').version"
-          Compress-Archive -Path constellation.exe -DestinationPath "constellation-agent_${VERSION}_windows-x64.zip"
+          Compress-Archive -Path constellation.exe, shared/subagent-worker.js -DestinationPath "constellation-agent_${VERSION}_windows-x64.zip"
 
       - name: Upload artifact (Windows)
         if: runner.os == 'Windows'
