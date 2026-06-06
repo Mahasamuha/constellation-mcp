@@ -10,6 +10,8 @@ const INITIAL_DELAY_MS = 1_000;
 const BACKOFF_MULTIPLIER = 2;
 const JITTER_FACTOR = 0.2;
 const MAX_DELAY_MS = 60_000;
+const PING_INTERVAL_MS = 30_000;
+const PING_TIMEOUT_MS = 10_000;
 
 export interface ConnectionOptions {
   configDir: string;
@@ -22,6 +24,8 @@ export class AgentConnection {
   private stopped = false;
   private delay = INITIAL_DELAY_MS;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private pingInterval: ReturnType<typeof setInterval> | null = null;
+  private pingTimeoutTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(private readonly opts: ConnectionOptions) {}
 
@@ -33,6 +37,7 @@ export class AgentConnection {
   stop(): void {
     this.stopped = true;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.clearPingTimers();
     this.ws?.close();
     this.ws = null;
   }
@@ -54,6 +59,17 @@ export class AgentConnection {
   /** Sends a rotate_token request. */
   sendRotateToken(): void {
     this.send({ type: "rotate_token" });
+  }
+
+  private clearPingTimers(): void {
+    if (this.pingInterval) {
+      clearInterval(this.pingInterval);
+      this.pingInterval = null;
+    }
+    if (this.pingTimeoutTimer) {
+      clearTimeout(this.pingTimeoutTimer);
+      this.pingTimeoutTimer = null;
+    }
   }
 
   private send(msg: object): void {
@@ -92,6 +108,22 @@ export class AgentConnection {
       log.info("Connected to broker");
       this.delay = INITIAL_DELAY_MS;
       this.sendConfigUpdate();
+
+      this.pingInterval = setInterval(() => {
+        if (ws.readyState !== WebSocket.OPEN) return;
+        ws.ping();
+        this.pingTimeoutTimer = setTimeout(() => {
+          log.warn("Ping timeout — no pong received, terminating connection");
+          ws.terminate();
+        }, PING_TIMEOUT_MS);
+      }, PING_INTERVAL_MS);
+    });
+
+    ws.on("pong", () => {
+      if (this.pingTimeoutTimer) {
+        clearTimeout(this.pingTimeoutTimer);
+        this.pingTimeoutTimer = null;
+      }
     });
 
     ws.on("message", (data: Buffer) => {
@@ -107,6 +139,7 @@ export class AgentConnection {
 
     ws.on("close", (code, reason) => {
       log.info({ code, reason: reason.toString() }, "Disconnected from broker");
+      this.clearPingTimers();
       this.ws = null;
       this.scheduleReconnect();
     });
