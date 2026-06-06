@@ -1,10 +1,11 @@
 import { createRequire } from "node:module";
 import RE2 from "re2";
 import { Router, Request, Response, IRouter } from "express";
+import { AgentTokenType } from "./generated/prisma/client.js";
 import { prisma } from "./db.js";
 import { requireBearerAuth, AuthenticatedRequest } from "./middleware.js";
 import { getConnection } from "./hub.js";
-import { createLogger } from "@constellation/shared";
+import { createLogger, generateToken, hashToken } from "@constellation/shared";
 import { config } from "./config.js";
 import { createLocalUser } from "./local-auth.js";
 
@@ -332,6 +333,29 @@ apiRouter.delete("/api/sessions/:id", async (req: Request, res: Response) => {
 
   log.info({ sessionId, userId: uid }, "OAuth session revoked");
   res.status(204).end();
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/tokens/shared — break-glass shared agent token creation
+// Preferred path is constellation shared-agent register (§2.6, device code flow).
+// TODO: add requireAdmin once §2.5 session elevation is implemented.
+// ---------------------------------------------------------------------------
+
+apiRouter.post("/api/tokens/shared", async (_req: Request, res: Response) => {
+  const token = generateToken();
+  const tokenHash = hashToken(token);
+
+  const agentToken = await prisma.agentToken.create({
+    data: { userId: null, tokenType: AgentTokenType.SHARED, tokenHash },
+    select: { id: true, createdAt: true },
+  });
+
+  log.info({ tokenId: agentToken.id }, "Shared agent token created via break-glass API");
+  res.status(201).json({
+    token,
+    token_id: agentToken.id,
+    created_at: agentToken.createdAt.toISOString(),
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -512,6 +512,52 @@ export function registerBrokerCommands(program: Command, getConfigDir: () => str
       deleteBrokerSession(cfgDir());
       console.log("Account deactivated.");
     });
+
+  // -------------------------------------------------------------------------
+  // token — break-glass token management
+  // -------------------------------------------------------------------------
+
+  const tokenCmd = broker.command("token").description("Manage agent tokens (break-glass operations)");
+
+  tokenCmd
+    .command("create")
+    .description("Create a new agent token")
+    .requiredOption("--shared", "Create a SHARED service token (break-glass — prefer: constellation shared-agent register)")
+    .action(async () => {
+      console.error("╔══════════════════════════════════════════════════════════════════════════╗");
+      console.error("║  BREAK-GLASS OPERATION                                                   ║");
+      console.error("║                                                                          ║");
+      console.error("║  The preferred registration path is:                                     ║");
+      console.error("║    constellation shared-agent register --broker-url <url>               ║");
+      console.error("║  That flow requires no manual token handling and is safer.               ║");
+      console.error("║                                                                          ║");
+      console.error("║  Use this command only when the device code flow is unavailable          ║");
+      console.error("║  (e.g. scripted provisioning or break-glass recovery).                  ║");
+      console.error("║                                                                          ║");
+      console.error("║  The token is shown ONCE. Store it immediately in a secure location.    ║");
+      console.error("║  Treat it as a root-level credential — it is not user-scoped.           ║");
+      console.error("╚══════════════════════════════════════════════════════════════════════════╝");
+      console.error("");
+
+      const ok = await confirm("Proceed with break-glass shared token creation?");
+      if (!ok) { console.log("Cancelled."); return; }
+
+      const session = await getValidSession(cfgDir);
+      const data = await apiPost<{ token: string; token_id: string; created_at: string }>(
+        session, "/api/tokens/shared", {}
+      );
+
+      console.log("");
+      console.log("=== SHARED AGENT TOKEN (shown once) ===");
+      console.log("");
+      console.log(data.token);
+      console.log("");
+      console.log(`Token ID:   ${data.token_id}`);
+      console.log(`Created at: ${data.created_at}`);
+      console.log("");
+      console.log("Store this token as CONSTELLATION_AGENT_TOKEN in the agent's environment.");
+      console.log("It will not be shown again. Revoke via: constellation broker agents revoke <agent-id>");
+    });
 }
 
 // ---------------------------------------------------------------------------
