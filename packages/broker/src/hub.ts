@@ -643,10 +643,10 @@ export function getConnection(agentId: string): ConnectedAgent | undefined {
 }
 
 /** Revokes AgentToken rows that are not referenced by any Agent, were never revoked, and have
- * passed their expiry. These are left behind when the broker restarts mid-rotation. Fresh
+ * passed their expiry. Handles tokens left behind by a broker restart mid-rotation. Fresh
  * rotation tokens (expiresAt in the future) are left intact so the agent can complete rotation.
- * Called once at startup. */
-export async function revokeOrphanedTokens(): Promise<void> {
+ * Called at startup and on the periodic prune interval. */
+export async function pruneExpiredOrphanedTokens(): Promise<void> {
   const result = await prisma.agentToken.updateMany({
     where: { revokedAt: null, agents: { none: {} }, expiresAt: { lt: new Date() } },
     data: { revokedAt: new Date() },
