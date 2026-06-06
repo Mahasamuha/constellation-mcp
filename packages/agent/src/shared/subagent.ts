@@ -322,7 +322,14 @@ export class SubagentPool {
     this.clearIdleTimer(username);
 
     const timeoutSec = this.cfg.subagent_idle_timeout_seconds;
-    if (timeoutSec === 0) return; // pooling disabled
+
+    if (timeoutSec === 0) {
+      // No pooling — terminate immediately when all in-flight RPCs complete
+      if (entry.pending.size === 0) {
+        this.terminateEntry(username, "no-pool mode");
+      }
+      return;
+    }
 
     entry.idleTimer = setTimeout(() => {
       if (entry.pending.size === 0) {

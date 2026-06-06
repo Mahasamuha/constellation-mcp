@@ -29,6 +29,7 @@ vi.mock("./config.js", () => ({
 vi.mock("./db.js", () => ({
   prisma: {
     pathLabel: { findFirst: vi.fn() },
+    sharedPathLabel: { findMany: vi.fn().mockResolvedValue([]) },
     brokerPathFilter: { findMany: vi.fn().mockResolvedValue([]) },
     agent: { findFirst: vi.fn() },
   },
