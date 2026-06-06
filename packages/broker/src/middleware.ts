@@ -7,6 +7,8 @@ export async function lookupOAuthSession(token: string): Promise<{
   expiresAt: Date;
   mcpClientId: string;
   userId: string;
+  oidcSub: string | null;
+  lastKnownClaims: Record<string, unknown> | null;
 } | null> {
   const session = await prisma.oauthSession.findUnique({
     where: { accessTokenHash: hashToken(token) },
@@ -14,7 +16,7 @@ export async function lookupOAuthSession(token: string): Promise<{
       id: true,
       expiresAt: true,
       mcpClientId: true,
-      user: { select: { id: true, deactivatedAt: true } },
+      user: { select: { id: true, deactivatedAt: true, oidcSub: true, lastKnownClaims: true } },
     },
   });
 
@@ -22,7 +24,14 @@ export async function lookupOAuthSession(token: string): Promise<{
   if (session.expiresAt < new Date()) return null;
   if (session.user.deactivatedAt !== null) return null;
 
-  return { id: session.id, expiresAt: session.expiresAt, mcpClientId: session.mcpClientId, userId: session.user.id };
+  return {
+    id: session.id,
+    expiresAt: session.expiresAt,
+    mcpClientId: session.mcpClientId,
+    userId: session.user.id,
+    oidcSub: session.user.oidcSub ?? null,
+    lastKnownClaims: session.user.lastKnownClaims as Record<string, unknown> | null,
+  };
 }
 
 /**
@@ -40,6 +49,8 @@ export function verifyCsrfToken(req: Request, cookieName: string): boolean {
 export interface AuthenticatedRequest extends Request {
   userId: string;
   sessionId: string;
+  userOidcSub: string | null;
+  userClaims: Record<string, unknown>;
 }
 
 async function resolveSession(req: Request, res: Response) {
@@ -68,27 +79,30 @@ export async function requireBearerAuth(
 
   (req as AuthenticatedRequest).userId = session.userId;
   (req as AuthenticatedRequest).sessionId = session.id;
+  (req as AuthenticatedRequest).userOidcSub = session.oidcSub;
+  (req as AuthenticatedRequest).userClaims = session.lastKnownClaims ?? {};
   next();
 }
 
-export async function requireBrokerManage(
+/**
+ * Requires an active admin elevation window on the current session.
+ * Must run after requireBearerAuth. Returns ESCALATION_REQUIRED if the session
+ * is not elevated or the elevation has expired.
+ */
+export async function requireAdmin(
   req: Request,
   res: Response,
   next: NextFunction
 ): Promise<void> {
-  const session = await resolveSession(req, res);
-  if (!session) return;
-
-  const client = await prisma.oauthClient.findUnique({
-    where: { id: session.mcpClientId },
-    select: { grantTypes: true },
+  const sessionId = (req as AuthenticatedRequest).sessionId;
+  const session = await prisma.oauthSession.findUnique({
+    where: { id: sessionId },
+    select: { adminUntil: true },
   });
-  if (!client?.grantTypes.includes("broker:manage")) {
-    res.status(403).json({ error: "insufficient_scope", error_description: "broker:manage scope required" });
+  if (!session?.adminUntil || session.adminUntil < new Date()) {
+    res.status(403).json({ error: "ESCALATION_REQUIRED" });
     return;
   }
-
-  (req as AuthenticatedRequest).userId = session.userId;
-  (req as AuthenticatedRequest).sessionId = session.id;
   next();
 }
+

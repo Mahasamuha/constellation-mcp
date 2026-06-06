@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync, mkdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { homedir, platform } from "node:os";
 import yaml from "js-yaml";
+import type { PathEntry } from "@constellation/shared";
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -73,11 +74,6 @@ export function writeAgentConfig(dir: string, config: Partial<AgentConfig>): voi
 // ---------------------------------------------------------------------------
 // paths.yaml
 // ---------------------------------------------------------------------------
-
-export interface PathEntry {
-  label: string;
-  path: string;
-}
 
 export interface PathsConfig {
   paths: PathEntry[];

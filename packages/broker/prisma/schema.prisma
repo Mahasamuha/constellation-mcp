@@ -7,13 +7,20 @@ datasource db {
   provider = "postgresql"
 }
 
+enum BrokerRole {
+  USER
+  ADMIN
+}
+
 model User {
-  id            String    @id @default(cuid())
-  oidcSub       String?   @map("oidc_sub")
-  oidcIssuer    String?   @map("oidc_issuer")
-  email         String
-  createdAt     DateTime  @default(now()) @map("created_at")
-  deactivatedAt DateTime? @map("deactivated_at")
+  id              String      @id @default(cuid())
+  oidcSub         String?     @map("oidc_sub")
+  oidcIssuer      String?     @map("oidc_issuer")
+  email           String
+  role            BrokerRole  @default(USER)
+  createdAt       DateTime    @default(now()) @map("created_at")
+  deactivatedAt   DateTime?   @map("deactivated_at")
+  lastKnownClaims Json?       @map("last_known_claims")
 
   agents          Agent[]
   agentTokens     AgentToken[]
@@ -40,15 +47,23 @@ model LocalUser {
   @@map("local_users")
 }
 
-model AgentToken {
-  id         String    @id @default(cuid())
-  userId     String    @map("user_id")
-  tokenHash  String    @unique @map("token_hash")
-  createdAt  DateTime  @default(now()) @map("created_at")
-  lastUsedAt DateTime? @map("last_used_at")
-  revokedAt  DateTime? @map("revoked_at")
+enum AgentTokenType {
+  PERSONAL
+  SHARED
+}
 
-  user   User    @relation(fields: [userId], references: [id])
+model AgentToken {
+  id                String         @id @default(cuid())
+  userId            String?        @map("user_id")
+  tokenType         AgentTokenType @default(PERSONAL) @map("token_type")
+  tokenHash         String         @unique @map("token_hash")
+  approvedByUserId  String?        @map("approved_by_user_id")
+  createdAt         DateTime       @default(now()) @map("created_at")
+  lastUsedAt        DateTime?      @map("last_used_at")
+  revokedAt         DateTime?      @map("revoked_at")
+  expiresAt         DateTime?      @map("expires_at")
+
+  user   User?   @relation(fields: [userId], references: [id])
   agents Agent[]
 
   @@map("agent_tokens")
@@ -62,19 +77,22 @@ enum DisconnectReason {
 
 model Agent {
   id                   String            @id @default(cuid())
-  userId               String            @map("user_id")
+  userId               String?           @map("user_id")
   agentTokenId         String            @map("agent_token_id")
   host                 String
   registeredAt         DateTime          @default(now()) @map("registered_at")
   lastHeartbeatAt      DateTime?         @map("last_heartbeat_at")
   lastDisconnectReason DisconnectReason? @map("last_disconnect_reason")
 
-  user          User               @relation(fields: [userId], references: [id])
-  agentToken    AgentToken         @relation(fields: [agentTokenId], references: [id])
-  pathLabels    PathLabel[]
-  brokerFilters BrokerPathFilter[]
+  user             User?              @relation(fields: [userId], references: [id])
+  agentToken       AgentToken         @relation(fields: [agentTokenId], references: [id])
+  pathLabels       PathLabel[]
+  brokerFilters    BrokerPathFilter[]
+  sharedPathLabels SharedPathLabel[]
 
-  @@unique([userId, host])
+  // Partial unique indexes defined in raw migration SQL (Prisma does not support WHERE on @@unique):
+  //   agents_user_id_host_key:   UNIQUE (user_id, host) WHERE user_id IS NOT NULL
+  //   agents_token_id_host_key:  UNIQUE (agent_token_id, host)
   @@map("agents")
 }
 
@@ -134,15 +152,16 @@ model AuthCode {
 }
 
 model DeviceCode {
-  deviceCode    String   @id @map("device_code")
-  userCode      String   @unique @map("user_code")
-  scope         String
-  expiresAt     DateTime @map("expires_at")
-  status        String   @default("pending")
-  userId        String?  @map("user_id")
-  hostName      String?  @map("host_name")
-  pendingUserId String?  @map("pending_user_id")
-  createdAt     DateTime @default(now()) @map("created_at")
+  deviceCode       String   @id @map("device_code")
+  userCode         String   @unique @map("user_code")
+  scope            String
+  expiresAt        DateTime @map("expires_at")
+  status           String   @default("pending")
+  userId           String?  @map("user_id")
+  hostName         String?  @map("host_name")
+  pendingUserId    String?  @map("pending_user_id")
+  elevateSessionId String?  @map("elevate_session_id")
+  createdAt        DateTime @default(now()) @map("created_at")
 
   @@map("device_codes")
 }
@@ -169,9 +188,24 @@ model OauthSession {
   expiresAt             DateTime  @map("expires_at")
   refreshTokenHash      String?   @unique @map("refresh_token_hash")
   refreshTokenExpiresAt DateTime? @map("refresh_token_expires_at")
+  adminUntil            DateTime? @map("admin_until")
 
   user      User        @relation(fields: [userId], references: [id])
   mcpClient OauthClient @relation(fields: [mcpClientId], references: [id])
 
   @@map("oauth_sessions")
+}
+
+model SharedPathLabel {
+  id             String   @id @default(cuid())
+  agentId        String   @map("agent_id")
+  label          String
+  reportedPath   String   @map("reported_path")
+  permissionBlob Json     @map("permission_blob")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  agent Agent @relation(fields: [agentId], references: [id])
+
+  @@unique([agentId, label])
+  @@map("shared_path_labels")
 }

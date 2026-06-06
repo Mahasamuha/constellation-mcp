@@ -2,11 +2,13 @@ import { Router, Request, Response, IRouter } from "express";
 import escHtml from "escape-html";
 import { randomBytes } from "node:crypto";
 import { prisma } from "./db.js";
+import { AgentTokenType, BrokerRole } from "./generated/prisma/client.js";
 import { buildAuthorizationUrl, exchangeCodeAndUpsertUser } from "./oidc.js";
 import { generateToken, hashToken, createLogger, requireEnv } from "@constellation/shared";
 import { checkBruteForce, recordFailure, validateLocalUser } from "./local-auth.js";
 import { verifyCsrfToken } from "./middleware.js";
 import { pageStyle } from "./page-style.js";
+import { config } from "./config.js";
 
 const log = createLogger("device");
 
@@ -16,7 +18,7 @@ export const deviceRouter: IRouter = Router();
 // Device authorization state (in-memory, 15 min TTL)
 // ---------------------------------------------------------------------------
 
-export type DeviceScope = "agent:register" | "broker:manage";
+export type DeviceScope = "agent:register" | "broker:manage" | "agent:escalate" | "agent:register:shared";
 
 /** Removes expired device code rows. Called on new issuance and periodically from index.ts. */
 export async function pruneDeviceCodes(): Promise<void> {
@@ -51,8 +53,28 @@ deviceRouter.post("/oauth/device/code", async (req: Request, res: Response) => {
   const body = req.body as Record<string, string>;
   const scope = body["scope"] as DeviceScope | undefined;
 
-  if (scope !== "agent:register" && scope !== "broker:manage") {
-    res.status(400).json({ error: "invalid_scope", error_description: "scope must be agent:register or broker:manage" });
+  if (scope !== "agent:register" && scope !== "broker:manage" && scope !== "agent:escalate" && scope !== "agent:register:shared") {
+    res.status(400).json({ error: "invalid_scope", error_description: "scope must be agent:register, broker:manage, agent:escalate, or agent:register:shared" });
+    return;
+  }
+
+  // For agent:escalate, the caller must provide the session ID to elevate.
+  const elevateSessionId = scope === "agent:escalate"
+    ? (typeof body["elevate_session_id"] === "string" ? body["elevate_session_id"].trim() : "")
+    : undefined;
+
+  if (scope === "agent:escalate" && !elevateSessionId) {
+    res.status(400).json({ error: "invalid_request", error_description: "elevate_session_id is required for agent:escalate scope" });
+    return;
+  }
+
+  // For agent:register:shared, the agent provides host_name upfront (not entered in browser).
+  const sharedHostName = scope === "agent:register:shared"
+    ? (typeof body["host_name"] === "string" ? body["host_name"].trim() : "")
+    : undefined;
+
+  if (scope === "agent:register:shared" && !sharedHostName) {
+    res.status(400).json({ error: "invalid_request", error_description: "host_name is required for agent:register:shared scope" });
     return;
   }
 
@@ -69,6 +91,8 @@ deviceRouter.post("/oauth/device/code", async (req: Request, res: Response) => {
       userCode: userCodeNormalized,
       scope,
       expiresAt: new Date(Date.now() + expiresIn * 1000),
+      ...(elevateSessionId ? { elevateSessionId } : {}),
+      ...(sharedHostName ? { hostName: sharedHostName } : {}),
     },
   });
 
@@ -165,7 +189,7 @@ deviceRouter.post("/activate/login", async (req: Request, res: Response) => {
     sameSite: "strict",
     maxAge: 15 * 60 * 1000,
   });
-  res.send(consentPage(deviceCode, entry.scope as DeviceScope, undefined, csrfToken));
+  res.send(consentPage(deviceCode, entry.scope as DeviceScope, entry.hostName, undefined, csrfToken));
 });
 
 // ---------------------------------------------------------------------------
@@ -235,7 +259,7 @@ deviceRouter.get("/activate/callback", async (req: Request, res: Response) => {
     sameSite: "strict",
     maxAge: 15 * 60 * 1000,
   });
-  res.send(consentPage(stored.deviceCode, entry.scope as DeviceScope, undefined, csrfToken));
+  res.send(consentPage(stored.deviceCode, entry.scope as DeviceScope, entry.hostName, undefined, csrfToken));
 });
 
 // ---------------------------------------------------------------------------
@@ -287,10 +311,51 @@ deviceRouter.post("/activate/confirm", async (req: Request, res: Response) => {
         sameSite: "strict",
         maxAge: 15 * 60 * 1000,
       });
-      res.send(consentPage(device_code, entry.scope as DeviceScope, errorMsg, freshCsrf));
+      res.send(consentPage(device_code, entry.scope as DeviceScope, entry.hostName, errorMsg, freshCsrf));
       return;
     }
     await prisma.deviceCode.update({ ...byCode(device_code), data: { hostName: resolvedHost, userId: verifiedUserId, status: "approved" } });
+  } else if (entry.scope === "agent:escalate") {
+    // Role check: must be ADMIN — never reveal whether the user lacks the role.
+    const user = await prisma.user.findUnique({
+      where: { id: verifiedUserId },
+      select: { role: true },
+    });
+    if (!user || user.role !== BrokerRole.ADMIN) {
+      res.clearCookie("csrf_activate");
+      // Deny silently — same UX as a normal deny, no oracle about role status.
+      await prisma.deviceCode.update({ ...byCode(device_code), data: { status: "denied" } });
+      res.send(activateDonePage("Access denied. You can close this tab."));
+      return;
+    }
+    // Verify the target session belongs to the approving user before elevating.
+    const targetSession = entry.elevateSessionId
+      ? await prisma.oauthSession.findFirst({
+          where: { id: entry.elevateSessionId, userId: verifiedUserId },
+          select: { id: true },
+        })
+      : null;
+    if (!targetSession) {
+      res.clearCookie("csrf_activate");
+      await prisma.deviceCode.update({ ...byCode(device_code), data: { status: "denied" } });
+      res.send(activateDonePage("Access denied. You can close this tab."));
+      return;
+    }
+    await prisma.deviceCode.update({ ...byCode(device_code), data: { userId: verifiedUserId, status: "approved" } });
+  } else if (entry.scope === "agent:register:shared") {
+    // Role check: ADMIN only — never reveal whether the user lacks the role.
+    const user = await prisma.user.findUnique({
+      where: { id: verifiedUserId },
+      select: { role: true },
+    });
+    if (!user || user.role !== BrokerRole.ADMIN) {
+      res.clearCookie("csrf_activate");
+      await prisma.deviceCode.update({ ...byCode(device_code), data: { status: "denied" } });
+      res.send(activateDonePage("Access denied. You can close this tab."));
+      return;
+    }
+    // Record the approving admin's userId for audit trail.
+    await prisma.deviceCode.update({ ...byCode(device_code), data: { userId: verifiedUserId, status: "approved" } });
   } else {
     await prisma.deviceCode.update({ ...byCode(device_code), data: { userId: verifiedUserId, status: "approved" } });
   }
@@ -306,7 +371,7 @@ deviceRouter.post("/activate/confirm", async (req: Request, res: Response) => {
 
 /**
  * Handles the device_code grant type. Issues an agent token (agent:register)
- * or an OAuth session (broker:manage) when the device entry is approved.
+ * or an OAuth session (broker:manage scope) when the device entry is approved.
  */
 export async function handleDeviceCodeGrant(
   body: Record<string, string>,
@@ -343,12 +408,94 @@ export async function handleDeviceCodeGrant(
     return;
   }
 
-  // Approved — consume the entry.
-  await prisma.deviceCode.delete(byCode(device_code));
+  // Guard before consuming — an approved entry must have a userId set at approval time.
   const userId = entry.userId;
   if (!userId) {
     log.error({ deviceCode: device_code }, "Approved device code missing userId — possible data corruption");
     res.status(500).json({ error: "server_error" });
+    return;
+  }
+
+  // Consume the entry.
+  await prisma.deviceCode.delete(byCode(device_code));
+
+  if (entry.scope === "agent:escalate") {
+    // Set adminUntil on the target session. The target session was verified at
+    // approval time; re-verify here that it still belongs to the same user.
+    const targetSessionId = entry.elevateSessionId;
+    if (!targetSessionId) {
+      log.error({ deviceCode: device_code }, "agent:escalate entry missing elevateSessionId");
+      res.status(500).json({ error: "server_error" });
+      return;
+    }
+    const targetSession = await prisma.oauthSession.findFirst({
+      where: { id: targetSessionId, userId },
+      select: { id: true, expiresAt: true },
+    });
+    if (!targetSession || targetSession.expiresAt < new Date()) {
+      res.status(400).json({ error: "access_denied", error_description: "Target session is no longer valid" });
+      return;
+    }
+    const adminUntil = new Date(Date.now() + config.adminSessionDurationMs);
+    await prisma.oauthSession.update({
+      where: { id: targetSessionId },
+      data: { adminUntil },
+    });
+    log.info({ userId, targetSessionId, adminUntil }, "Session elevated to admin");
+    res.status(204).end();
+    return;
+  }
+
+  if (entry.scope === "agent:register:shared") {
+    const token = generateToken();
+    const tokenHash = hashToken(token);
+
+    await prisma.$transaction(async (tx) => {
+      // Revoke any existing active SHARED token for this host.
+      const existingAgent = await tx.agent.findFirst({
+        where: {
+          userId: null,
+          host: entry.hostName!,
+          agentToken: { tokenType: AgentTokenType.SHARED, revokedAt: null },
+        },
+        select: { agentTokenId: true, id: true },
+      });
+      if (existingAgent) {
+        await tx.agentToken.update({
+          where: { id: existingAgent.agentTokenId },
+          data: { revokedAt: new Date() },
+        });
+      }
+
+      const agentToken = await tx.agentToken.create({
+        data: {
+          userId: null,
+          tokenType: AgentTokenType.SHARED,
+          tokenHash,
+          approvedByUserId: userId,
+        },
+        select: { id: true },
+      });
+
+      if (existingAgent) {
+        await tx.agent.update({
+          where: { id: existingAgent.id },
+          data: { agentTokenId: agentToken.id, lastHeartbeatAt: null, lastDisconnectReason: null },
+        });
+      } else {
+        await tx.agent.create({
+          data: { userId: null, agentTokenId: agentToken.id, host: entry.hostName! },
+        });
+      }
+    });
+
+    log.info({ approvedByUserId: userId, host: entry.hostName }, "Shared agent registered via device flow");
+
+    res.json({
+      access_token: token,
+      token_type: "agent",
+      host: entry.hostName,
+    });
     return;
   }
 
@@ -374,15 +521,23 @@ export async function handleDeviceCodeGrant(
         select: { id: true },
       });
 
-      await tx.agent.upsert({
-        where: { userId_host: { userId, host: entry.hostName! } },
-        create: { userId, agentTokenId: agentToken.id, host: entry.hostName! },
-        update: {
-          agentTokenId: agentToken.id,
-          lastHeartbeatAt: null,
-          lastDisconnectReason: null,
-        },
+      // The userId_host compound unique was replaced by partial unique indexes
+      // (agents_user_id_host_key) which Prisma cannot express natively. Use
+      // findFirst + create/update instead of upsert.
+      const existingAgentForUpsert = await tx.agent.findFirst({
+        where: { userId, host: entry.hostName! },
+        select: { id: true },
       });
+      if (existingAgentForUpsert) {
+        await tx.agent.update({
+          where: { id: existingAgentForUpsert.id },
+          data: { agentTokenId: agentToken.id, lastHeartbeatAt: null, lastDisconnectReason: null },
+        });
+      } else {
+        await tx.agent.create({
+          data: { userId, agentTokenId: agentToken.id, host: entry.hostName! },
+        });
+      }
     });
 
     log.info({ userId, host: entry.hostName }, "Agent registered via device flow");
@@ -393,19 +548,18 @@ export async function handleDeviceCodeGrant(
       host: entry.hostName,
     });
   } else {
-    // broker:manage — issue a standard OAuth session
+    // broker:manage scope — issue a standard OAuth session for the CLI
     const accessToken = generateToken();
     const accessTokenHash = hashToken(accessToken);
     const refreshToken = generateToken();
     const refreshTokenHash = hashToken(refreshToken);
 
-    const accessTtlHours = parseInt(process.env["OAUTH_ACCESS_TOKEN_TTL_HOURS"] ?? "24", 10);
-    const refreshTtlDays = parseInt(process.env["OAUTH_REFRESH_TOKEN_TTL_DAYS"] ?? "30", 10);
+    const accessTtlHours = config.oauthAccessTokenTtlHours;
+    const refreshTtlDays = config.oauthRefreshTokenTtlDays;
     const now = new Date();
     const expiresAt = new Date(now.getTime() + accessTtlHours * 3600 * 1000);
     const refreshExpiresAt = new Date(now.getTime() + refreshTtlDays * 86400 * 1000);
 
-    // broker:manage uses a well-known static client id since it's first-party.
     const clientId = await ensureBrokerClient();
 
     await prisma.oauthSession.create({
@@ -419,7 +573,7 @@ export async function handleDeviceCodeGrant(
       },
     });
 
-    log.info({ userId }, "Broker manage session issued via device flow");
+    log.info({ userId }, "CLI session issued via device flow");
 
     res.json({
       access_token: accessToken,
@@ -430,10 +584,10 @@ export async function handleDeviceCodeGrant(
   }
 }
 
-const BROKER_CLIENT_ID = "constellation-broker-manage";
+const BROKER_CLIENT_ID = "constellation-cli";
 let _brokerClientEnsured = false;
 
-/** Returns the id of the static broker-manage OAuth client, creating it if absent. */
+/** Returns the id of the static CLI OAuth client, creating it if absent. */
 async function ensureBrokerClient(): Promise<string> {
   if (!_brokerClientEnsured) {
     await prisma.oauthClient.upsert({
@@ -441,7 +595,7 @@ async function ensureBrokerClient(): Promise<string> {
       create: {
         id: BROKER_CLIENT_ID,
         redirectUris: [],
-        grantTypes: ["broker:manage", "urn:ietf:params:oauth:grant-type:device_code", "refresh_token"],
+        grantTypes: ["urn:ietf:params:oauth:grant-type:device_code", "refresh_token"],
         isDynamic: false,
       },
       update: {},
@@ -494,12 +648,21 @@ function activateEntryPage(error?: string): string {
 </html>`;
 }
 
-function consentPage(deviceCode: string, scope: DeviceScope, error?: string, csrfToken?: string): string {
+function consentPage(deviceCode: string, scope: DeviceScope, hostName: string | null | undefined, error?: string, csrfToken?: string): string {
   const isAgent = scope === "agent:register";
-  const title = isAgent ? "Register Agent" : "Authorize Management Access";
+  const isEscalate = scope === "agent:escalate";
+  const isSharedAgent = scope === "agent:register:shared";
+  const title = isAgent ? "Register Agent"
+    : isEscalate ? "Authorize Admin Escalation"
+    : isSharedAgent ? "Register Shared Agent"
+    : "Authorize Management Access";
   const description = isAgent
     ? "A <strong>Constellation agent</strong> is requesting access to connect to this broker."
-    : "The <strong>Constellation CLI</strong> is requesting management access to this broker.";
+    : isEscalate
+      ? "The <strong>Constellation CLI</strong> is requesting temporary admin access. This elevates your session for a limited time window."
+      : isSharedAgent
+        ? `A <strong>Constellation shared agent</strong> on host <strong>${escHtml(hostName ?? "unknown")}</strong> is requesting registration. Approving will allow this agent to handle file access requests on behalf of multiple users. <strong>This requires admin privileges.</strong>`
+        : "The <strong>Constellation CLI</strong> is requesting management access to this broker.";
 
   return `<!DOCTYPE html>
 <html lang="en">

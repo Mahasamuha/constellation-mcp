@@ -1,10 +1,11 @@
 import { createRequire } from "node:module";
 import RE2 from "re2";
 import { Router, Request, Response, IRouter } from "express";
+import { AgentTokenType, BrokerRole } from "./generated/prisma/client.js";
 import { prisma } from "./db.js";
-import { requireBrokerManage, AuthenticatedRequest } from "./middleware.js";
+import { requireBearerAuth, requireAdmin, AuthenticatedRequest } from "./middleware.js";
 import { getConnection } from "./hub.js";
-import { createLogger } from "@constellation/shared";
+import { createLogger, generateToken, hashToken, safeEqual } from "@constellation/shared";
 import { config } from "./config.js";
 import { createLocalUser } from "./local-auth.js";
 
@@ -14,17 +15,22 @@ const log = createLogger("api");
 
 export const apiRouter: IRouter = Router();
 
+// Routes protected by BROKER_ADMIN_TOKEN (not OAuth) must be on a separate
+// router so that requireBearerAuth (applied to apiRouter below) does not reject
+// the admin token before the route handler can validate it.
+export const adminTokenRouter: IRouter = Router();
+
 function parsePagination(req: Request): { limit: number; offset: number } {
   const limit = Math.min(Math.max(1, parseInt(String(req.query["limit"] ?? "100"), 10) || 100), 1000);
   const offset = Math.max(0, parseInt(String(req.query["offset"] ?? "0"), 10) || 0);
   return { limit, offset };
 }
 
-apiRouter.use(requireBrokerManage);
+apiRouter.use(requireBearerAuth);
 
 const HEARTBEAT_THRESHOLD_MS = config.heartbeat.intervalMs * config.heartbeat.maxMissed;
 
-function isOnline(lastHeartbeatAt: Date | null): boolean {
+export function isOnline(lastHeartbeatAt: Date | null): boolean {
   if (!lastHeartbeatAt) return false;
   return Date.now() - lastHeartbeatAt.getTime() < HEARTBEAT_THRESHOLD_MS;
 }
@@ -41,6 +47,16 @@ apiRouter.get("/api/status", (_req: Request, res: Response) => {
     uptime_seconds: Math.floor((Date.now() - startedAt.getTime()) / 1000),
     version,
   });
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/me — return current session info (used by CLI to get session_id
+// before initiating an escalation device code flow)
+// ---------------------------------------------------------------------------
+
+apiRouter.get("/api/me", (req: Request, res: Response) => {
+  const ar = req as AuthenticatedRequest;
+  res.json({ session_id: ar.sessionId, user_id: ar.userId });
 });
 
 // ---------------------------------------------------------------------------
@@ -335,14 +351,30 @@ apiRouter.delete("/api/sessions/:id", async (req: Request, res: Response) => {
 });
 
 // ---------------------------------------------------------------------------
+// POST /api/tokens/shared — break-glass shared agent token creation
+// Preferred path is constellation shared-agent register (§2.6, device code flow).
+// ---------------------------------------------------------------------------
+
+apiRouter.post("/api/tokens/shared", requireAdmin, async (_req: Request, res: Response) => {
+  const token = generateToken();
+  const tokenHash = hashToken(token);
+
+  const agentToken = await prisma.agentToken.create({
+    data: { userId: null, tokenType: AgentTokenType.SHARED, tokenHash },
+    select: { id: true, createdAt: true },
+  });
+
+  log.info({ tokenId: agentToken.id }, "Shared agent token created via break-glass API");
+  res.status(201).json({
+    token,
+    token_id: agentToken.id,
+    created_at: agentToken.createdAt.toISOString(),
+  });
+});
+
+// ---------------------------------------------------------------------------
 // User management — AUTH_MODE=local only
 // ---------------------------------------------------------------------------
-//
-// Any broker:manage token grants full user-management access (list, create,
-// deactivate, reset password). There is no separate admin role. This is
-// intentional for single-user/small-team deployments where every operator is
-// effectively an admin. A role-based access model would be needed if the broker
-// were to support mixed-trust users with delegated management.
 
 function requireLocalMode(res: Response): boolean {
   if (process.env["AUTH_MODE"] !== "local") {
@@ -352,7 +384,7 @@ function requireLocalMode(res: Response): boolean {
   return true;
 }
 
-apiRouter.get("/api/users", async (req: Request, res: Response) => {
+apiRouter.get("/api/users", requireAdmin, async (req: Request, res: Response) => {
   if (!requireLocalMode(res)) return;
 
   const { limit, offset } = parsePagination(req);
@@ -380,7 +412,7 @@ apiRouter.get("/api/users", async (req: Request, res: Response) => {
   });
 });
 
-apiRouter.post("/api/users", async (req: Request, res: Response) => {
+apiRouter.post("/api/users", requireAdmin, async (req: Request, res: Response) => {
   if (!requireLocalMode(res)) return;
 
   const body = req.body as Record<string, unknown>;
@@ -417,7 +449,7 @@ apiRouter.post("/api/users", async (req: Request, res: Response) => {
   }
 });
 
-apiRouter.post("/api/users/:username/deactivate", async (req: Request, res: Response) => {
+apiRouter.post("/api/users/:username/deactivate", requireAdmin, async (req: Request, res: Response) => {
   if (!requireLocalMode(res)) return;
 
   const username = req.params["username"] as string;
@@ -441,7 +473,7 @@ apiRouter.post("/api/users/:username/deactivate", async (req: Request, res: Resp
   res.status(204).end();
 });
 
-apiRouter.post("/api/users/:username/reset-password", async (req: Request, res: Response) => {
+apiRouter.post("/api/users/:username/reset-password", requireAdmin, async (req: Request, res: Response) => {
   if (!requireLocalMode(res)) return;
 
   const username = req.params["username"] as string;
@@ -477,6 +509,88 @@ apiRouter.post("/api/users/:username/reset-password", async (req: Request, res: 
 
   log.info({ username }, "Local user password reset");
   res.status(204).end();
+});
+
+// ---------------------------------------------------------------------------
+// Role management (promote/demote) — protected by BROKER_ADMIN_TOKEN env var.
+// For bootstrap before OIDC groups are configured, or in AUTH_MODE=local.
+// Never exposed via an OAuth-gated route — requires the operator's admin token.
+// ---------------------------------------------------------------------------
+
+function requireBrokerAdminToken(req: Request, res: Response): boolean {
+  const adminToken = process.env["BROKER_ADMIN_TOKEN"];
+  if (!adminToken) {
+    res.status(404).json({ error: "not_found" });
+    return false;
+  }
+  const authHeader = req.headers["authorization"];
+  if (!authHeader?.startsWith("Bearer ") || !safeEqual(authHeader.slice(7), adminToken)) {
+    res.status(401).json({ error: "unauthorized" });
+    return false;
+  }
+  return true;
+}
+
+adminTokenRouter.post("/api/admin/users/:identifier/promote", async (req: Request, res: Response) => {
+  if (!requireBrokerAdminToken(req, res)) return;
+  const identifier = req.params["identifier"] as string;
+  const user = await resolveUserByIdentifier(identifier);
+  if (!user) { res.status(404).json({ error: "not_found" }); return; }
+  await prisma.user.update({ where: { id: user.id }, data: { role: BrokerRole.ADMIN } });
+  log.info({ userId: user.id, identifier }, "User promoted to ADMIN via admin token");
+  res.status(204).end();
+});
+
+adminTokenRouter.post("/api/admin/users/:identifier/demote", async (req: Request, res: Response) => {
+  if (!requireBrokerAdminToken(req, res)) return;
+  const identifier = req.params["identifier"] as string;
+  const user = await resolveUserByIdentifier(identifier);
+  if (!user) { res.status(404).json({ error: "not_found" }); return; }
+  await prisma.user.update({ where: { id: user.id }, data: { role: BrokerRole.USER } });
+  log.info({ userId: user.id, identifier }, "User demoted to USER via admin token");
+  res.status(204).end();
+});
+
+/** Resolves a user by oidc_sub or (in AUTH_MODE=local) username. */
+async function resolveUserByIdentifier(identifier: string): Promise<{ id: string } | null> {
+  // Try oidc_sub first (format: "provider|sub" or just the sub string).
+  const byOidcSub = await prisma.user.findFirst({
+    where: { oidcSub: identifier },
+    select: { id: true },
+  });
+  if (byOidcSub) return byOidcSub;
+
+  // Fall back to local username lookup.
+  const byUsername = await prisma.localUser.findUnique({
+    where: { username: identifier },
+    select: { userId: true },
+  });
+  return byUsername ? { id: byUsername.userId } : null;
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/admin/shared-labels — full shared label registry (admin-gated)
+// ---------------------------------------------------------------------------
+
+apiRouter.get("/api/admin/shared-labels", requireAdmin, async (req: Request, res: Response) => {
+  const agentId = typeof req.query["agent"] === "string" ? req.query["agent"] : undefined;
+
+  const labels = await prisma.sharedPathLabel.findMany({
+    where: agentId ? { agentId } : {},
+    include: { agent: { select: { id: true, host: true } } },
+    orderBy: [{ agentId: "asc" }, { label: "asc" }],
+  });
+
+  res.json({
+    data: labels.map((l) => ({
+      agent_id: l.agentId,
+      agent_host: l.agent.host,
+      label: l.label,
+      reported_path: l.reportedPath,
+      permission_blob: l.permissionBlob,
+      updated_at: l.updatedAt.toISOString(),
+    })),
+  });
 });
 
 // ---------------------------------------------------------------------------

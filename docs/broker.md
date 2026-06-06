@@ -28,11 +28,29 @@ Agents connect over WebSocket to `wss://<broker>/agent/connect` using a long-liv
 
 ## Management API
 
-All `/api/*` endpoints require a `broker:manage`-scoped Bearer token (obtained via `constellation broker login`). Tokens without that scope receive `403 insufficient_scope`.
+All `/api/*` endpoints (except `/api/status`) require a valid Bearer token obtained via `constellation broker login` (OAuth device code flow). The token is an OAuth access token tied to a user session — there is no separate API key or scope requirement.
 
-All error responses follow:
+**Admin-gated endpoints** additionally require an active admin elevation window, obtained via `constellation broker elevate`. Without elevation those endpoints return `403 ESCALATION_REQUIRED`.
+
+**Error responses** follow:
 ```json
 { "error": "<code>", "error_description": "<human-readable>" }
+```
+
+Common auth errors:
+
+| Status | `error` | Meaning |
+|---|---|---|
+| `401` | `unauthorized` | Bearer token missing |
+| `401` | `invalid_token` | Token expired or not found |
+| `403` | `ESCALATION_REQUIRED` | Admin endpoint — run `constellation broker elevate` |
+
+### Pagination
+
+All list endpoints support `limit` (1–1000, default 100) and `offset` (default 0) query params. Paginated responses have this envelope:
+
+```json
+{ "data": [...], "total": 42, "limit": 100, "offset": 0 }
 ```
 
 ---
@@ -46,17 +64,28 @@ Broker health check. No auth required.
 {
   "status": "ok",
   "uptime_seconds": 3724,
-  "version": "0.1.0"
+  "version": "0.3.0"
 }
+```
+
+---
+
+### `GET /api/me`
+
+Return current session info.
+
+**Response `200`**
+```json
+{ "session_id": "<id>", "user_id": "<id>" }
 ```
 
 ---
 
 ### `GET /api/agents`
 
-List all agents registered to the authenticated user.
+List all agents registered to the authenticated user. Paginated.
 
-**Response `200`** — array of agent objects:
+**Response `200`** — paginated array of agent objects:
 
 | Field | Type | Description |
 |---|---|---|
@@ -64,6 +93,7 @@ List all agents registered to the authenticated user.
 | `host` | string | Host name assigned at registration |
 | `registered_at` | ISO 8601 | When the agent was first registered |
 | `last_heartbeat_at` | ISO 8601 \| null | Last successful heartbeat pong |
+| `last_disconnect_reason` | string \| null | Reason for last WebSocket close, if any |
 | `online` | boolean | Whether the last heartbeat is within the threshold |
 | `connected` | boolean | Whether a live WebSocket is open right now |
 | `token_id` | string | Current agent token ID |
@@ -90,15 +120,17 @@ Revoke an agent's token. Any active WebSocket for that agent is terminated immed
 
 ### `GET /api/labels`
 
-List path labels for the authenticated user.
+List path labels for the authenticated user. Paginated.
 
 **Query params**
 
 | Param | Description |
 |---|---|
 | `agent_id` | Filter to a specific agent (optional) |
+| `limit` | Max results (default 100, max 1000) |
+| `offset` | Pagination offset (default 0) |
 
-**Response `200`** — array:
+**Response `200`** — paginated array:
 
 | Field | Type |
 |---|---|
@@ -112,9 +144,9 @@ List path labels for the authenticated user.
 
 ### `GET /api/filters`
 
-List active broker path filters for the authenticated user.
+List active broker path filters for the authenticated user. Paginated.
 
-**Response `200`** — array:
+**Response `200`** — paginated array:
 
 | Field | Type | Description |
 |---|---|---|
@@ -167,9 +199,9 @@ Remove a path filter.
 
 ### `GET /api/sessions`
 
-List active MCP client OAuth sessions (non-expired only).
+List active MCP client OAuth sessions (non-expired only). Paginated.
 
-**Response `200`** — array:
+**Response `200`** — paginated array:
 
 | Field | Type | Description |
 |---|---|---|
@@ -196,13 +228,28 @@ Revoke an OAuth session. Both access and refresh tokens are invalidated immediat
 
 ---
 
+### `POST /api/tokens/shared` · Admin
+
+Break-glass: create a shared agent token without going through the device code flow. Prefer `constellation shared-agent register` — it handles token delivery automatically without exposing the raw token.
+
+The token is returned once in the response and cannot be retrieved again.
+
+**Response `201`**
+```json
+{
+  "token": "<raw-token>",
+  "token_id": "<id>",
+  "created_at": "<ISO 8601>"
+}
+```
+
 ---
 
-### `GET /api/users` · `POST /api/users` · `POST /api/users/:username/deactivate` · `POST /api/users/:username/reset-password`
+### `GET /api/users` · `POST /api/users` · `POST /api/users/:username/deactivate` · `POST /api/users/:username/reset-password` · Admin
 
 User management endpoints. Available in `AUTH_MODE=local` only. Return `404` in `AUTH_MODE=oidc`.
 
-**`GET /api/users`** — list all local users.
+**`GET /api/users`** — list all local users. Paginated.
 
 **Query params**: `limit` (default 100, max 1000), `offset` (default 0).
 
@@ -229,6 +276,47 @@ User management endpoints. Available in `AUTH_MODE=local` only. Return `404` in 
 **`POST /api/users/:username/deactivate`** — deactivate a user. Blocks all future logins. Does not revoke existing sessions immediately; those expire normally.
 
 **`POST /api/users/:username/reset-password`** — set a new password. Body: `{ password }`. Immediately invalidates all existing OAuth sessions for that user.
+
+---
+
+### `POST /api/admin/users/:identifier/promote` · `POST /api/admin/users/:identifier/demote` · Admin
+
+Grant or revoke the admin role on a user account. `:identifier` may be either a user ID or username.
+
+Requires `BROKER_ADMIN_TOKEN` env var on the broker, passed as `Authorization: Bearer <BROKER_ADMIN_TOKEN>` (bypasses the normal session auth). CLI wrappers: `constellation broker user promote` / `constellation broker user demote`.
+
+**Responses**
+
+| Status | Meaning |
+|---|---|
+| `200` | Role updated |
+| `404` | User not found |
+
+---
+
+### `GET /api/admin/shared-labels` · Admin
+
+List all shared path labels synced to the broker from shared agents. Paginated by agent.
+
+**Query params**: `agent` — filter by agent ID (optional).
+
+**Response `200`**
+```json
+{
+  "data": [
+    {
+      "agent_id": "<id>",
+      "agent_host": "nas-shared",
+      "label": "projects",
+      "reported_path": "/srv/projects",
+      "permission_blob": { ... },
+      "updated_at": "<ISO 8601>"
+    }
+  ]
+}
+```
+
+CLI wrapper: `constellation broker shared-labels list [--agent <id>] [--json]` (requires `constellation broker elevate`).
 
 ---
 
@@ -285,7 +373,7 @@ PKCE (`S256`) is **required**. The broker rejects `/oauth/authorize` requests th
 
 ### Device Code Flow (agent init + broker login)
 
-Used by `constellation agent init` (scope `agent:register`) and `constellation broker login` (scope `broker:manage`).
+Used by `constellation agent init` (scope `agent:register`), `constellation broker login` (scope `broker:manage`), and `constellation shared-agent register` (scope `agent:register:shared`).
 
 ```mermaid
 sequenceDiagram
@@ -310,6 +398,7 @@ sequenceDiagram
 ```
 
 - `agent:register` — on approval, the broker creates an `Agent` row and an `AgentToken`, then returns `{ access_token, token_type: "agent", host }`.
+- `agent:register:shared` — creates a shared (non-user-bound) `AgentToken`; requires admin approval.
 - `broker:manage` — issues a standard OAuth session tied to a static first-party client.
 
 Device codes expire after 15 minutes. The polling interval is 5 seconds. Responses follow RFC 8628: `authorization_pending`, `access_denied`, `expired_token`.
@@ -391,6 +480,22 @@ If the agent does not reconnect within 5 minutes, the new token is revoked and t
 { "type": "update_host", "host": "new-name" }
 ```
 
+**`shared_label_sync`** — (shared agent only) push the full shared label registry to the broker. Labels not present are removed.
+```json
+{
+  "type": "shared_label_sync",
+  "labels": [
+    {
+      "name": "projects",
+      "reported_path": "/srv/projects",
+      "permission_blob": { ... }
+    }
+  ]
+}
+```
+
+Broker responds with `shared_label_sync_ok` or `shared_label_sync_error`.
+
 ### RPC Protocol
 
 When an MCP client calls a tool, the broker forwards it to the agent as an RPC envelope:
@@ -400,6 +505,19 @@ When an MCP client calls a tool, the broker forwards it to the agent as an RPC e
   "request_id": "<16-byte hex>",
   "tool": "<tool-name>",
   "absolute_root": "/home/user/projects",
+  "<param>": "<value>"
+}
+```
+
+For shared agents the envelope also includes identity fields:
+```json
+{
+  "request_id": "...",
+  "tool": "...",
+  "absolute_root": "...",
+  "label": "projects",
+  "user_oidc_sub": "auth0|abc123",
+  "user_claims": { "constellation_username": "alice" },
   "<param>": "<value>"
 }
 ```

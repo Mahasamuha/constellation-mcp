@@ -22,6 +22,7 @@ vi.mock("./config.js", () => ({
     heartbeat: { intervalMs: 60_000, maxMissed: 3 },
     ws: { maxMessageBytes: 10_485_760 },
     rpcTimeoutMs: 30_000,
+    forwardedClaims: [],
     port: 3000,
   },
 }));
@@ -29,6 +30,7 @@ vi.mock("./config.js", () => ({
 vi.mock("./db.js", () => ({
   prisma: {
     pathLabel: { findFirst: vi.fn() },
+    sharedPathLabel: { findMany: vi.fn().mockResolvedValue([]) },
     brokerPathFilter: { findMany: vi.fn().mockResolvedValue([]) },
     agent: { findFirst: vi.fn() },
   },

@@ -1,22 +1,11 @@
 import { promises as fs } from "node:fs";
-import { join, dirname, basename, sep } from "node:path";
-import { createLogger } from "@constellation/shared";
-import type { AgentConfig, PathEntry } from "./config.js";
-import {
-  listDirectory,
-  fileInfo,
-  findFiles,
-  readFile,
-  grepFiles,
-  writeFile,
-  editFile,
-  copyPath,
-  createDirectory,
-  deletePath,
-  movePath,
-} from "./ops.js";
+import { createLogger, type RpcError, type RpcResponse, type PathEntry } from "@constellation/shared";
+import type { AgentConfig } from "./config.js";
+import { AgentExecutor } from "./executor/index.js";
 
 const log = createLogger("agent:rpc");
+
+export type { RpcError, RpcResponse };
 
 export interface RpcEnvelope {
   request_id: string;
@@ -25,51 +14,32 @@ export interface RpcEnvelope {
   [key: string]: unknown;
 }
 
-export interface RpcError {
-  message: string;
-  code?: string;
-  /** edit_file: 0-based index of the failing edit */
-  edit_index?: number;
-  /** edit_file: how many times old_text matched (0 or >1) */
-  match_count?: number;
-  /** read_file: actual file size in KB */
-  read_size_kb?: number;
-  /** read_file: configured cap in KB */
-  max_file_size_kb?: number;
-  /** copy/move: destination path that already exists */
-  path?: string;
-}
+// Cache the realpath-resolved label registry so we don't re-stat every path
+// on each RPC. Keyed on a JSON fingerprint of the current paths list; invalidated
+// automatically when paths change (e.g. after a config_update).
+let _registryKey = "";
+let _registryCache: Record<string, string> = {};
 
-export interface RpcResponse {
-  request_id: string;
-  result?: object;
-  error?: RpcError;
-}
+async function buildLabelRegistry(paths: PathEntry[]): Promise<Record<string, string>> {
+  const key = JSON.stringify(paths);
+  if (key === _registryKey) return _registryCache;
 
-const KNOWN_CODES = new Set(["FILE_TOO_LARGE", "READ_TOO_LARGE", "EDIT_NO_MATCH", "EDIT_AMBIGUOUS", "DEST_EXISTS"]);
-
-function buildRpcError(e: Error & {
-  code?: string;
-  edit_index?: number;
-  match_count?: number;
-  read_size_kb?: number;
-  max_file_size_kb?: number;
-  path?: string;
-}): RpcError {
-  const err: RpcError = { message: e.message ?? "Internal error" };
-  if (e.code !== undefined)            err.code            = e.code;
-  if (e.edit_index !== undefined)      err.edit_index      = e.edit_index;
-  if (e.match_count !== undefined)     err.match_count     = e.match_count;
-  if (e.read_size_kb !== undefined)    err.read_size_kb    = e.read_size_kb;
-  if (e.max_file_size_kb !== undefined) err.max_file_size_kb = e.max_file_size_kb;
-  if (e.path !== undefined)            err.path            = e.path;
-  return err;
+  const registry: Record<string, string> = {};
+  for (const p of paths) {
+    try {
+      registry[p.label] = await fs.realpath(p.path);
+    } catch {
+      // skip paths that can't be resolved at this moment
+    }
+  }
+  _registryKey = key;
+  _registryCache = registry;
+  return registry;
 }
 
 /**
- * Validates absolute_root against the local paths allowlist, resolves the
- * final path (traversal + symlink check), and dispatches to the appropriate
- * file operation. Returns a structured RPC response.
+ * Validates absolute_root against the local paths allowlist, builds the label
+ * registry, and delegates execution to AgentExecutor.
  */
 export async function handleRpc(
   envelope: RpcEnvelope,
@@ -78,238 +48,24 @@ export async function handleRpc(
 ): Promise<RpcResponse> {
   const { request_id, tool, absolute_root } = envelope;
 
-  // Validate absolute_root against the local allowlist — agent is the security boundary.
   const allowed = paths.find((p) => p.path === absolute_root);
   if (!allowed) {
     log.warn({ tool, absolute_root }, "Path rejected by agent — not in allowlist");
     return { request_id, error: { message: "Path rejected by agent" } };
   }
 
-  // Resolve the root to its real path (follows symlinks, canonicalises).
-  let resolvedRoot: string;
-  try {
-    resolvedRoot = await fs.realpath(absolute_root);
-  } catch {
+  const labelRegistry = await buildLabelRegistry(paths);
+
+  if (labelRegistry[allowed.label] === undefined) {
     log.warn({ tool, absolute_root }, "Path rejected by agent — realpath failed");
     return { request_id, error: { message: "Path rejected by agent" } };
   }
 
-  // For cross-label ops, validate dst_root against the allowlist and resolve it.
-  let resolvedDstRoot: string | undefined;
-  if (typeof envelope["dst_root"] === "string") {
-    const dstRoot = envelope["dst_root"];
-    const dstAllowed = paths.find((p) => p.path === dstRoot);
-    if (!dstAllowed) {
-      log.warn({ tool, dstRoot }, "dst_root rejected by agent — not in allowlist");
-      return { request_id, error: { message: "Path rejected by agent" } };
-    }
-    try {
-      resolvedDstRoot = await fs.realpath(dstRoot);
-    } catch {
-      log.warn({ tool, dstRoot }, "dst_root rejected by agent — realpath failed");
-      return { request_id, error: { message: "Path rejected by agent" } };
-    }
+  const executor = new AgentExecutor(labelRegistry, config.max_file_size_kb);
+  const result = await executor.execute(tool, allowed.label, envelope);
+
+  if (result.isError) {
+    return { request_id, error: result.content as RpcError };
   }
-
-  // Validate all relative-path fields to prevent directory traversal and symlink escapes.
-  const pathsToValidate: Array<{ field: string; relPath: string; boundaryRoot: string }> = [];
-
-  if (typeof envelope["relative_path"] === "string") {
-    pathsToValidate.push({ field: "relative_path", relPath: envelope["relative_path"], boundaryRoot: resolvedRoot });
-  }
-  if (typeof envelope["src_relative_path"] === "string") {
-    pathsToValidate.push({ field: "src_relative_path", relPath: envelope["src_relative_path"], boundaryRoot: resolvedRoot });
-  }
-  if (typeof envelope["dst_relative_path"] === "string") {
-    pathsToValidate.push({ field: "dst_relative_path", relPath: envelope["dst_relative_path"], boundaryRoot: resolvedDstRoot ?? resolvedRoot });
-  }
-
-  for (const { field, relPath, boundaryRoot } of pathsToValidate) {
-    const candidate = join(boundaryRoot, relPath);
-    let resolved: string;
-    try {
-      resolved = await safeRealpath(candidate, boundaryRoot);
-    } catch (err) {
-      log.warn({ tool, boundaryRoot, relPath, field, err }, "Path rejected by agent — safeRealpath failed");
-      return { request_id, error: { message: "Path rejected by agent" } };
-    }
-    if (!resolved.startsWith(boundaryRoot + sep) && resolved !== boundaryRoot) {
-      log.warn({ tool, boundaryRoot, resolved, field }, "Path traversal attempt rejected");
-      return { request_id, error: { message: "Path rejected by agent" } };
-    }
-  }
-
-  try {
-    const result = await dispatch(tool, resolvedRoot, envelope, config);
-    return { request_id, result };
-  } catch (err) {
-    const e = err as Error & {
-      code?: string;
-      edit_index?: number;
-      match_count?: number;
-      read_size_kb?: number;
-      max_file_size_kb?: number;
-      path?: string;
-    };
-    if (!KNOWN_CODES.has(e.code ?? "")) {
-      log.error({ err, tool, request_id }, "RPC operation failed");
-    }
-    return { request_id, error: buildRpcError(e) };
-  }
-}
-
-async function dispatch(
-  tool: string,
-  root: string,
-  env: RpcEnvelope,
-  config: AgentConfig
-): Promise<object> {
-  switch (tool) {
-    case "list_directory":
-      return listDirectory(root, {
-        relative_path: s(env, "relative_path"),
-        recursive: b(env, "recursive"),
-        max_depth: n(env, "max_depth"),
-        limit: n(env, "limit"),
-        exclude: arr(env, "exclude"),
-      });
-
-    case "file_info":
-      return fileInfo(root, req(env, "relative_path"));
-
-    case "find_files":
-      return findFiles(root, {
-        pattern: req(env, "pattern"),
-        relative_path: s(env, "relative_path"),
-        type: (env["type"] as "glob" | "regex" | undefined),
-      });
-
-    case "read_file":
-      return readFile(root, {
-        relative_path: req(env, "relative_path"),
-        start_line: n(env, "start_line"),
-        end_line: n(env, "end_line"),
-        max_file_size_kb: config.max_file_size_kb,
-      });
-
-    case "grep_files":
-      return grepFiles(root, {
-        pattern: req(env, "pattern"),
-        relative_path: s(env, "relative_path"),
-        file_glob: s(env, "file_glob"),
-        type: (env["type"] as "literal" | "regex" | undefined),
-      });
-
-    case "write_file":
-      await writeFile(root, {
-        relative_path: req(env, "relative_path"),
-        content: req(env, "content"),
-        mode: (env["mode"] as "overwrite" | "append" | undefined),
-      });
-      return { ok: true };
-
-    case "edit_file":
-      return editFile(root, {
-        relative_path: req(env, "relative_path"),
-        edits: env["edits"] as Array<{ old_text: string; new_text: string }>,
-        dry_run: b(env, "dry_run"),
-      });
-
-    case "copy": {
-      const dstLabel = s(env, "dst_label");
-      if (dstLabel && !s(env, "dst_root")) {
-        throw new Error("Cross-label copy requires dst_root to be resolved by the broker");
-      }
-      await copyPath(root, {
-        src_relative_path: req(env, "src_relative_path"),
-        dst_relative_path: req(env, "dst_relative_path"),
-        dst_root: dstLabel ? s(env, "dst_root") : undefined,
-      });
-      return { ok: true };
-    }
-
-    case "create_directory":
-      await createDirectory(root, req(env, "relative_path"));
-      return { ok: true };
-
-    case "delete": {
-      const summary = await deletePath(root, {
-        relative_path: req(env, "relative_path"),
-        recursive: b(env, "recursive"),
-      });
-      return summary ?? { ok: true };
-    }
-
-    case "move": {
-      const dstLabel = s(env, "dst_label");
-      if (dstLabel && !s(env, "dst_root")) {
-        throw new Error("Cross-label move requires dst_root to be resolved by the broker");
-      }
-      await movePath(root, {
-        src_relative_path: req(env, "src_relative_path"),
-        dst_relative_path: req(env, "dst_relative_path"),
-        dst_root: dstLabel ? s(env, "dst_root") : undefined,
-      });
-      return { ok: true };
-    }
-
-    default:
-      throw new Error(`Unknown tool: ${tool}`);
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Helpers for extracting typed values from the envelope
-// ---------------------------------------------------------------------------
-
-function s(env: RpcEnvelope, key: string): string | undefined {
-  const v = env[key];
-  return typeof v === "string" ? v : undefined;
-}
-
-function req(env: RpcEnvelope, key: string): string {
-  const v = env[key];
-  if (typeof v !== "string") throw new Error(`Missing required parameter: ${key}`);
-  return v;
-}
-
-function n(env: RpcEnvelope, key: string): number | undefined {
-  const v = env[key];
-  return typeof v === "number" ? v : undefined;
-}
-
-function b(env: RpcEnvelope, key: string): boolean | undefined {
-  const v = env[key];
-  return typeof v === "boolean" ? v : undefined;
-}
-
-function arr(env: RpcEnvelope, key: string): string[] | undefined {
-  const v = env[key];
-  return Array.isArray(v) ? (v as string[]) : undefined;
-}
-
-/**
- * Resolves a path to its real path. For paths that don't exist yet (e.g. write
- * targets), resolves the nearest existing parent and reconstructs the rest.
- */
-async function safeRealpath(path: string, boundaryRoot: string): Promise<string> {
-  try {
-    return await fs.realpath(path);
-  } catch (err) {
-    // Only walk up for ENOENT (path doesn't exist yet). Any other error
-    // (EACCES, ELOOP, runtime error, etc.) should propagate immediately.
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-
-    const parent = dirname(path);
-    if (parent === path) throw new Error("Cannot resolve path", { cause: err });
-
-    // Resolve the parent first, then verify it's still inside the boundary.
-    // Using string startsWith on the unresolved parent is insufficient because
-    // a path like /root/../outside passes the prefix check before resolution.
-    const resolvedParent = await safeRealpath(parent, boundaryRoot);
-    if (!resolvedParent.startsWith(boundaryRoot + sep) && resolvedParent !== boundaryRoot) {
-      throw new Error("Cannot resolve path", { cause: err });
-    }
-    return join(resolvedParent, basename(path));
-  }
+  return { request_id, result: result.content as object };
 }

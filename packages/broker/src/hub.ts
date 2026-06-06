@@ -1,7 +1,8 @@
 import { IncomingMessage, Server } from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
 import { prisma } from "./db.js";
-import { hashToken, generateToken, createLogger } from "@constellation/shared";
+import { AgentTokenType } from "./generated/prisma/client.js";
+import { hashToken, generateToken, createLogger, type RpcError, type RpcResponse } from "@constellation/shared";
 import { config } from "./config.js";
 
 const log = createLogger("hub");
@@ -14,6 +15,8 @@ export interface RpcEnvelope {
   request_id: string;
   tool: string;
   absolute_root: string;
+  user_oidc_sub: string | null;
+  user_claims: Record<string, unknown>;
   [key: string]: unknown;
 }
 
@@ -30,7 +33,8 @@ interface UpdateHostMessage {
 interface ConnectedAgent {
   ws: WebSocket;
   agentId: string;
-  userId: string;
+  userId: string | null;
+  tokenType: AgentTokenType;
   host: string;
   tokenId: string;
   lastPongAt: number;
@@ -150,7 +154,7 @@ export function attachHub(server: Server): void {
       },
     });
 
-    if (!agentToken || agentToken.revokedAt !== null) {
+    if (!agentToken || agentToken.revokedAt !== null || (agentToken.expiresAt !== null && agentToken.expiresAt < new Date())) {
       socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
       socket.destroy();
       return;
@@ -197,6 +201,7 @@ export function attachHub(server: Server): void {
       wss.emit("connection", ws, req, {
         agentId: agent.id,
         userId: agent.userId,
+        tokenType: agentToken.tokenType,
         host: agent.host,
         tokenId: agentToken.id,
         pendingRotation,
@@ -206,7 +211,8 @@ export function attachHub(server: Server): void {
 
   wss.on("connection", (ws: WebSocket, _req: IncomingMessage, meta: {
     agentId: string;
-    userId: string;
+    userId: string | null;
+    tokenType: AgentTokenType;
     host: string;
     tokenId: string;
     pendingRotation?: PendingRotationEntry;
@@ -219,12 +225,13 @@ export function attachHub(server: Server): void {
 
 async function handleConnection(ws: WebSocket, meta: {
   agentId: string;
-  userId: string;
+  userId: string | null;
+  tokenType: AgentTokenType;
   host: string;
   tokenId: string;
   pendingRotation?: PendingRotationEntry;
 }): Promise<void> {
-    const { agentId, userId, host, tokenId, pendingRotation } = meta;
+    const { agentId, userId, tokenType, host, tokenId, pendingRotation } = meta;
 
     // Complete a pending token rotation: atomically update agentTokenId and revoke the old token,
     // then cancel the expiry timer.
@@ -258,6 +265,7 @@ async function handleConnection(ws: WebSocket, meta: {
       ws,
       agentId,
       userId,
+      tokenType,
       host,
       tokenId,
       lastPongAt: Date.now(),
@@ -285,16 +293,14 @@ async function handleConnection(ws: WebSocket, meta: {
       }).catch((err) => log.error({ err, agentId }, "Failed to update last_heartbeat_at"));
     });
 
-    const MAX_MESSAGE_BYTES = WS_MAX_MESSAGE_BYTES;
-
     ws.on("message", (data) => {
       const byteLength = Buffer.isBuffer(data)
         ? data.length
         : Array.isArray(data)
           ? data.reduce((sum, b) => sum + b.length, 0)
           : data.byteLength;
-      if (byteLength > MAX_MESSAGE_BYTES) {
-        log.warn({ agentId, size: byteLength, limit: MAX_MESSAGE_BYTES }, "Agent message exceeds size limit — terminating");
+      if (byteLength > WS_MAX_MESSAGE_BYTES) {
+        log.warn({ agentId, size: byteLength, limit: WS_MAX_MESSAGE_BYTES }, "Agent message exceeds size limit — terminating");
         conn.disconnectReason = "error";
         ws.terminate();
         return;
@@ -359,24 +365,32 @@ async function handleAgentMessage(
     await handleUpdateHost(conn, msg as unknown as UpdateHostMessage);
   } else if (type === "rotate_token") {
     await handleRotateToken(conn);
+  } else if (type === "shared_label_sync") {
+    await handleSharedLabelSync(conn, msg as unknown as SharedLabelSyncMessage);
   } else {
     log.warn({ agentId: conn.agentId, type }, "Unknown control message from agent — dropping");
   }
 }
 
-interface PathEntry {
+interface ConfigUpdateEntry {
   label: string;
   reported_path: string;
 }
 
 async function handleConfigUpdate(conn: ConnectedAgent, msg: ConfigUpdateMessage): Promise<void> {
+  if (conn.tokenType === AgentTokenType.SHARED) {
+    send(conn.ws, { type: "config_update_error", error: "Shared agents use admin-defined labels; config_update is not supported" });
+    return;
+  }
+  // After SHARED guard: userId is guaranteed non-null for PERSONAL connections.
+  const userId = conn.userId!;
   const paths = msg.paths;
   if (!Array.isArray(paths)) {
     send(conn.ws, { type: "config_update_error", error: "paths must be an array" });
     return;
   }
 
-  const entries = paths as PathEntry[];
+  const entries = paths as ConfigUpdateEntry[];
 
   // Validate all labels before writing anything.
   const seen = new Set<string>();
@@ -405,7 +419,7 @@ async function handleConfigUpdate(conn: ConnectedAgent, msg: ConfigUpdateMessage
       for (const entry of entries) {
         const conflict = await tx.pathLabel.findFirst({
           where: {
-            userId: conn.userId,
+            userId,
             label: entry.label,
             NOT: { agentId: conn.agentId },
           },
@@ -415,9 +429,9 @@ async function handleConfigUpdate(conn: ConnectedAgent, msg: ConfigUpdateMessage
 
       for (const entry of entries) {
         await tx.pathLabel.upsert({
-          where: { userId_label: { userId: conn.userId, label: entry.label } },
+          where: { userId_label: { userId, label: entry.label } },
           create: {
-            userId: conn.userId,
+            userId,
             agentId: conn.agentId,
             label: entry.label,
             reportedPath: entry.reported_path,
@@ -451,6 +465,12 @@ async function handleConfigUpdate(conn: ConnectedAgent, msg: ConfigUpdateMessage
 }
 
 async function handleUpdateHost(conn: ConnectedAgent, msg: UpdateHostMessage): Promise<void> {
+  if (conn.tokenType === AgentTokenType.SHARED) {
+    send(conn.ws, { type: "update_host_error", error: "Shared agents use a fixed host (machine ID); update_host is not supported" });
+    return;
+  }
+  // After SHARED guard: userId is guaranteed non-null for PERSONAL connections.
+  const userId = conn.userId!;
   const newHost = typeof msg.host === "string" ? msg.host.trim() : "";
 
   if (!newHost) {
@@ -464,7 +484,7 @@ async function handleUpdateHost(conn: ConnectedAgent, msg: UpdateHostMessage): P
   }
 
   const conflict = await prisma.agent.findFirst({
-    where: { userId: conn.userId, host: newHost, NOT: { id: conn.agentId } },
+    where: { userId, host: newHost, NOT: { id: conn.agentId } },
   });
 
   if (conflict) {
@@ -484,7 +504,12 @@ async function handleRotateToken(conn: ConnectedAgent): Promise<void> {
   const newTokenHash = hashToken(newToken);
 
   const newAgentToken = await prisma.agentToken.create({
-    data: { userId: conn.userId, tokenHash: newTokenHash },
+    data: {
+      userId: conn.userId,
+      tokenType: conn.tokenType,
+      tokenHash: newTokenHash,
+      expiresAt: new Date(Date.now() + ROTATION_TTL_MS),
+    },
     select: { id: true },
   });
 
@@ -519,24 +544,92 @@ async function handleRotateToken(conn: ConnectedAgent): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Shared label sync
+// ---------------------------------------------------------------------------
+
+interface SharedLabelEntry {
+  name: string;
+  reported_path: string;
+  permission_blob: object;
+}
+
+interface SharedLabelSyncMessage {
+  type: "shared_label_sync";
+  labels: unknown;
+}
+
+async function handleSharedLabelSync(conn: ConnectedAgent, msg: SharedLabelSyncMessage): Promise<void> {
+  if (conn.tokenType !== AgentTokenType.SHARED) {
+    send(conn.ws, { type: "shared_label_sync_error", error: "shared_label_sync is only valid for SHARED agent tokens" });
+    return;
+  }
+
+  const rawLabels = msg.labels;
+  if (!Array.isArray(rawLabels)) {
+    send(conn.ws, { type: "shared_label_sync_error", error: "labels must be an array" });
+    return;
+  }
+
+  const labels = rawLabels as SharedLabelEntry[];
+
+  // Validate shape
+  for (const entry of labels) {
+    if (typeof entry.name !== "string" || !entry.name) {
+      send(conn.ws, { type: "shared_label_sync_error", error: "Each label entry must have a name string" });
+      return;
+    }
+    if (typeof entry.reported_path !== "string" || !entry.reported_path) {
+      send(conn.ws, { type: "shared_label_sync_error", error: `Label '${entry.name}': reported_path must be a non-empty string` });
+      return;
+    }
+    if (typeof entry.permission_blob !== "object" || entry.permission_blob === null) {
+      send(conn.ws, { type: "shared_label_sync_error", error: `Label '${entry.name}': permission_blob must be an object` });
+      return;
+    }
+  }
+
+  // Upsert labels and remove stale entries in a transaction
+  try {
+    await prisma.$transaction(async (tx) => {
+      for (const entry of labels) {
+        await tx.sharedPathLabel.upsert({
+          where: { agentId_label: { agentId: conn.agentId, label: entry.name } },
+          create: {
+            agentId: conn.agentId,
+            label: entry.name,
+            reportedPath: entry.reported_path,
+            permissionBlob: entry.permission_blob,
+          },
+          update: {
+            reportedPath: entry.reported_path,
+            permissionBlob: entry.permission_blob,
+          },
+        });
+      }
+
+      const activeLabels = labels.map((e) => e.name);
+      await tx.sharedPathLabel.deleteMany({
+        where: {
+          agentId: conn.agentId,
+          label: { notIn: activeLabels },
+        },
+      });
+    });
+  } catch (err) {
+    log.error({ err, agentId: conn.agentId }, "Failed to sync shared labels");
+    send(conn.ws, { type: "shared_label_sync_error", error: "Internal error during label sync" });
+    return;
+  }
+
+  log.info({ agentId: conn.agentId, count: labels.length }, "Shared labels synced");
+  send(conn.ws, { type: "shared_label_sync_ok" });
+}
+
+// ---------------------------------------------------------------------------
 // RPC dispatch (used by the request router in section 5)
 // ---------------------------------------------------------------------------
 
-export interface RpcError {
-  message: string;
-  code?: string;
-  edit_index?: number;
-  match_count?: number;
-  read_size_kb?: number;
-  max_file_size_kb?: number;
-  path?: string;
-}
-
-interface RpcResponse {
-  request_id: string;
-  result?: object;
-  error?: RpcError;
-}
+export type { RpcError };
 
 const pendingRpcs = new Map<string, {
   resolve: (r: RpcResponse) => void;
@@ -549,13 +642,13 @@ export function getConnection(agentId: string): ConnectedAgent | undefined {
   return connections.get(agentId);
 }
 
-/** Rejects all pending RPCs for a given agent — called on disconnect. */
-/** Removes expired reconnect timestamp entries. Called periodically from index.ts. */
-/** Revokes AgentToken rows that are not referenced by any Agent and were never revoked.
- * These are left behind when the broker restarts mid-rotation. Called once at startup. */
-export async function revokeOrphanedTokens(): Promise<void> {
+/** Revokes AgentToken rows that are not referenced by any Agent, were never revoked, and have
+ * passed their expiry. Handles tokens left behind by a broker restart mid-rotation. Fresh
+ * rotation tokens (expiresAt in the future) are left intact so the agent can complete rotation.
+ * Called at startup and on the periodic prune interval. */
+export async function pruneExpiredOrphanedTokens(): Promise<void> {
   const result = await prisma.agentToken.updateMany({
-    where: { revokedAt: null, agents: { none: {} } },
+    where: { revokedAt: null, agents: { none: {} }, expiresAt: { lt: new Date() } },
     data: { revokedAt: new Date() },
   });
   if (result.count > 0) {
@@ -563,6 +656,7 @@ export async function revokeOrphanedTokens(): Promise<void> {
   }
 }
 
+/** Removes expired reconnect timestamp entries. Called periodically from index.ts. */
 export function pruneReconnectTimestamps(): void {
   const now = Date.now();
   const window = 60_000;
@@ -573,6 +667,7 @@ export function pruneReconnectTimestamps(): void {
   }
 }
 
+/** Rejects all pending RPCs for a given agent — called on disconnect. */
 export function rejectAgentRpcs(agentId: string): void {
   for (const [requestId, pending] of pendingRpcs) {
     if (pending.agentId === agentId) {

@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 import { app } from "./app.js";
-import { attachHub, closeHub, pruneReconnectTimestamps, revokeOrphanedTokens } from "./hub.js";
+import { attachHub, closeHub, pruneReconnectTimestamps, pruneExpiredOrphanedTokens } from "./hub.js";
 import { pruneDeviceCodes } from "./device.js";
 import { pruneAuthCodes } from "./oauth.js";
 import { pruneRateLimits } from "./router.js";
@@ -16,12 +16,13 @@ const server = createServer(app);
 
 attachHub(server);
 
-revokeOrphanedTokens().catch((err) => log.warn({ err }, "revokeOrphanedTokens failed"));
+pruneExpiredOrphanedTokens().catch((err) => log.warn({ err }, "pruneExpiredOrphanedTokens failed"));
 
 // Prune all TTL stores every 5 minutes.
 setInterval(() => {
   pruneDeviceCodes().catch((err) => log.warn({ err }, "pruneDeviceCodes failed"));
   pruneAuthCodes().catch((err) => log.warn({ err }, "pruneAuthCodes failed"));
+  pruneExpiredOrphanedTokens().catch((err) => log.warn({ err }, "pruneExpiredOrphanedTokens failed"));
   pruneRateLimits();
   pruneReconnectTimestamps();
   pruneLoginFailures().catch((err) => log.warn({ err }, "pruneLoginFailures failed"));

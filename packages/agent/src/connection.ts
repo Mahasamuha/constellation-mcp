@@ -1,6 +1,6 @@
 import WebSocket from "ws";
-import { createLogger } from "@constellation/shared";
-import type { AgentConfig, PathEntry } from "./config.js";
+import { createLogger, type PathEntry } from "@constellation/shared";
+import type { AgentConfig } from "./config.js";
 import { writeAgentToken } from "./config.js";
 import { handleRpc, type RpcEnvelope } from "./rpc.js";
 

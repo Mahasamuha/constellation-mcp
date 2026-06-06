@@ -1,9 +1,11 @@
 import { vi, describe, it, expect, beforeEach } from "vitest";
 
-vi.mock("@constellation/shared", () => {
+vi.mock("@constellation/shared", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@constellation/shared")>();
   const noop = () => {};
   const log = { info: noop, warn: noop, error: noop, debug: noop };
   return {
+    ...actual,
     createLogger: () => ({ ...log, child: () => log }),
     hashToken: (t: string) => t,
     generateToken: () => "test-token",
@@ -15,6 +17,7 @@ vi.mock("./db.js", () => ({
     oauthSession: { findUnique: vi.fn() },
     agent: { findMany: vi.fn() },
     pathLabel: { findMany: vi.fn() },
+    sharedPathLabel: { findMany: vi.fn() },
   },
 }));
 

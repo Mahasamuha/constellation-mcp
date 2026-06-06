@@ -1,7 +1,8 @@
 import * as client from "openid-client";
-import { PrismaClient } from "./generated/prisma/client.js";
+import { PrismaClient, Prisma, BrokerRole } from "./generated/prisma/client.js";
 import { createLogger, requireEnv } from "@constellation/shared";
 import { randomBytes } from "node:crypto";
+import { config } from "./config.js";
 
 const log = createLogger("oidc");
 
@@ -102,10 +103,31 @@ export async function exchangeCodeAndUpsertUser(
   const issuer = requireEnv("OIDC_ISSUER");
   const email = typeof claims.email === "string" ? claims.email : "";
 
+  // Store claims for RPC envelope forwarding — strip JWT-internal fields.
+  const claimsToStore = Object.fromEntries(
+    Object.entries(claims as Record<string, unknown>).filter(
+      ([k]) => !["iat", "exp", "nbf", "nonce", "at_hash", "c_hash", "auth_time"].includes(k)
+    )
+  );
+
+  // Derive role from OIDC group claims if admin_groups is configured.
+  // Claim value may be a string array or a space-separated string.
+  const roleUpdate = deriveRoleFromClaims(claimsToStore);
+
   const user = await prisma.user.upsert({
     where: { oidcSub_oidcIssuer: { oidcSub: sub, oidcIssuer: issuer } },
-    create: { oidcSub: sub, oidcIssuer: issuer, email },
-    update: { email },
+    create: {
+      oidcSub: sub,
+      oidcIssuer: issuer,
+      email,
+      lastKnownClaims: claimsToStore as Prisma.InputJsonObject,
+      ...(roleUpdate !== null ? { role: roleUpdate } : {}),
+    },
+    update: {
+      email,
+      lastKnownClaims: claimsToStore as Prisma.InputJsonObject,
+      ...(roleUpdate !== null ? { role: roleUpdate } : {}),
+    },
     select: { id: true, deactivatedAt: true },
   });
 
@@ -115,5 +137,27 @@ export async function exchangeCodeAndUpsertUser(
 
   log.info({ userId: user.id }, "User upserted via OIDC");
   return user.id;
+}
+
+/**
+ * Returns ADMIN if the user belongs to any configured admin_groups, USER if not,
+ * or null if admin_groups is not configured (no role update should be applied).
+ */
+function deriveRoleFromClaims(claims: Record<string, unknown>): BrokerRole | null {
+  if (config.adminGroups.length === 0) return null;
+
+  // Check common group claim names. Value may be an array or space-separated string.
+  for (const claimKey of ["groups", "roles", "cognito:groups"]) {
+    const raw = claims[claimKey];
+    if (!raw) continue;
+    const groups = Array.isArray(raw)
+      ? raw.map(String)
+      : typeof raw === "string"
+        ? raw.split(" ").filter(Boolean)
+        : [];
+    if (groups.some((g) => config.adminGroups.includes(g))) return BrokerRole.ADMIN;
+  }
+
+  return BrokerRole.USER;
 }
 

@@ -4,7 +4,7 @@ import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { prisma } from "./db.js";
 import { dispatchRpc, getConnection, type RpcEnvelope, type RpcError } from "./hub.js";
-import { createLogger } from "@constellation/shared";
+import { createLogger, evaluatePermissionBlob, type PermissionBlob } from "@constellation/shared";
 import { config } from "./config.js";
 
 const log = createLogger("router");
@@ -71,13 +71,16 @@ function checkToolRateLimit(userId: string, tool: string, params: Record<string,
 
 /**
  * Resolves a label (and optional host filter) to an agent and its absolute
- * path root. Returns a RouterError if the label or host isn't found.
+ * path root. Checks personal labels first; falls back to shared labels.
+ * Returns a RouterError if the label or host isn't found.
  */
 export async function resolveLabel(
   userId: string,
   label: string,
-  host?: string
+  host?: string,
+  userOidcSub?: string | null
 ): Promise<RouteResult | RouterError> {
+  // Personal labels (user-scoped)
   const where = host
     ? { userId, label, agent: { host } }
     : { userId, label };
@@ -87,24 +90,67 @@ export async function resolveLabel(
     include: { agent: { select: { id: true, host: true, lastHeartbeatAt: true } } },
   });
 
-  if (!pathLabel) {
-    if (host) {
-      // Check whether the host itself exists to give a more specific error.
-      const hostExists = await prisma.agent.findFirst({ where: { userId, host } });
-      if (!hostExists) {
-        return { code: "host_not_found", message: `No host '${host}' registered on your account` };
-      }
-    }
-    return { code: "label_not_found", message: `No label '${label}' found on your account` };
+  if (pathLabel) {
+    return {
+      agentId: pathLabel.agent.id,
+      absoluteRoot: pathLabel.reportedPath,
+      host: pathLabel.agent.host,
+      lastHeartbeatAt: pathLabel.agent.lastHeartbeatAt,
+    };
   }
 
-  return {
-    agentId: pathLabel.agent.id,
-    absoluteRoot: pathLabel.reportedPath,
-    host: pathLabel.agent.host,
-    lastHeartbeatAt: pathLabel.agent.lastHeartbeatAt,
-  };
+  // Shared labels — optimistic broker-side permission check using synced config
+  const sharedResult = await resolveSharedLabel(label, host, userOidcSub);
+  if (sharedResult) return sharedResult;
+
+  // Give a specific error if the host exists but the label doesn't.
+  // Check both personal agents (userId-scoped) and shared agents (userId: null).
+  if (host) {
+    const hostExists = await prisma.agent.findFirst({
+      where: { host, OR: [{ userId }, { userId: null }] },
+    });
+    if (!hostExists) {
+      return { code: "host_not_found", message: `No host '${host}' found` };
+    }
+  }
+  return { code: "label_not_found", message: `No label '${label}' found` };
 }
+
+/**
+ * Looks up shared labels from the broker's synced registry and evaluates
+ * optimistic access using the permission blob. Returns the route result if
+ * a visible label is found, or null if not.
+ *
+ * This is optimistic: actual enforcement happens at the shared agent.
+ */
+async function resolveSharedLabel(
+  label: string,
+  host?: string,
+  userOidcSub?: string | null
+): Promise<RouteResult | null> {
+  const sharedLabels = await prisma.sharedPathLabel.findMany({
+    where: {
+      label,
+      ...(host ? { agent: { host } } : {}),
+    },
+    include: { agent: { select: { id: true, host: true, lastHeartbeatAt: true } } },
+  });
+
+  for (const sl of sharedLabels) {
+    const access = evaluatePermissionBlob(sl.permissionBlob as unknown as PermissionBlob, userOidcSub);
+    if (access !== "none") {
+      return {
+        agentId: sl.agent.id,
+        absoluteRoot: sl.reportedPath,
+        host: sl.agent.host,
+        lastHeartbeatAt: sl.agent.lastHeartbeatAt,
+      };
+    }
+  }
+
+  return null;
+}
+
 
 // ---------------------------------------------------------------------------
 // Broker path filter evaluation
@@ -183,13 +229,15 @@ export async function routeToolCall(
   tool: string,
   label: string,
   params: ToolParams,
-  host?: string
+  host?: string,
+  userOidcSub?: string | null,
+  userClaims?: Record<string, unknown>
 ): Promise<DispatchResult | RouterError> {
   if (!checkToolRateLimit(userId, tool, params)) {
     return { code: "rate_limited", message: "Rate limit exceeded. Please slow down." };
   }
 
-  const resolved = await resolveLabel(userId, label, host);
+  const resolved = await resolveLabel(userId, label, host, userOidcSub);
   if ("code" in resolved) return resolved;
 
   const { agentId, absoluteRoot, host: agentHost, lastHeartbeatAt } = resolved;
@@ -198,7 +246,7 @@ export async function routeToolCall(
   let effectiveParams = params;
   if ((tool === "copy" || tool === "move") && typeof params["dst_label"] === "string") {
     const dstLabel = params["dst_label"];
-    const dstResolved = await resolveLabel(userId, dstLabel);
+    const dstResolved = await resolveLabel(userId, dstLabel, undefined, userOidcSub);
     if ("code" in dstResolved) return dstResolved;
     if (dstResolved.agentId !== agentId) {
       return {
@@ -240,10 +288,20 @@ export async function routeToolCall(
 
   const requestId = randomBytes(16).toString("hex");
   const timeoutMs = config.rpcTimeoutMs;
+
+  const { forwardedClaims } = config;
+  const allClaims = userClaims ?? {};
+  const filteredClaims = forwardedClaims.length > 0
+    ? Object.fromEntries(Object.entries(allClaims).filter(([k]) => forwardedClaims.includes(k)))
+    : allClaims;
+
   const envelope: RpcEnvelope = {
     request_id: requestId,
     tool,
+    label,
     absolute_root: absoluteRoot,
+    user_oidc_sub: userOidcSub ?? null,
+    user_claims: filteredClaims,
     ...effectiveParams,
   };
 

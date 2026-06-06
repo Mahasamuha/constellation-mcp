@@ -3,6 +3,7 @@ import { Command } from "commander";
 import { configDir } from "./config.js";
 import { registerAgentCommands } from "./cli/agent.js";
 import { registerBrokerCommands } from "./cli/broker.js";
+import { registerSharedAgentCommands } from "./cli/shared-agent.js";
 
 declare const __PKG_VERSION__: string;
 
@@ -12,7 +13,8 @@ program
   .name("constellation")
   .description("Constellation MCP file broker CLI")
   .version(__PKG_VERSION__)
-  .option("--config <dir>", "Override config directory");
+  .option("--config <dir>", "Override config directory")
+  .enablePositionalOptions();
 
 function getConfigDir(): string {
   return configDir(
@@ -23,6 +25,7 @@ function getConfigDir(): string {
 
 registerAgentCommands(program, getConfigDir);
 registerBrokerCommands(program, getConfigDir);
+registerSharedAgentCommands(program, getConfigDir);
 
 program.parseAsync(process.argv).catch((err: Error) => {
   console.error(err.message);
