@@ -12,6 +12,8 @@ export interface ResolvedIdentity {
   username: string;
   uid: number;
   gid: number;
+  /** Home directory from the passwd entry — used to build a clean env for the subagent worker. */
+  home: string;
 }
 
 export interface IdentityResolutionError {
@@ -28,21 +30,48 @@ export function isIdentityError(v: ResolvedIdentity | IdentityResolutionError): 
 // ---------------------------------------------------------------------------
 
 /**
- * Resolves a username to uid/gid via getent passwd (NSS-aware; works with LDAP/SSSD).
+ * Resolves a username to uid/gid/home via getent passwd (NSS-aware; works with LDAP/SSSD).
  * Returns null if the user does not exist on this system.
  */
-export async function getpwnam(username: string): Promise<{ uid: number; gid: number } | null> {
+export async function getpwnam(username: string): Promise<{ uid: number; gid: number; home: string } | null> {
   if (!username) return null;
   try {
     const { stdout } = await execFileAsync("getent", ["passwd", username]);
     const out = stdout.trim();
     if (!out) return null;
+    // passwd format: name:passwd:uid:gid:gecos:home:shell
     const parts = out.split(":");
     if (parts.length < 4) return null;
     const uid = parseInt(parts[2]!, 10);
     const gid = parseInt(parts[3]!, 10);
     if (isNaN(uid) || isNaN(gid)) return null;
-    return { uid, gid };
+    // Some accounts (service users, minimal NSS setups) have an empty homedir
+    // field. Don't fail resolution over it — fall back to "/" the way most
+    // tools do when HOME is unset, rather than rejecting an otherwise-valid user.
+    const home = parts[5] || "/";
+    return { uid, gid, home };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolves the full set of group IDs (primary + supplementary) for a username
+ * via `id -G` (NSS-aware; resolves the same membership that initgroups() will
+ * apply to the subagent worker at privilege-drop time). Returns null if the
+ * lookup fails — callers should treat that as "cannot verify, do not proceed"
+ * rather than "user has no groups".
+ */
+export async function getGroupIds(username: string): Promise<number[] | null> {
+  if (!username) return null;
+  try {
+    const { stdout } = await execFileAsync("id", ["-G", username]);
+    const ids = stdout
+      .trim()
+      .split(/\s+/)
+      .map((s) => parseInt(s, 10))
+      .filter((n) => !isNaN(n));
+    return ids.length > 0 ? ids : null;
   } catch {
     return null;
   }
@@ -72,7 +101,7 @@ export async function resolveIdentity(
     if (typeof claimValue === "string" && claimValue) {
       const pw = await getpwnam(claimValue);
       if (pw) {
-        return { username: claimValue, uid: pw.uid, gid: pw.gid };
+        return { username: claimValue, uid: pw.uid, gid: pw.gid, home: pw.home };
       }
     }
   }
@@ -83,7 +112,7 @@ export async function resolveIdentity(
     if (entry) {
       const pw = await getpwnam(entry.local_username);
       if (pw) {
-        return { username: entry.local_username, uid: pw.uid, gid: pw.gid };
+        return { username: entry.local_username, uid: pw.uid, gid: pw.gid, home: pw.home };
       }
       // user_map entry found but the mapped username doesn't exist on this OS — hard rejection,
       // no fallthrough to Tier 3. The admin explicitly mapped this sub; ambiguity is worse than failure.
@@ -100,7 +129,7 @@ export async function resolveIdentity(
     if (typeof preferred === "string" && preferred) {
       const pw = await getpwnam(preferred);
       if (pw) {
-        return { username: preferred, uid: pw.uid, gid: pw.gid };
+        return { username: preferred, uid: pw.uid, gid: pw.gid, home: pw.home };
       }
     }
   }

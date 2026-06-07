@@ -41,6 +41,7 @@ The shared agent resolves the requesting user's local OS username using a priori
 - The service-level token is a root-level credential — it is not user-scoped.
 - The token is never stored in the config file. It is read from `CONSTELLATION_AGENT_TOKEN` at startup, optionally sourced from an env file (`env_file` in config).
 - The env file should be `0600`, owned by the service user. The agent warns on startup if permissions are too broad.
+- **Subagent workers never inherit the parent's environment.** `CONSTELLATION_AGENT_TOKEN` (and anything else read from `env_file`) lives in the shared agent's `process.env`, but each tool call is dispatched to a forked worker that immediately `setuid()`s to the requesting user — a possibly low-trust local account that could read its own `/proc/<pid>/environ`. Spreading `process.env` into that fork would hand the broker token (and any other secret) to that user. Instead, `buildWorkerEnv()` in `packages/agent/src/shared/subagent.ts` constructs an explicit allowlisted environment (`CONSTELLATION_TARGET_*`, `HOME`/`USER`/`LOGNAME` for the *target* user, `PATH`, `LOG_LEVEL`). **If you find a variable isn't propagating to the subagent worker, this is why — add it explicitly to `buildWorkerEnv`, do not change it back to `...process.env`.** See ADR 0014.
 
 ### Sub-path access control
 
@@ -54,6 +55,54 @@ The agent refuses to spawn subagents as:
 - UIDs outside `subagent_uid.allowed_range` (if configured)
 - UIDs within `subagent_uid.blocked_range` (if configured)
 - UIDs in `subagent_uid.blocked_uids` (if configured)
+
+See the config reference in §5 for details.
+
+### GID restrictions
+
+UID checks gate on a single value, but a subagent's *effective* privileges
+depend on its **entire group membership** — primary group plus every
+supplementary group the OS resolves for that account via `initgroups()` at
+privilege-drop time (see `subagent-worker.ts`). A user with an unremarkable
+primary GID could still be a secondary member of `docker`, `sudo`, or any
+group that owns files outside the labels you've configured — none of which the
+UID allow/block lists would ever see.
+
+Because group membership is multi-valued, there's no equivalent of
+`allowed_range` / a single "blocked GID" that can be trimmed away — the agent
+either spawns the subagent with the user's full, OS-resolved group list (the
+only option `initgroups()` supports; see ADR 0014) or it doesn't spawn at all.
+So **before every dispatch** (not just at first spawn — group membership is
+re-resolved on each call so admin changes take effect without restarting the
+agent or waiting for a pooled worker to be torn down), the agent resolves the
+target user's complete group list and refuses to proceed if *any* member is on
+the blocked set:
+
+- GID 0 (`root`'s group) — always blocked, not configurable
+- The shared agent's own primary GID — always blocked
+- GIDs in `subagent_gid.blocked_gids` (if configured)
+
+If the lookup itself fails (the agent can't enumerate the user's groups), the
+agent fails closed and refuses to spawn rather than risk running with
+unverified membership.
+
+**What gets logged vs. what gets returned.** When a spawn is blocked for GID
+reasons, the agent logs the *full* list of blocked GIDs that triggered the
+rejection — tagged with `request_id`, `username`, and `uid` — so an
+administrator has a concrete starting point to investigate (check the user's
+group memberships with `id <username>` and cross-reference against
+`subagent_gid.blocked_gids`, `root`, and the agent's own group). The error
+returned to the *caller*, however, intentionally says only that *some* group is
+blocked and never names which one(s) — naming them would let a user enumerate
+group membership of accounts they don't otherwise have visibility into. The
+caller-facing message does include the same `request_id` as a correlation
+token, so the user can hand it to an admin who can then grep the agent log /
+audit log for the matching entry and see exactly what was blocked:
+
+```
+Access denied: one or more of your OS groups are blocked by the shared agent
+administrator. Contact your administrator with reference ID: <request_id>
+```
 
 See the config reference in §5 for details.
 
@@ -178,6 +227,14 @@ subagent_uid:
     min: 60000                             # Block UIDs in this range even if in allowed_range
     max: 65534
   blocked_uids: [999]                      # Block specific UIDs
+
+subagent_gid:
+  blocked_gids: [27, 999]                  # Block subagents whose user belongs to ANY of these
+                                           # groups (e.g. 27 = `sudo` on Debian/Ubuntu). Membership
+                                           # is resolved via the full OS group list (primary +
+                                           # supplementary), not just the user's primary GID.
+                                           # GID 0 (root) and the agent's own GID are always
+                                           # blocked, regardless of this list.
 
 labels:
   - name: projects

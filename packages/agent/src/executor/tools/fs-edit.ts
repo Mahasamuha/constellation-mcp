@@ -1,5 +1,4 @@
 import { promises as fs } from "node:fs";
-import { join } from "node:path";
 import { createPatch } from "diff";
 
 // ---------------------------------------------------------------------------
@@ -12,7 +11,6 @@ export interface Edit {
 }
 
 export interface EditFileParams {
-  relative_path: string;
   edits: Edit[];
   dry_run?: boolean;
 }
@@ -21,9 +19,13 @@ export interface EditFileResult {
   diff: string;
 }
 
-export async function editFile(root: string, params: EditFileParams): Promise<EditFileResult> {
-  const full = join(root, params.relative_path);
-  const original = await fs.readFile(full, "utf8");
+/**
+ * `displayPath` is the client-supplied relative path — used only as the diff's
+ * filename label, never the resolved absolute path, which would leak the
+ * agent's filesystem layout.
+ */
+export async function editFile(absolutePath: string, displayPath: string, params: EditFileParams): Promise<EditFileResult> {
+  const original = await fs.readFile(absolutePath, "utf8");
   let content = original;
 
   for (let i = 0; i < params.edits.length; i++) {
@@ -44,10 +46,10 @@ export async function editFile(root: string, params: EditFileParams): Promise<Ed
     content = content.replace(edit.old_text, () => edit.new_text);
   }
 
-  const diff = createPatch(params.relative_path, original, content);
+  const diff = createPatch(displayPath, original, content);
 
   if (!params.dry_run) {
-    await fs.writeFile(full, content, "utf8");
+    await fs.writeFile(absolutePath, content, "utf8");
   }
 
   return { diff };

@@ -2,6 +2,9 @@ import { parseEnvInt } from "@constellation/shared";
 
 export const config = {
   port: parseEnvInt("PORT", 3000),
+  // "local" enables username/password auth with a built-in setup flow; anything
+  // else (including unset) runs in OIDC mode against an upstream provider.
+  authMode: (process.env["AUTH_MODE"] === "local" ? "local" : "oidc") as "local" | "oidc",
   // Comma-separated list of OIDC claim names to forward in RPC envelopes.
   // Empty = forward all claims from last known session.
   forwardedClaims: process.env["FORWARDED_CLAIMS"]
@@ -31,4 +34,15 @@ export const config = {
   rpcTimeoutMs: parseEnvInt("RPC_TIMEOUT_MS", 30_000),
   oauthAccessTokenTtlHours: parseEnvInt("OAUTH_ACCESS_TOKEN_TTL_HOURS", 24),
   oauthRefreshTokenTtlDays: parseEnvInt("OAUTH_REFRESH_TOKEN_TTL_DAYS", 30),
+  // How long a dynamically registered OAuth client may sit unactivated (no completed auth flow)
+  // before it's pruned. Mitigates unbounded growth from the unauthenticated /oauth/register endpoint.
+  oauthDynamicClientTtlHours: parseEnvInt("OAUTH_DYNAMIC_CLIENT_TTL_HOURS", 24),
+  activityLog: {
+    maxEntriesPerUser: parseEnvInt("ACTIVITY_LOG_MAX_ENTRIES", 1000),
+    sinks: {
+      postgres: process.env["ACTIVITY_SINK_POSTGRES"] !== "false",
+      stdout: process.env["ACTIVITY_SINK_STDOUT"] === "true",
+      webhookUrl: process.env["ACTIVITY_SINK_WEBHOOK_URL"] ?? null,
+    },
+  },
 };

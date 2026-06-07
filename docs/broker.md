@@ -8,21 +8,36 @@ The broker is a stateful HTTP/WebSocket server that sits between MCP clients and
 
 ```mermaid
 flowchart TD
-    Client["MCP client\n(Claude, Cursor, Copilot)"]
+    Client["MCP client\n(Claude, ChatGPT, Cursor)"]
     Auth["auth middleware\nresolves Bearer token to userId"]
     Tool["MCP tool call"]
     Router["router\nrate check → label resolution → filter check → liveness check"]
-    Agent["Agent"]
+    Personal["Personal agent\nuser-owned label · runs as the user"]
+    Shared["Shared agent\nadmin-defined label · optimistic permission check\nresolves OS identity · spawns per-user subagent"]
+    RouterR["router′\nsame call — awaiting dispatchRpc"]
+    ClientR["MCP client′\nreceives tool response"]
 
     Client -->|"HTTPS + OAuth Bearer · POST /mcp"| Auth
     Auth --> Tool
     Tool --> Router
-    Router -->|"dispatchRpc · WebSocket frame"| Agent
-    Agent -.->|"RPC response (or timeout)"| Router
-    Router -.->|"MCP tool response"| Client
+    Router -->|"dispatchRpc · { tool, absolute_root, ...params }"| Personal
+    Router -->|"dispatchRpc · { tool, absolute_root, label, user_oidc_sub, user_claims, ...params }"| Shared
+    Personal -->|"RPC response (or timeout)"| RouterR
+    Shared -->|"RPC response (or timeout)"| RouterR
+    RouterR -->|"MCP tool response"| ClientR
+
+    classDef replicated stroke-dasharray: 5 5
+    class RouterR,ClientR replicated
 ```
 
-Agents connect over WebSocket to `wss://<broker>/agent/connect` using a long-lived bearer token. The broker keeps one connection per agent in memory and heartbeats it with WebSocket pings.
+Agents connect over WebSocket to `wss://<broker>/agent/connect` using a long-lived bearer token. The broker keeps one connection per agent in memory (see [`registry.ts`](../packages/broker/src/registry.ts)) and heartbeats it with WebSocket pings.
+
+Agents come in two modalities, distinguished by `AgentTokenType`:
+
+- **Personal** — bound to one user; runs under the user's own OS identity. Labels are user-managed, synced via `config_update`, and stored as `PathLabel` rows.
+- **Shared** — service-level, not bound to any user; runs on machines shared by multiple people (NAS, dev server). Labels are admin-defined in the agent's config, synced via `shared_label_sync`, and stored as `SharedPathLabel` rows alongside a per-label `permission_blob`. The broker performs an *optimistic* permission check against that blob during label resolution — final enforcement (OS identity resolution, label access, sub-path permissions) happens authoritatively at the shared agent. See [Shared Agent](shared-agent.md) for the full request flow, identity resolution chain, and permission model.
+
+Because the broker cannot resolve a shared agent's per-request OS identity itself, requests routed to a shared agent carry the requesting user's `label`, `user_oidc_sub`, and `user_claims` in the RPC envelope — see [RPC Protocol](#rpc-protocol).
 
 ---
 
@@ -64,7 +79,7 @@ Broker health check. No auth required.
 {
   "status": "ok",
   "uptime_seconds": 3724,
-  "version": "0.3.0"
+  "version": "0.3.1"
 }
 ```
 
@@ -245,6 +260,65 @@ The token is returned once in the response and cannot be retrieved again.
 
 ---
 
+### `GET /api/activity`
+
+Activity log for the authenticated user. Returns tool calls, errors, rate limit hits, and agent connection events, newest first.
+
+**Query params**
+
+| Param | Description |
+|---|---|
+| `event_type` | Filter to one event type (optional). See table below. Returns `400` for unrecognised values. |
+| `limit` | Default 100, max 1000 |
+| `offset` | Default 0 |
+
+**Response `200`**
+```json
+{
+  "data": [
+    {
+      "id": 42,
+      "event_type": "tool_call",
+      "host": "home-server",
+      "tool": "read_file",
+      "label": "projects",
+      "request_id": "a3f9c2e1d4b85f2a...",
+      "duration_ms": 84,
+      "error_code": null,
+      "error_message": null,
+      "created_at": "2026-05-27T20:00:00.000Z"
+    }
+  ],
+  "total": 142,
+  "limit": 100,
+  "offset": 0
+}
+```
+
+**Event types**
+
+| `event_type` | Populated fields | Description |
+|---|---|---|
+| `tool_call` | `host`, `tool`, `label`, `request_id`, `duration_ms`; `error_code` + `error_message` when the agent returned an error | RPC reached the agent and a response was received |
+| `tool_error` | `host`, `tool`, `label`, `request_id`, `error_code` | RPC could not be delivered: `agent_offline`, `agent_disconnected`, or `timeout` |
+| `rate_limited` | `tool`, `label`, `request_id` | Call rejected before dispatch — per-user rate limit exceeded |
+| `agent_connect` | `host` | Agent opened a WebSocket connection |
+| `agent_disconnect` | `host`; `error_code` (`timeout` or `error`) for non-clean disconnects | Agent connection closed |
+
+The `request_id` on `tool_call`, `tool_error`, and `rate_limited` events matches the `request_id` field in the broker's structured log output, allowing activity entries to be correlated with log lines.
+
+The log is capped at `ACTIVITY_LOG_MAX_ENTRIES` rows per user (default 1000). Oldest rows are pruned every 5 minutes.
+
+---
+
+### `GET /api/admin/activity` · Admin
+
+Activity log entries with no associated user — `agent_connect`/`agent_disconnect` events for **shared agents**, which aren't bound to any single user. Admins collectively own this data, since no individual user does. Newest first.
+
+Accepts the same `event_type`, `limit`, and `offset` query params, and returns the same response shape, as `GET /api/activity`. Entries are capped and pruned the same way, as their own ring buffer (`user_id IS NULL` rows are partitioned together by `ACTIVITY_LOG_MAX_ENTRIES`).
+
+---
+
 ### `GET /api/users` · `POST /api/users` · `POST /api/users/:username/deactivate` · `POST /api/users/:username/reset-password` · Admin
 
 User management endpoints. Available in `AUTH_MODE=local` only. Return `404` in `AUTH_MODE=oidc`.
@@ -346,7 +420,7 @@ The broker acts as an OAuth 2.0 authorization server backed by an upstream OIDC 
 
 ### Authorization Code Flow (MCP clients)
 
-Used by Claude, Cursor, Copilot, and any OAuth 2.0 client.
+Used by Claude, ChatGPT, Cursor, and any OAuth 2.0 client.
 
 ```mermaid
 sequenceDiagram
@@ -367,9 +441,9 @@ sequenceDiagram
     Broker-->>Client: access_token + refresh_token
 ```
 
-PKCE (`S256`) is **required**. The broker rejects `/oauth/authorize` requests that omit `code_challenge`. The MCP auth spec is based on OAuth 2.1, which mandates PKCE for all authorization code flows. All compliant MCP clients (Claude, Cursor, Copilot) support it.
+PKCE (`S256`) is **required**. The broker rejects `/oauth/authorize` requests that omit `code_challenge`. The MCP auth spec is based on OAuth 2.1, which mandates PKCE for all authorization code flows. All compliant MCP clients (Claude, ChatGPT, Cursor) support it.
 
-**Dynamic Client Registration** (`POST /oauth/register`, RFC 7591) is supported for clients that auto-discover the broker. GitHub Copilot uses this path. Public clients send `token_endpoint_auth_method: "none"` and receive no client secret.
+**Dynamic Client Registration** (`POST /oauth/register`, RFC 7591) is supported for clients that auto-discover the broker. Public clients send `token_endpoint_auth_method: "none"` and receive no client secret.
 
 ### Device Code Flow (agent init + broker login)
 
@@ -552,7 +626,7 @@ Or on error:
 | `EDIT_AMBIGUOUS` | `edit_file` — `old_text` matched more than once | `edit_index` (0-based), `match_count: N` |
 | `FILE_TOO_LARGE` | `read_file` — full file exceeds cap | `read_size_kb`, `max_file_size_kb` |
 | `READ_TOO_LARGE` | `read_file` — range result exceeds cap | `read_size_kb` (size of the attempted range), `max_file_size_kb` |
-| `DEST_EXISTS` | `copy` / `move` — destination already exists | `path` |
+| `DEST_EXISTS` | `copy` / `move` — destination already exists | `path` (the client-supplied `dst_relative_path` — never the resolved absolute path) |
 | _(absent)_ | Path rejected, unknown tool, unexpected error | — |
 
 The broker resolves the label to an `absolute_root` before dispatching, so the agent never sees label names — only absolute paths. The agent enforces its own path restrictions against that root.

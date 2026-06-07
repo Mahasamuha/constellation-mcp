@@ -58,7 +58,7 @@ The broker constructs both callback URLs from `BROKER_URL` automatically — the
 |---|---|---|
 | `PORT` | `3000` | TCP port the HTTP server binds to |
 | `NODE_ENV` | — | Set to `production` to enable `Secure` flag on cookies |
-| `ALLOWED_ORIGINS` | — | Comma-separated list of origins allowed to make cross-origin requests (e.g. `https://claude.ai,https://cursor.com`). Required for browser-based MCP clients. Defaults to no cross-origin access if unset. |
+| `ALLOWED_ORIGINS` | — | Comma-separated list of origins allowed to make cross-origin requests to the broker (e.g. the URL of a reverse proxy or browser-based tool in front of the broker). Defaults to no cross-origin access if unset. |
 | `LOG_LEVEL` | `warn` | Pino log level: `trace`, `debug`, `info`, `warn`, `error`, `fatal` |
 
 **OAuth token lifetimes**
@@ -67,6 +67,7 @@ The broker constructs both callback URLs from `BROKER_URL` automatically — the
 |---|---|---|
 | `OAUTH_ACCESS_TOKEN_TTL_HOURS` | `24` | Lifetime of MCP client access tokens, in hours |
 | `OAUTH_REFRESH_TOKEN_TTL_DAYS` | `30` | Lifetime of MCP client refresh tokens, in days |
+| `OAUTH_DYNAMIC_CLIENT_TTL_HOURS` | `24` | How long a dynamically registered OAuth client may sit unactivated (no completed auth flow) before it's pruned |
 
 **Timeouts and heartbeat**
 
@@ -92,6 +93,17 @@ All numeric variables are validated at startup. A non-integer value causes the b
 | `RATE_LIMIT_WS_RECONNECT_PER_MIN` | `10` | 60 s | Per agent token | Agent WebSocket reconnect attempts |
 
 Rate limit state is in-memory. It is lost on broker restart, which is acceptable for single-instance deployments.
+
+**Activity log**
+
+| Variable | Default | Description |
+|---|---|---|
+| `ACTIVITY_LOG_MAX_ENTRIES` | `1000` | Maximum activity log entries retained per user. Oldest rows are pruned every 5 minutes. |
+| `ACTIVITY_SINK_POSTGRES` | `true` | Write events to the `activity_logs` table. Set to `false` to disable. |
+| `ACTIVITY_SINK_STDOUT` | `false` | Emit each event as a newline-delimited JSON line to stdout. Useful for log aggregators that scrape stdout (e.g. Loki, Datadog agent). |
+| `ACTIVITY_SINK_WEBHOOK_URL` | — | HTTP endpoint to POST each event to as JSON (`Content-Type: application/json`). Failures are logged as warnings and do not affect the tool call. |
+
+Multiple sinks can be active simultaneously. Set `ACTIVITY_SINK_POSTGRES=false` and configure a webhook or stdout sink to route events exclusively to an external system.
 
 ---
 

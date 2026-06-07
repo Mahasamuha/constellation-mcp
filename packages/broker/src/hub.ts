@@ -2,8 +2,19 @@ import { IncomingMessage, Server } from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
 import { prisma } from "./db.js";
 import { AgentTokenType } from "./generated/prisma/client.js";
+import { logEvent } from "./activity.js";
 import { hashToken, generateToken, createLogger, type RpcError, type RpcResponse } from "@constellation/shared";
 import { config } from "./config.js";
+import {
+  type ConnectedAgent,
+  registerConnection,
+  unregisterConnection,
+  getConnection,
+  allConnections,
+  dispatchPendingRpc,
+  resolvePendingRpc,
+  rejectPendingRpcsForAgent,
+} from "./registry.js";
 
 const log = createLogger("hub");
 
@@ -30,18 +41,6 @@ interface UpdateHostMessage {
   host: unknown;
 }
 
-interface ConnectedAgent {
-  ws: WebSocket;
-  agentId: string;
-  userId: string | null;
-  tokenType: AgentTokenType;
-  host: string;
-  tokenId: string;
-  lastPongAt: number;
-  missedPings: number;
-  disconnectReason?: "clean" | "timeout" | "error";
-}
-
 interface PendingRotationEntry {
   agentId: string;
   oldTokenId: string;
@@ -51,12 +50,6 @@ interface PendingRotationEntry {
 // ---------------------------------------------------------------------------
 // In-memory state
 // ---------------------------------------------------------------------------
-
-/** Primary connection map: agentId → connected agent state */
-const connections = new Map<string, ConnectedAgent>();
-
-/** Reverse lookup: tokenId → agentId (for reconnect rate limiting) */
-const tokenIndex = new Map<string, string>();
 
 /** Pending token rotations: newTokenId → entry. Cleared on reconnect or TTL expiry. */
 const pendingRotations = new Map<string, PendingRotationEntry>();
@@ -92,15 +85,15 @@ let _heartbeatInterval: ReturnType<typeof setInterval> | null = null;
 
 function startHeartbeatLoop(): void {
   _heartbeatInterval = setInterval(() => {
-    for (const [agentId, conn] of connections) {
+    for (const [agentId, conn] of allConnections()) {
       conn.missedPings += 1;
 
       if (conn.missedPings > HEARTBEAT_MAX_MISSED) {
         log.warn({ agentId, lastPongAt: new Date(conn.lastPongAt) }, "Agent heartbeat timeout — terminating");
+        logEvent({ userId: conn.userId, eventType: "agent_disconnect", host: conn.host, errorCode: "timeout" });
         conn.disconnectReason = "timeout";
         conn.ws.terminate();
-        connections.delete(agentId);
-        tokenIndex.delete(conn.tokenId);
+        unregisterConnection(conn);
         rejectAgentRpcs(agentId);
         continue;
       }
@@ -254,13 +247,6 @@ async function handleConnection(ws: WebSocket, meta: {
       log.info({ agentId, host }, "Token rotation completed");
     }
 
-    // Handle duplicate connections — terminate the old one.
-    const existing = connections.get(agentId);
-    if (existing) {
-      log.info({ agentId, host }, "Replacing stale agent connection");
-      existing.ws.terminate();
-    }
-
     const conn: ConnectedAgent = {
       ws,
       agentId,
@@ -272,8 +258,12 @@ async function handleConnection(ws: WebSocket, meta: {
       missedPings: 0,
     };
 
-    connections.set(agentId, conn);
-    tokenIndex.set(tokenId, agentId);
+    // Handle duplicate connections — terminate the old one.
+    const existing = registerConnection(conn);
+    if (existing) {
+      log.info({ agentId, host }, "Replacing stale agent connection");
+      existing.ws.terminate();
+    }
 
     // Record connection time immediately so list_hosts shows the agent as online
     // before the first heartbeat pong arrives (up to HEARTBEAT_INTERVAL_MS away).
@@ -283,6 +273,7 @@ async function handleConnection(ws: WebSocket, meta: {
     }).catch((err) => log.error({ err, agentId }, "Failed to set initial lastHeartbeatAt"));
 
     log.info({ agentId, host, userId }, "Agent connected");
+    logEvent({ userId, eventType: "agent_connect", host });
 
     ws.on("pong", () => {
       conn.lastPongAt = Date.now();
@@ -325,15 +316,14 @@ async function handleConnection(ws: WebSocket, meta: {
       const reason = conn.disconnectReason ?? "clean";
       // Guard against the race where a reconnecting agent registers a new connection
       // before this close event fires — avoid clobbering the live entry.
-      if (connections.get(agentId) === conn) {
-        connections.delete(agentId);
-        tokenIndex.delete(tokenId);
+      if (unregisterConnection(conn)) {
         rejectAgentRpcs(agentId);
         prisma.agent.update({
           where: { id: agentId },
           data: { lastHeartbeatAt: null, lastDisconnectReason: reason },
         }).catch((err) => log.error({ err, agentId }, "Failed to update disconnect state"));
         log.info({ agentId, host, userId, reason }, "Agent disconnected");
+        logEvent({ userId, eventType: "agent_disconnect", host, errorCode: reason !== "clean" ? reason : undefined });
       }
     });
 
@@ -395,7 +385,7 @@ async function handleConfigUpdate(conn: ConnectedAgent, msg: ConfigUpdateMessage
   // Validate all labels before writing anything.
   const seen = new Set<string>();
   for (const entry of entries) {
-    if (!entry.label || !entry.reported_path) {
+    if (typeof entry !== "object" || entry === null || !entry.label || !entry.reported_path) {
       send(conn.ws, { type: "config_update_error", error: "Each path entry must have label and reported_path" });
       return;
     }
@@ -574,6 +564,10 @@ async function handleSharedLabelSync(conn: ConnectedAgent, msg: SharedLabelSyncM
 
   // Validate shape
   for (const entry of labels) {
+    if (typeof entry !== "object" || entry === null) {
+      send(conn.ws, { type: "shared_label_sync_error", error: "Each label entry must be an object" });
+      return;
+    }
     if (typeof entry.name !== "string" || !entry.name) {
       send(conn.ws, { type: "shared_label_sync_error", error: "Each label entry must have a name string" });
       return;
@@ -630,17 +624,7 @@ async function handleSharedLabelSync(conn: ConnectedAgent, msg: SharedLabelSyncM
 // ---------------------------------------------------------------------------
 
 export type { RpcError };
-
-const pendingRpcs = new Map<string, {
-  resolve: (r: RpcResponse) => void;
-  reject: (e: Error) => void;
-  timer: ReturnType<typeof setTimeout>;
-  agentId: string;
-}>();
-
-export function getConnection(agentId: string): ConnectedAgent | undefined {
-  return connections.get(agentId);
-}
+export { getConnection };
 
 /** Revokes AgentToken rows that are not referenced by any Agent, were never revoked, and have
  * passed their expiry. Handles tokens left behind by a broker restart mid-rotation. Fresh
@@ -669,46 +653,27 @@ export function pruneReconnectTimestamps(): void {
 
 /** Rejects all pending RPCs for a given agent — called on disconnect. */
 export function rejectAgentRpcs(agentId: string): void {
-  for (const [requestId, pending] of pendingRpcs) {
-    if (pending.agentId === agentId) {
-      clearTimeout(pending.timer);
-      pendingRpcs.delete(requestId);
-      pending.reject(new Error("agent_disconnected"));
-    }
-  }
+  rejectPendingRpcsForAgent(agentId, new Error("agent_disconnected"));
 }
 
 export function dispatchRpc(
   agentId: string,
   payload: RpcEnvelope
 ): Promise<RpcResponse> {
-  const conn = connections.get(agentId);
+  const conn = getConnection(agentId);
   if (!conn) throw new Error(`Agent ${agentId} is not connected`);
 
   const requestId = payload["request_id"] as string;
-  const timeoutMs = RPC_TIMEOUT_MS;
-
-  return new Promise<RpcResponse>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      pendingRpcs.delete(requestId);
-      reject(new Error("timeout"));
-    }, timeoutMs);
-
-    pendingRpcs.set(requestId, { resolve, reject, timer, agentId });
-    send(conn.ws, payload);
-  });
+  const promise = dispatchPendingRpc(requestId, agentId, RPC_TIMEOUT_MS);
+  send(conn.ws, payload);
+  return promise;
 }
 
 function routeRpcResponse(msg: RpcResponse): void {
   const requestId = msg.request_id;
   if (!requestId) return;
 
-  const pending = pendingRpcs.get(requestId);
-  if (!pending) return;
-
-  clearTimeout(pending.timer);
-  pendingRpcs.delete(requestId);
-  pending.resolve(msg);
+  resolvePendingRpc(requestId, msg);
 }
 
 // ---------------------------------------------------------------------------

@@ -4,6 +4,7 @@ import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { prisma } from "./db.js";
 import { dispatchRpc, getConnection, type RpcEnvelope, type RpcError } from "./hub.js";
+import { logEvent } from "./activity.js";
 import { createLogger, evaluatePermissionBlob, type PermissionBlob } from "@constellation/shared";
 import { config } from "./config.js";
 
@@ -233,7 +234,11 @@ export async function routeToolCall(
   userOidcSub?: string | null,
   userClaims?: Record<string, unknown>
 ): Promise<DispatchResult | RouterError> {
+  const startTime = Date.now();
+  const requestId = randomBytes(16).toString("hex");
+
   if (!checkToolRateLimit(userId, tool, params)) {
+    logEvent({ userId, eventType: "rate_limited", tool, label, requestId });
     return { code: "rate_limited", message: "Rate limit exceeded. Please slow down." };
   }
 
@@ -280,13 +285,13 @@ export async function routeToolCall(
 
   if (!getConnection(agentId)) {
     const lastSeen = lastHeartbeatAt ? formatRelativeTime(lastHeartbeatAt) : "never";
+    logEvent({ userId, eventType: "tool_error", host: agentHost, tool, label, requestId, errorCode: "agent_offline" });
     return {
       code: "agent_offline",
       message: `'${label}' is on '${agentHost}', which was last seen ${lastSeen}`,
     };
   }
 
-  const requestId = randomBytes(16).toString("hex");
   const timeoutMs = config.rpcTimeoutMs;
 
   const { forwardedClaims } = config;
@@ -309,21 +314,36 @@ export async function routeToolCall(
 
   try {
     const response = await dispatchRpc(agentId, envelope);
+    const durationMs = Date.now() - startTime;
 
     if (response.error) {
       log.info({ userId, agentId, tool, requestId, error: response.error }, "RPC returned error");
+      logEvent({
+        userId,
+        eventType: "tool_call",
+        host: agentHost,
+        tool,
+        label,
+        requestId,
+        durationMs,
+        errorCode: response.error.code ?? "rpc_error",
+        errorMessage: response.error.message,
+      });
     } else {
       log.info({ userId, agentId, tool, requestId }, "RPC completed");
+      logEvent({ userId, eventType: "tool_call", host: agentHost, tool, label, requestId, durationMs });
     }
 
     return { result: response.result, error: response.error };
   } catch (err) {
     if (err instanceof Error && err.message === "agent_disconnected") {
       log.warn({ userId, agentId, tool, requestId }, "RPC failed — agent disconnected");
+      logEvent({ userId, eventType: "tool_error", host: agentHost, tool, label, requestId, errorCode: "agent_disconnected" });
       return { code: "agent_offline", message: `'${agentHost}' disconnected before responding` };
     }
     if (err instanceof Error && err.message === "timeout") {
       log.warn({ userId, agentId, tool, requestId }, "RPC timed out");
+      logEvent({ userId, eventType: "tool_error", host: agentHost, tool, label, requestId, errorCode: "timeout" });
       return { code: "timeout", message: `No response from '${agentHost}' within ${timeoutMs / 1000}s` };
     }
     throw err;
