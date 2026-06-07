@@ -5,6 +5,7 @@ import { pruneDeviceCodes } from "./device.js";
 import { pruneAuthCodes, pruneUnactivatedDynamicClients } from "./oauth.js";
 import { pruneRateLimits } from "./router.js";
 import { pruneLoginFailures } from "./local-auth.js";
+import { initActivitySinks, pruneActivityLog } from "./activity.js";
 import { prisma } from "./db.js";
 import { createLogger } from "@constellation/shared";
 import { config } from "./config.js";
@@ -14,6 +15,7 @@ const log = createLogger("broker");
 const port = config.port;
 const server = createServer(app);
 
+initActivitySinks();
 attachHub(server);
 
 pruneExpiredOrphanedTokens().catch((err) => log.warn({ err }, "pruneExpiredOrphanedTokens failed"));
@@ -27,6 +29,7 @@ setInterval(() => {
   pruneRateLimits();
   pruneReconnectTimestamps();
   pruneLoginFailures().catch((err) => log.warn({ err }, "pruneLoginFailures failed"));
+  pruneActivityLog().catch((err) => log.warn({ err }, "pruneActivityLog failed"));
 }, 5 * 60 * 1000).unref();
 
 server.setTimeout(60_000);

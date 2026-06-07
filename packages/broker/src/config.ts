@@ -34,4 +34,12 @@ export const config = {
   // How long a dynamically registered OAuth client may sit unactivated (no completed auth flow)
   // before it's pruned. Mitigates unbounded growth from the unauthenticated /oauth/register endpoint.
   oauthDynamicClientTtlHours: parseEnvInt("OAUTH_DYNAMIC_CLIENT_TTL_HOURS", 24),
+  activityLog: {
+    maxEntriesPerUser: parseEnvInt("ACTIVITY_LOG_MAX_ENTRIES", 1000),
+    sinks: {
+      postgres: process.env["ACTIVITY_SINK_POSTGRES"] !== "false",
+      stdout: process.env["ACTIVITY_SINK_STDOUT"] === "true",
+      webhookUrl: process.env["ACTIVITY_SINK_WEBHOOK_URL"] ?? null,
+    },
+  },
 };

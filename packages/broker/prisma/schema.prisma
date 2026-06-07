@@ -28,6 +28,7 @@ model User {
   brokerFilters   BrokerPathFilter[]
   oauthSessions   OauthSession[]
   localUser       LocalUser?
+  activityLogs    ActivityLog[]
 
   @@unique([oidcSub, oidcIssuer])
   @@map("users")
@@ -127,6 +128,33 @@ model BrokerPathFilter {
   scopeAgent Agent? @relation(fields: [scopeAgentId], references: [id])
 
   @@map("broker_path_filters")
+}
+
+enum ActivityEventType {
+  tool_call
+  tool_error
+  rate_limited
+  agent_connect
+  agent_disconnect
+}
+
+model ActivityLog {
+  id           Int               @id @default(autoincrement())
+  userId       String            @map("user_id")
+  eventType    ActivityEventType @map("event_type")
+  host         String?
+  tool         String?
+  label        String?
+  requestId    String?           @map("request_id")
+  durationMs   Int?              @map("duration_ms")
+  errorCode    String?           @map("error_code")
+  errorMessage String?           @map("error_message")
+  createdAt    DateTime          @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@map("activity_logs")
 }
 
 model LoginFailure {

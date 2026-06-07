@@ -2,6 +2,7 @@ import { IncomingMessage, Server } from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
 import { prisma } from "./db.js";
 import { AgentTokenType } from "./generated/prisma/client.js";
+import { logEvent } from "./activity.js";
 import { hashToken, generateToken, createLogger, type RpcError, type RpcResponse } from "@constellation/shared";
 import { config } from "./config.js";
 import {
@@ -89,6 +90,9 @@ function startHeartbeatLoop(): void {
 
       if (conn.missedPings > HEARTBEAT_MAX_MISSED) {
         log.warn({ agentId, lastPongAt: new Date(conn.lastPongAt) }, "Agent heartbeat timeout — terminating");
+        if (conn.userId) {
+          logEvent({ userId: conn.userId, eventType: "agent_disconnect", host: conn.host, errorCode: "timeout" });
+        }
         conn.disconnectReason = "timeout";
         conn.ws.terminate();
         unregisterConnection(conn);
@@ -271,6 +275,9 @@ async function handleConnection(ws: WebSocket, meta: {
     }).catch((err) => log.error({ err, agentId }, "Failed to set initial lastHeartbeatAt"));
 
     log.info({ agentId, host, userId }, "Agent connected");
+    if (userId) {
+      logEvent({ userId, eventType: "agent_connect", host });
+    }
 
     ws.on("pong", () => {
       conn.lastPongAt = Date.now();
@@ -320,6 +327,9 @@ async function handleConnection(ws: WebSocket, meta: {
           data: { lastHeartbeatAt: null, lastDisconnectReason: reason },
         }).catch((err) => log.error({ err, agentId }, "Failed to update disconnect state"));
         log.info({ agentId, host, userId, reason }, "Agent disconnected");
+        if (userId) {
+          logEvent({ userId, eventType: "agent_disconnect", host, errorCode: reason !== "clean" ? reason : undefined });
+        }
       }
     });
 

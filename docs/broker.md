@@ -260,6 +260,57 @@ The token is returned once in the response and cannot be retrieved again.
 
 ---
 
+### `GET /api/activity`
+
+Activity log for the authenticated user. Returns tool calls, errors, rate limit hits, and agent connection events, newest first.
+
+**Query params**
+
+| Param | Description |
+|---|---|
+| `event_type` | Filter to one event type (optional). See table below. Returns `400` for unrecognised values. |
+| `limit` | Default 100, max 1000 |
+| `offset` | Default 0 |
+
+**Response `200`**
+```json
+{
+  "data": [
+    {
+      "id": 42,
+      "event_type": "tool_call",
+      "host": "home-server",
+      "tool": "read_file",
+      "label": "projects",
+      "request_id": "a3f9c2e1d4b85f2a...",
+      "duration_ms": 84,
+      "error_code": null,
+      "error_message": null,
+      "created_at": "2026-05-27T20:00:00.000Z"
+    }
+  ],
+  "total": 142,
+  "limit": 100,
+  "offset": 0
+}
+```
+
+**Event types**
+
+| `event_type` | Populated fields | Description |
+|---|---|---|
+| `tool_call` | `host`, `tool`, `label`, `request_id`, `duration_ms`; `error_code` + `error_message` when the agent returned an error | RPC reached the agent and a response was received |
+| `tool_error` | `host`, `tool`, `label`, `request_id`, `error_code` | RPC could not be delivered: `agent_offline`, `agent_disconnected`, or `timeout` |
+| `rate_limited` | `tool`, `label`, `request_id` | Call rejected before dispatch — per-user rate limit exceeded |
+| `agent_connect` | `host` | Agent opened a WebSocket connection |
+| `agent_disconnect` | `host`; `error_code` (`timeout` or `error`) for non-clean disconnects | Agent connection closed |
+
+The `request_id` on `tool_call`, `tool_error`, and `rate_limited` events matches the `request_id` field in the broker's structured log output, allowing activity entries to be correlated with log lines.
+
+The log is capped at `ACTIVITY_LOG_MAX_ENTRIES` rows per user (default 1000). Oldest rows are pruned every 5 minutes.
+
+---
+
 ### `GET /api/users` · `POST /api/users` · `POST /api/users/:username/deactivate` · `POST /api/users/:username/reset-password` · Admin
 
 User management endpoints. Available in `AUTH_MODE=local` only. Return `404` in `AUTH_MODE=oidc`.

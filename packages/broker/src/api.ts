@@ -5,6 +5,7 @@ import { AgentTokenType, BrokerRole } from "./generated/prisma/client.js";
 import { prisma } from "./db.js";
 import { requireBearerAuth, requireAdmin, AuthenticatedRequest } from "./middleware.js";
 import { getConnection } from "./hub.js";
+import { type ActivityEventType } from "./activity.js";
 import { createLogger, generateToken, hashToken, safeEqual } from "@constellation/shared";
 import { config } from "./config.js";
 import { createLocalUser } from "./local-auth.js";
@@ -590,6 +591,54 @@ apiRouter.get("/api/admin/shared-labels", requireAdmin, async (req: Request, res
       permission_blob: l.permissionBlob,
       updated_at: l.updatedAt.toISOString(),
     })),
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/activity
+// ---------------------------------------------------------------------------
+
+const VALID_EVENT_TYPES = new Set<string>(["tool_call", "tool_error", "rate_limited", "agent_connect", "agent_disconnect"]);
+
+apiRouter.get("/api/activity", async (req: Request, res: Response) => {
+  const uid = (req as AuthenticatedRequest).userId;
+  const { limit, offset } = parsePagination(req);
+  const rawEventType = typeof req.query["event_type"] === "string" ? req.query["event_type"] : undefined;
+
+  if (rawEventType && !VALID_EVENT_TYPES.has(rawEventType)) {
+    res.status(400).json({ error: "invalid_request", error_description: `Invalid event_type: ${rawEventType}` });
+    return;
+  }
+
+  const eventType = rawEventType as ActivityEventType | undefined;
+  const where = { userId: uid, ...(eventType ? { eventType } : {}) };
+
+  const [entries, total] = await Promise.all([
+    prisma.activityLog.findMany({
+      where,
+      orderBy: { createdAt: "desc" },
+      take: limit,
+      skip: offset,
+    }),
+    prisma.activityLog.count({ where }),
+  ]);
+
+  res.json({
+    data: entries.map((e) => ({
+      id: e.id,
+      event_type: e.eventType,
+      host: e.host,
+      tool: e.tool,
+      label: e.label,
+      request_id: e.requestId,
+      duration_ms: e.durationMs,
+      error_code: e.errorCode,
+      error_message: e.errorMessage,
+      created_at: e.createdAt.toISOString(),
+    })),
+    total,
+    limit,
+    offset,
   });
 });
 
