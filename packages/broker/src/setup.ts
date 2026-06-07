@@ -5,6 +5,7 @@ import { createLocalUser } from "./local-auth.js";
 import { verifyCsrfToken } from "./middleware.js";
 import { generateToken, createLogger } from "@constellation/shared";
 import { pageStyle } from "./page-style.js";
+import { config } from "./config.js";
 
 const log = createLogger("setup");
 
@@ -14,7 +15,7 @@ export const setupRouter: IRouter = Router();
 let _setupDone = false;
 
 export async function setupRequired(): Promise<boolean> {
-  if (process.env["AUTH_MODE"] !== "local") return false;
+  if (config.authMode !== "local") return false;
   if (_setupDone) return false;
   const count = await prisma.localUser.count();
   if (count > 0) {
@@ -45,7 +46,7 @@ export async function setupMiddleware(req: Request, res: Response, next: NextFun
 // ---------------------------------------------------------------------------
 
 setupRouter.get("/setup", async (_req: Request, res: Response) => {
-  if (process.env["AUTH_MODE"] !== "local") {
+  if (config.authMode !== "local") {
     res.send(oidcSetupPage());
     return;
   }
@@ -71,7 +72,7 @@ setupRouter.get("/setup", async (_req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 
 setupRouter.post("/setup", async (req: Request, res: Response) => {
-  if (process.env["AUTH_MODE"] !== "local") {
+  if (config.authMode !== "local") {
     res.status(405).end();
     return;
   }
@@ -132,7 +133,7 @@ setupRouter.post("/setup", async (req: Request, res: Response) => {
 
 setupRouter.get("/", async (_req: Request, res: Response) => {
   const brokerUrl = process.env["BROKER_URL"] ?? "https://your-broker-url";
-  const authMode = process.env["AUTH_MODE"] ?? "oidc";
+  const authMode = config.authMode;
   const uptime = Math.floor((Date.now() - startedAt) / 1000);
 
   const mcpSnippet = JSON.stringify(

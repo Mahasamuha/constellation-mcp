@@ -2,6 +2,9 @@ import { parseEnvInt } from "@constellation/shared";
 
 export const config = {
   port: parseEnvInt("PORT", 3000),
+  // "local" enables username/password auth with a built-in setup flow; anything
+  // else (including unset) runs in OIDC mode against an upstream provider.
+  authMode: (process.env["AUTH_MODE"] === "local" ? "local" : "oidc") as "local" | "oidc",
   // Comma-separated list of OIDC claim names to forward in RPC envelopes.
   // Empty = forward all claims from last known session.
   forwardedClaims: process.env["FORWARDED_CLAIMS"]

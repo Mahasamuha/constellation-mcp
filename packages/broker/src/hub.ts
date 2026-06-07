@@ -385,7 +385,7 @@ async function handleConfigUpdate(conn: ConnectedAgent, msg: ConfigUpdateMessage
   // Validate all labels before writing anything.
   const seen = new Set<string>();
   for (const entry of entries) {
-    if (!entry.label || !entry.reported_path) {
+    if (typeof entry !== "object" || entry === null || !entry.label || !entry.reported_path) {
       send(conn.ws, { type: "config_update_error", error: "Each path entry must have label and reported_path" });
       return;
     }
@@ -564,6 +564,10 @@ async function handleSharedLabelSync(conn: ConnectedAgent, msg: SharedLabelSyncM
 
   // Validate shape
   for (const entry of labels) {
+    if (typeof entry !== "object" || entry === null) {
+      send(conn.ws, { type: "shared_label_sync_error", error: "Each label entry must be an object" });
+      return;
+    }
     if (typeof entry.name !== "string" || !entry.name) {
       send(conn.ws, { type: "shared_label_sync_error", error: "Each label entry must have a name string" });
       return;

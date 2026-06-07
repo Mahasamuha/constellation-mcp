@@ -378,7 +378,7 @@ apiRouter.post("/api/tokens/shared", requireAdmin, async (_req: Request, res: Re
 // ---------------------------------------------------------------------------
 
 function requireLocalMode(res: Response): boolean {
-  if (process.env["AUTH_MODE"] !== "local") {
+  if (config.authMode !== "local") {
     res.status(404).json({ error: "not_found", error_description: "User management is only available in AUTH_MODE=local" });
     return false;
   }

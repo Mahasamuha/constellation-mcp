@@ -6,7 +6,7 @@ import { z } from "zod/v4";
 import { prisma } from "./db.js";
 import { routeToolCall, RouterError } from "./router.js";
 import { isOnline } from "./api.js";
-import { evaluatePermissionBlob } from "@constellation/shared";
+import { evaluatePermissionBlob, requireEnv } from "@constellation/shared";
 import { lookupOAuthSession } from "./middleware.js";
 
 const { version } = createRequire(import.meta.url)("../package.json") as { version: string };
@@ -88,7 +88,7 @@ mcpRouter.all("/mcp", async (req: Request, res: Response) => {
   const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
 
   if (!token) {
-    const brokerUrl = process.env["BROKER_URL"] ?? "";
+    const brokerUrl = requireEnv("BROKER_URL");
     res.set("WWW-Authenticate", `Bearer realm="${brokerUrl}", resource_metadata="${brokerUrl}/.well-known/oauth-protected-resource"`);
     res.status(401).json({ error: "unauthorized" });
     return;
@@ -96,7 +96,7 @@ mcpRouter.all("/mcp", async (req: Request, res: Response) => {
 
   const session = await lookupOAuthSession(token);
   if (!session) {
-    const brokerUrl = process.env["BROKER_URL"] ?? "";
+    const brokerUrl = requireEnv("BROKER_URL");
     res.set("WWW-Authenticate", `Bearer realm="${brokerUrl}", error="invalid_token"`);
     res.status(401).json({ error: "invalid_token" });
     return;

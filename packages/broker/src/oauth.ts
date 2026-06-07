@@ -7,6 +7,7 @@ import { handleDeviceCodeGrant } from "./device.js";
 import { generateToken, hashToken, safeEqual, createLogger, requireEnv } from "@constellation/shared";
 import { checkBruteForce, recordFailure, validateLocalUser } from "./local-auth.js";
 import { config } from "./config.js";
+import { issueOAuthSession, makeTokenPair, sendTokenResponse } from "./oauth-tokens.js";
 
 const log = createLogger("oauth");
 
@@ -148,7 +149,7 @@ oauthRouter.get("/oauth/authorize", async (req: Request, res: Response) => {
     return;
   }
 
-  if (process.env["AUTH_MODE"] === "local") {
+  if (config.authMode === "local") {
     // Store OAuth params in a cookie; redirect to the local login form.
     const pendingId = randomBytes(16).toString("hex");
     res.cookie(`login_pending_${pendingId}`, JSON.stringify({
@@ -431,18 +432,7 @@ async function handleAuthorizationCodeGrant(
     }
   }
 
-  const tokens = makeTokenPair();
-
-  await prisma.oauthSession.create({
-    data: {
-      userId: entry.userId,
-      mcpClientId: client_id,
-      accessTokenHash: tokens.accessTokenHash,
-      expiresAt: tokens.expiresAt,
-      refreshTokenHash: tokens.refreshTokenHash,
-      refreshTokenExpiresAt: tokens.refreshExpiresAt,
-    },
-  });
+  const tokens = await issueOAuthSession(entry.userId, client_id);
 
   log.info({ userId: entry.userId, clientId: client_id }, "Access token issued (authorization_code)");
   sendTokenResponse(res, tokens);
@@ -559,41 +549,6 @@ function asStringArray(val: unknown): string[] {
   return [];
 }
 
-interface TokenPair {
-  accessToken: string;
-  accessTokenHash: string;
-  refreshToken: string;
-  refreshTokenHash: string;
-  expiresAt: Date;
-  refreshExpiresAt: Date;
-  expiresInSec: number;
-}
-
-function makeTokenPair(): TokenPair {
-  const accessToken = generateToken();
-  const refreshToken = generateToken();
-  const accessTtlHours = config.oauthAccessTokenTtlHours;
-  const refreshTtlDays = config.oauthRefreshTokenTtlDays;
-  const now = new Date();
-  return {
-    accessToken,
-    accessTokenHash: hashToken(accessToken),
-    refreshToken,
-    refreshTokenHash: hashToken(refreshToken),
-    expiresAt: new Date(now.getTime() + accessTtlHours * 3600 * 1000),
-    refreshExpiresAt: new Date(now.getTime() + refreshTtlDays * 86400 * 1000),
-    expiresInSec: accessTtlHours * 3600,
-  };
-}
-
-function sendTokenResponse(res: Response, tokens: TokenPair): void {
-  res.json({
-    access_token: tokens.accessToken,
-    token_type: "Bearer",
-    expires_in: tokens.expiresInSec,
-    refresh_token: tokens.refreshToken,
-  });
-}
 
 async function issueAuthCode(pending: LoginPending, userId: string, res: Response): Promise<void> {
   const code = generateToken();

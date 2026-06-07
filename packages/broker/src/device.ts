@@ -4,6 +4,7 @@ import { randomBytes } from "node:crypto";
 import { prisma } from "./db.js";
 import { AgentTokenType, BrokerRole } from "./generated/prisma/client.js";
 import { buildAuthorizationUrl, exchangeCodeAndUpsertUser } from "./oidc.js";
+import { issueOAuthSession, sendTokenResponse } from "./oauth-tokens.js";
 import { generateToken, hashToken, createLogger, requireEnv } from "@constellation/shared";
 import { checkBruteForce, recordFailure, validateLocalUser } from "./local-auth.js";
 import { verifyCsrfToken } from "./middleware.js";
@@ -128,7 +129,7 @@ deviceRouter.get("/activate", async (req: Request, res: Response) => {
     return;
   }
 
-  if (process.env["AUTH_MODE"] === "local") {
+  if (config.authMode === "local") {
     res.send(localActivateLoginPage(entry.deviceCode));
     return;
   }
@@ -282,6 +283,12 @@ deviceRouter.post("/activate/confirm", async (req: Request, res: Response) => {
       data: { status: "denied" },
     });
     res.send(activateDonePage("Access denied. You can close this tab."));
+    return;
+  }
+
+  if (action !== "approve") {
+    res.clearCookie("csrf_activate");
+    res.status(400).send("Invalid action.");
     return;
   }
 
@@ -504,11 +511,15 @@ export async function handleDeviceCodeGrant(
     const tokenHash = hashToken(token);
 
     await prisma.$transaction(async (tx) => {
-      // Revoke the existing token if re-registering the same host.
+      // The userId_host compound unique was replaced by partial unique indexes
+      // (agents_user_id_host_key) which Prisma cannot express natively. Use
+      // findFirst + create/update instead of upsert.
       const existingAgent = await tx.agent.findFirst({
         where: { userId, host: entry.hostName! },
-        select: { agentTokenId: true },
+        select: { id: true, agentTokenId: true },
       });
+
+      // Revoke the existing token if re-registering the same host.
       if (existingAgent) {
         await tx.agentToken.update({
           where: { id: existingAgent.agentTokenId },
@@ -521,16 +532,9 @@ export async function handleDeviceCodeGrant(
         select: { id: true },
       });
 
-      // The userId_host compound unique was replaced by partial unique indexes
-      // (agents_user_id_host_key) which Prisma cannot express natively. Use
-      // findFirst + create/update instead of upsert.
-      const existingAgentForUpsert = await tx.agent.findFirst({
-        where: { userId, host: entry.hostName! },
-        select: { id: true },
-      });
-      if (existingAgentForUpsert) {
+      if (existingAgent) {
         await tx.agent.update({
-          where: { id: existingAgentForUpsert.id },
+          where: { id: existingAgent.id },
           data: { agentTokenId: agentToken.id, lastHeartbeatAt: null, lastDisconnectReason: null },
         });
       } else {
@@ -549,38 +553,11 @@ export async function handleDeviceCodeGrant(
     });
   } else {
     // broker:manage scope — issue a standard OAuth session for the CLI
-    const accessToken = generateToken();
-    const accessTokenHash = hashToken(accessToken);
-    const refreshToken = generateToken();
-    const refreshTokenHash = hashToken(refreshToken);
-
-    const accessTtlHours = config.oauthAccessTokenTtlHours;
-    const refreshTtlDays = config.oauthRefreshTokenTtlDays;
-    const now = new Date();
-    const expiresAt = new Date(now.getTime() + accessTtlHours * 3600 * 1000);
-    const refreshExpiresAt = new Date(now.getTime() + refreshTtlDays * 86400 * 1000);
-
     const clientId = await ensureBrokerClient();
-
-    await prisma.oauthSession.create({
-      data: {
-        userId,
-        mcpClientId: clientId,
-        accessTokenHash,
-        expiresAt,
-        refreshTokenHash,
-        refreshTokenExpiresAt: refreshExpiresAt,
-      },
-    });
+    const tokens = await issueOAuthSession(userId, clientId);
 
     log.info({ userId }, "CLI session issued via device flow");
-
-    res.json({
-      access_token: accessToken,
-      token_type: "Bearer",
-      expires_in: accessTtlHours * 3600,
-      refresh_token: refreshToken,
-    });
+    sendTokenResponse(res, tokens);
   }
 }
 
