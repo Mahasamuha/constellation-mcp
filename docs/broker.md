@@ -12,17 +12,27 @@ flowchart TD
     Auth["auth middleware\nresolves Bearer token to userId"]
     Tool["MCP tool call"]
     Router["router\nrate check → label resolution → filter check → liveness check"]
-    Agent["Agent"]
+    Personal["Personal agent\nuser-owned label · runs as the user"]
+    Shared["Shared agent\nadmin-defined label · optimistic permission check\nresolves OS identity · spawns per-user subagent"]
 
     Client -->|"HTTPS + OAuth Bearer · POST /mcp"| Auth
     Auth --> Tool
     Tool --> Router
-    Router -->|"dispatchRpc · WebSocket frame"| Agent
-    Agent -.->|"RPC response (or timeout)"| Router
+    Router -->|"dispatchRpc · { tool, absolute_root, ...params }"| Personal
+    Router -->|"dispatchRpc · { tool, absolute_root, label, user_oidc_sub, user_claims, ...params }"| Shared
+    Personal -.->|"RPC response (or timeout)"| Router
+    Shared -.->|"RPC response (or timeout)"| Router
     Router -.->|"MCP tool response"| Client
 ```
 
-Agents connect over WebSocket to `wss://<broker>/agent/connect` using a long-lived bearer token. The broker keeps one connection per agent in memory and heartbeats it with WebSocket pings.
+Agents connect over WebSocket to `wss://<broker>/agent/connect` using a long-lived bearer token. The broker keeps one connection per agent in memory (see [`registry.ts`](../packages/broker/src/registry.ts)) and heartbeats it with WebSocket pings.
+
+Agents come in two modalities, distinguished by `AgentTokenType`:
+
+- **Personal** — bound to one user; runs under the user's own OS identity. Labels are user-managed, synced via `config_update`, and stored as `PathLabel` rows.
+- **Shared** — service-level, not bound to any user; runs on machines shared by multiple people (NAS, dev server). Labels are admin-defined in the agent's config, synced via `shared_label_sync`, and stored as `SharedPathLabel` rows alongside a per-label `permission_blob`. The broker performs an *optimistic* permission check against that blob during label resolution — final enforcement (OS identity resolution, label access, sub-path permissions) happens authoritatively at the shared agent. See [Shared Agent](shared-agent.md) for the full request flow, identity resolution chain, and permission model.
+
+Because the broker cannot resolve a shared agent's per-request OS identity itself, requests routed to a shared agent carry the requesting user's `label`, `user_oidc_sub`, and `user_claims` in the RPC envelope — see [RPC Protocol](#rpc-protocol).
 
 ---
 
@@ -64,7 +74,7 @@ Broker health check. No auth required.
 {
   "status": "ok",
   "uptime_seconds": 3724,
-  "version": "0.3.0"
+  "version": "0.3.1"
 }
 ```
 
