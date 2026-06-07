@@ -67,6 +67,7 @@ The broker constructs both callback URLs from `BROKER_URL` automatically — the
 |---|---|---|
 | `OAUTH_ACCESS_TOKEN_TTL_HOURS` | `24` | Lifetime of MCP client access tokens, in hours |
 | `OAUTH_REFRESH_TOKEN_TTL_DAYS` | `30` | Lifetime of MCP client refresh tokens, in days |
+| `OAUTH_DYNAMIC_CLIENT_TTL_HOURS` | `24` | How long a dynamically registered OAuth client may sit unactivated (no completed auth flow) before it's pruned |
 
 **Timeouts and heartbeat**
 

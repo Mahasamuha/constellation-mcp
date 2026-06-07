@@ -2,7 +2,7 @@ import { createServer } from "node:http";
 import { app } from "./app.js";
 import { attachHub, closeHub, pruneReconnectTimestamps, pruneExpiredOrphanedTokens } from "./hub.js";
 import { pruneDeviceCodes } from "./device.js";
-import { pruneAuthCodes } from "./oauth.js";
+import { pruneAuthCodes, pruneUnactivatedDynamicClients } from "./oauth.js";
 import { pruneRateLimits } from "./router.js";
 import { pruneLoginFailures } from "./local-auth.js";
 import { prisma } from "./db.js";
@@ -22,6 +22,7 @@ pruneExpiredOrphanedTokens().catch((err) => log.warn({ err }, "pruneExpiredOrpha
 setInterval(() => {
   pruneDeviceCodes().catch((err) => log.warn({ err }, "pruneDeviceCodes failed"));
   pruneAuthCodes().catch((err) => log.warn({ err }, "pruneAuthCodes failed"));
+  pruneUnactivatedDynamicClients().catch((err) => log.warn({ err }, "pruneUnactivatedDynamicClients failed"));
   pruneExpiredOrphanedTokens().catch((err) => log.warn({ err }, "pruneExpiredOrphanedTokens failed"));
   pruneRateLimits();
   pruneReconnectTimestamps();

@@ -31,4 +31,7 @@ export const config = {
   rpcTimeoutMs: parseEnvInt("RPC_TIMEOUT_MS", 30_000),
   oauthAccessTokenTtlHours: parseEnvInt("OAUTH_ACCESS_TOKEN_TTL_HOURS", 24),
   oauthRefreshTokenTtlDays: parseEnvInt("OAUTH_REFRESH_TOKEN_TTL_DAYS", 30),
+  // How long a dynamically registered OAuth client may sit unactivated (no completed auth flow)
+  // before it's pruned. Mitigates unbounded growth from the unauthenticated /oauth/register endpoint.
+  oauthDynamicClientTtlHours: parseEnvInt("OAUTH_DYNAMIC_CLIENT_TTL_HOURS", 24),
 };

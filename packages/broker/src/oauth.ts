@@ -283,6 +283,22 @@ export async function pruneAuthCodes(): Promise<void> {
   await prisma.authCode.deleteMany({ where: { expiresAt: { lt: new Date() } } });
 }
 
+/** Removes dynamically registered OAuth clients that have never completed an auth flow (no
+ * OauthSession was ever issued for them) and were registered more than the TTL ago.
+ * /oauth/register is open per the MCP spec (RFC 7591), so unbounded registration is a DB
+ * growth vector — this bounds it without capping registrations outright (a hard cap would
+ * itself be a DoS vector: an attacker fills it and blocks legitimate clients).
+ * Called periodically from index.ts. */
+export async function pruneUnactivatedDynamicClients(): Promise<void> {
+  const cutoff = new Date(Date.now() - config.oauthDynamicClientTtlHours * 60 * 60 * 1000);
+  const result = await prisma.oauthClient.deleteMany({
+    where: { isDynamic: true, createdAt: { lt: cutoff }, oauthSessions: { none: {} } },
+  });
+  if (result.count > 0) {
+    log.info({ count: result.count }, "Pruned unactivated dynamic OAuth clients");
+  }
+}
+
 oauthRouter.get("/oauth/callback", async (req: Request, res: Response) => {
   const rawState = typeof req.query["state"] === "string" ? req.query["state"] : "";
   const colonIdx = rawState.lastIndexOf(":");
