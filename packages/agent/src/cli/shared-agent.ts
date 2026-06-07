@@ -258,6 +258,8 @@ Environment=CONSTELLATION_SHARED_AGENT_CONFIG=${opts.config}
 AmbientCapabilities=CAP_SETUID CAP_SETGID
 CapabilityBoundingSet=CAP_SETUID CAP_SETGID
 NoNewPrivileges=no
+ProtectSystem=strict
+ReadWritePaths=/var/log/constellation
 
 [Install]
 WantedBy=multi-user.target
