@@ -30,6 +30,11 @@ RUN npm prune --omit=dev
 FROM node:24-alpine
 WORKDIR /app
 
+# Remove BusyBox's wget (CVE-2025-60876, CRLF/header injection in the request
+# target — no upstream fix yet). It's just a symlink to the busybox multi-call
+# binary and nothing in the broker uses it, so dropping it clears the scan finding.
+RUN rm -f /usr/bin/wget
+
 COPY package.json package-lock.json ./
 COPY packages/shared/package.json ./packages/shared/
 COPY packages/broker/package.json ./packages/broker/

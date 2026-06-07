@@ -14,9 +14,7 @@
     "test:watch": "vitest"
   },
   "overrides": {
-    "@prisma/dev": {
-      "@hono/node-server": "^1.19.14"
-    }
+    "@prisma/dev": "^0.24.10"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
