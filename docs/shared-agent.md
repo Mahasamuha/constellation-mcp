@@ -215,7 +215,7 @@ Options:
 - `--user` — service user (default: `constellation`); must have `CAP_SETUID`/`CAP_SETGID`
 - `--unit-name` — systemd unit name (default: `constellation-shared-agent`)
 
-The generated unit sets `AmbientCapabilities=CAP_SETUID CAP_SETGID`, `CapabilityBoundingSet=CAP_SETUID CAP_SETGID`, and `NoNewPrivileges=no`.
+The generated unit sets `AmbientCapabilities=CAP_SETUID CAP_SETGID`, `CapabilityBoundingSet=CAP_SETUID CAP_SETGID`, `NoNewPrivileges=no`, `ProtectSystem=strict`, and `ReadWritePaths=/var/log/constellation`.
 
 ### Start / stop
 
