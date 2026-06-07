@@ -96,7 +96,7 @@ export async function movePath(root: string, params: MoveParams): Promise<void> 
   const dstRoot = params.dst_root ?? root;
   const dst = join(dstRoot, params.dst_relative_path);
 
-  await assertNotExists(dst);
+  await assertNotExists(dst, params.dst_relative_path);
   await fs.mkdir(dirname(dst), { recursive: true });
   try {
     await fs.rename(src, dst);
@@ -126,7 +126,7 @@ export async function copyPath(root: string, params: CopyParams): Promise<void> 
   const dstRoot = params.dst_root ?? root;
   const dst = join(dstRoot, params.dst_relative_path);
 
-  await assertNotExists(dst);
+  await assertNotExists(dst, params.dst_relative_path);
   await fs.mkdir(dirname(dst), { recursive: true });
   await copyRecursive(src, dst);
 }
@@ -143,12 +143,14 @@ async function copyRecursive(src: string, dst: string): Promise<void> {
   }
 }
 
-async function assertNotExists(path: string): Promise<void> {
+/** `absolutePath` is checked on disk; `relativePath` (the client-supplied value) is what's
+ * reported back — never the resolved absolute path, which would leak the agent's filesystem layout. */
+async function assertNotExists(absolutePath: string, relativePath: string): Promise<void> {
   try {
-    await fs.access(path);
+    await fs.access(absolutePath);
     throw Object.assign(
       new Error(`Destination already exists — delete it first or choose a different path`),
-      { code: "DEST_EXISTS", path }
+      { code: "DEST_EXISTS", path: relativePath }
     );
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
