@@ -6,45 +6,28 @@ The broker is a stateful HTTP/WebSocket server that sits between MCP clients and
 
 ## Architecture
 
-```
-┌─────────────────────────────┐
-│ MCP client                  │
-│ (Claude, Cursor, Copilot)   │
-└──────────────┬──────────────┘
-               │  HTTPS + OAuth Bearer · POST /mcp
-               ▼
-┌─────────────────────────────┐
-│ auth middleware             │
-│ resolves Bearer → userId    │
-└──────────────┬──────────────┘
-               ▼
-┌─────────────────────────────┐
-│ MCP tool call               │
-└──────────────┬──────────────┘
-               ▼
-┌─────────────────────────────────────────────────┐
-│ router                                          │
-│ rate check → label resolution →                 │
-│ filter check → liveness check                   │
-└───────┬─────────────────────────────┬───────────┘
-        │ dispatchRpc:                │ dispatchRpc:
-        │ { tool, absolute_root,      │ { tool, absolute_root, label,
-        │   ...params }               │   user_oidc_sub, user_claims, ...params }
-        ▼                             ▼
-┌──────────────────────┐   ┌────────────────────────────────────┐
-│ Personal agent       │   │ Shared agent                       │
-│ user-owned label ·   │   │ admin-defined label ·              │
-│ runs as the user     │   │ optimistic permission check ·      │
-│                      │   │ resolves OS identity ·             │
-│                      │   │ spawns per-user subagent           │
-└──────────┬───────────┘   └─────────────────┬──────────────────┘
-           │  RPC response (or timeout)      │  RPC response (or timeout)
-           └────────────────┬────────────────┘
-                            ▼
-                 (back through router)
-                            │  MCP tool response
-                            ▼
-                      MCP client
+```mermaid
+flowchart TD
+    Client["MCP client\n(Claude, Cursor, Copilot)"]
+    Auth["auth middleware\nresolves Bearer token to userId"]
+    Tool["MCP tool call"]
+    Router["router\nrate check → label resolution → filter check → liveness check"]
+    Personal["Personal agent\nuser-owned label · runs as the user"]
+    Shared["Shared agent\nadmin-defined label · optimistic permission check\nresolves OS identity · spawns per-user subagent"]
+    RouterR["router′\nsame call — awaiting dispatchRpc"]
+    ClientR["MCP client′\nreceives tool response"]
+
+    Client -->|"HTTPS + OAuth Bearer · POST /mcp"| Auth
+    Auth --> Tool
+    Tool --> Router
+    Router -->|"dispatchRpc · { tool, absolute_root, ...params }"| Personal
+    Router -->|"dispatchRpc · { tool, absolute_root, label, user_oidc_sub, user_claims, ...params }"| Shared
+    Personal -->|"RPC response (or timeout)"| RouterR
+    Shared -->|"RPC response (or timeout)"| RouterR
+    RouterR -->|"MCP tool response"| ClientR
+
+    classDef replicated stroke-dasharray: 5 5
+    class RouterR,ClientR replicated
 ```
 
 Agents connect over WebSocket to `wss://<broker>/agent/connect` using a long-lived bearer token. The broker keeps one connection per agent in memory (see [`registry.ts`](../packages/broker/src/registry.ts)) and heartbeats it with WebSocket pings.
