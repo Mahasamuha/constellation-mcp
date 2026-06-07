@@ -8,6 +8,7 @@ RUN apk add --no-cache python3 make g++
 COPY package.json package-lock.json ./
 COPY packages/shared/package.json ./packages/shared/
 COPY packages/broker/package.json ./packages/broker/
+COPY packages/telescope/package.json ./packages/telescope/
 RUN npm ci
 
 COPY tsconfig.base.json ./
@@ -17,10 +18,14 @@ COPY packages/broker/src ./packages/broker/src
 COPY packages/broker/tsconfig.json ./packages/broker/
 COPY packages/broker/prisma ./packages/broker/prisma
 COPY packages/broker/prisma.config.ts ./packages/broker/
+COPY packages/telescope/src ./packages/telescope/src
+COPY packages/telescope/index.html packages/telescope/vite.config.ts packages/telescope/tsconfig.json ./packages/telescope/
 
 RUN npm run build -w packages/shared
 RUN npm exec -w packages/broker -- prisma generate
 RUN npm run build -w packages/broker
+# Produces packages/telescope/dist/app.html — the bundled MCP Apps UI resource
+RUN npm run build -w packages/telescope
 
 # Strip dev dependencies in place so the runtime stage can copy node_modules
 # directly without needing build tools installed there.
@@ -46,6 +51,8 @@ COPY --from=builder /app/packages/broker/node_modules ./packages/broker/node_mod
 
 COPY --from=builder /app/packages/shared/dist ./packages/shared/dist
 COPY --from=builder /app/packages/broker/dist ./packages/broker/dist
+# Bundled file browser UI — read from disk by mcp.ts via ../ui/app.html relative to dist/
+COPY --from=builder /app/packages/telescope/dist/app.html ./packages/broker/ui/app.html
 COPY packages/broker/prisma ./packages/broker/prisma
 COPY packages/broker/prisma.config.ts ./packages/broker/
 

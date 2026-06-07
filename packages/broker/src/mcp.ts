@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -69,6 +70,15 @@ const OkOutput = { ok: z.literal(true) };
 
 const EditFileOutput = { diff: z.string() };
 
+const OpenFileBrowserOutput = {
+  label: z.string().nullable(),
+  path: z.string().nullable(),
+};
+
+// MCP Apps tool visibility — see plans/broker-file-viewer.md "Tool Visibility"
+const VISIBLE_TO_MODEL_AND_APP = { ui: { visibility: ["model", "app"] } };
+const VISIBLE_TO_MODEL_ONLY = { ui: { visibility: ["model"] } };
+
 const DeleteOutput = {
   ok: z.boolean().optional(),
   requires_confirmation: z.boolean().optional(),
@@ -135,6 +145,8 @@ export function buildMcpServer(): McpServer {
 
   registerListHosts(server);
   registerListLabels(server);
+  registerOpenFileBrowser(server);
+  registerFileBrowserResource(server);
   registerListDirectory(server);
   registerFileInfo(server);
   registerFindFiles(server);
@@ -216,6 +228,7 @@ function registerListHosts(server: McpServer): void {
       description: "List all registered hosts with liveness status and their labels",
       outputSchema: { hosts: z.array(z.object(HostEntry)) },
       annotations: { readOnlyHint: true },
+      _meta: VISIBLE_TO_MODEL_ONLY,
     },
     async (extra) => {
       const { userId, userOidcSub } = identity(extra);
@@ -280,6 +293,7 @@ function registerListLabels(server: McpServer): void {
       inputSchema: { host: z.string().optional() },
       outputSchema: { labels: z.array(z.object(LabelEntry)) },
       annotations: { readOnlyHint: true },
+      _meta: VISIBLE_TO_MODEL_AND_APP,
     },
     async ({ host }, extra) => {
       const { userId, userOidcSub } = identity(extra);
@@ -330,6 +344,87 @@ function registerListLabels(server: McpServer): void {
 }
 
 // ---------------------------------------------------------------------------
+// open_file_browser — MCP Apps trigger tool
+// ---------------------------------------------------------------------------
+
+function registerOpenFileBrowser(server: McpServer): void {
+  server.registerTool(
+    "open_file_browser",
+    {
+      title: "Open File Browser",
+      description: "Opens an interactive file browser for the given label. Use to let the user navigate, view, and edit files inline.",
+      inputSchema: {
+        label: z.string().optional(),
+        path: z.string().optional(),
+      },
+      outputSchema: OpenFileBrowserOutput,
+      annotations: { readOnlyHint: true, openWorldHint: true },
+      _meta: {
+        ui: {
+          resourceUri: "ui://constellation/file-browser",
+          visibility: ["model", "app"],
+        },
+      },
+    },
+    async ({ label, path }, extra) => {
+      if (!label) return ok({ label: null, path: null });
+
+      const listing = await dispatch(identity(extra), "list_directory", label, path ? { relative_path: path } : {});
+      return {
+        content: [
+          { type: "text", text: `Opened file browser for label "${label}"${path ? ` at ${path}` : ""}.` },
+          ...listing.content,
+        ],
+        structuredContent: { label, path: path ?? null },
+      };
+    }
+  );
+}
+
+// ---------------------------------------------------------------------------
+// ui://constellation/file-browser — MCP Apps UI resource
+// ---------------------------------------------------------------------------
+
+// Bundled single-file React app from packages/telescope, copied to packages/broker/ui/app.html
+// at Docker build time. Read lazily (and cached) so importing this module — e.g. in
+// tests — doesn't require the UI bundle to have been built first.
+let fileBrowserHtml: string | null = null;
+
+function getFileBrowserHtml(): string {
+  fileBrowserHtml ??= readFileSync(new URL("../ui/app.html", import.meta.url), "utf-8");
+  return fileBrowserHtml;
+}
+
+function registerFileBrowserResource(server: McpServer): void {
+  server.registerResource(
+    "file-browser-ui",
+    "ui://constellation/file-browser",
+    {
+      title: "Constellation File Browser",
+      description: "Interactive file browser UI for browsing and editing files within Constellation labels",
+      mimeType: "text/html;profile=mcp-app",
+      _meta: {
+        ui: {
+          // highlight.js (syntax highlighting) is loaded from cdnjs rather than
+          // bundled — keeps the inlined single-file UI bundle small.
+          csp: { resourceDomains: ["https://cdnjs.cloudflare.com"] },
+          prefersBorder: false,
+        },
+      },
+    },
+    (uri) => ({
+      contents: [
+        {
+          uri: uri.href,
+          mimeType: "text/html;profile=mcp-app",
+          text: getFileBrowserHtml(),
+        },
+      ],
+    })
+  );
+}
+
+// ---------------------------------------------------------------------------
 // list_directory
 // ---------------------------------------------------------------------------
 
@@ -350,6 +445,7 @@ function registerListDirectory(server: McpServer): void {
       },
       outputSchema: ListDirectoryOutput,
       annotations: { readOnlyHint: true, openWorldHint: true },
+      _meta: VISIBLE_TO_MODEL_AND_APP,
     },
     async ({ label, host, ...params }, extra) => dispatch(identity(extra), "list_directory", label, params, host)
   );
@@ -372,6 +468,7 @@ function registerFileInfo(server: McpServer): void {
       },
       outputSchema: FileInfoOutput,
       annotations: { readOnlyHint: true, openWorldHint: true },
+      _meta: VISIBLE_TO_MODEL_AND_APP,
     },
     async ({ label, host, ...params }, extra) => dispatch(identity(extra), "file_info", label, params, host)
   );
@@ -396,6 +493,7 @@ function registerFindFiles(server: McpServer): void {
       },
       outputSchema: FindFilesOutput,
       annotations: { readOnlyHint: true, openWorldHint: true },
+      _meta: VISIBLE_TO_MODEL_AND_APP,
     },
     async ({ label, host, ...params }, extra) => dispatch(identity(extra), "find_files", label, params, host)
   );
@@ -420,6 +518,7 @@ function registerReadFile(server: McpServer): void {
       },
       outputSchema: ReadFileOutput,
       annotations: { readOnlyHint: true, openWorldHint: true },
+      _meta: VISIBLE_TO_MODEL_AND_APP,
     },
     async ({ label, host, ...params }, extra) => dispatch(identity(extra), "read_file", label, params, host)
   );
@@ -445,6 +544,7 @@ function registerGrepFiles(server: McpServer): void {
       },
       outputSchema: GrepFilesOutput,
       annotations: { readOnlyHint: true, openWorldHint: true },
+      _meta: VISIBLE_TO_MODEL_AND_APP,
     },
     async ({ label, host, ...params }, extra) => dispatch(identity(extra), "grep_files", label, params, host)
   );
@@ -469,6 +569,7 @@ function registerWriteFile(server: McpServer): void {
       },
       outputSchema: OkOutput,
       annotations: { idempotentHint: true, destructiveHint: true, openWorldHint: true },
+      _meta: VISIBLE_TO_MODEL_AND_APP,
     },
     async ({ label, host, ...params }, extra) => dispatch(identity(extra), "write_file", label, params, host)
   );
@@ -493,6 +594,7 @@ function registerEditFile(server: McpServer): void {
       },
       outputSchema: EditFileOutput,
       annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: true },
+      _meta: VISIBLE_TO_MODEL_ONLY,
     },
     async ({ label, host, ...params }, extra) => dispatch(identity(extra), "edit_file", label, params, host)
   );
@@ -517,6 +619,7 @@ function registerCopy(server: McpServer): void {
       },
       outputSchema: OkOutput,
       annotations: { openWorldHint: true },
+      _meta: VISIBLE_TO_MODEL_ONLY,
     },
     async ({ label, host, ...params }, extra) => dispatch(identity(extra), "copy", label, params, host)
   );
@@ -539,6 +642,7 @@ function registerCreateDirectory(server: McpServer): void {
       },
       outputSchema: OkOutput,
       annotations: { idempotentHint: true, openWorldHint: true },
+      _meta: VISIBLE_TO_MODEL_ONLY,
     },
     async ({ label, host, ...params }, extra) => dispatch(identity(extra), "create_directory", label, params, host)
   );
@@ -562,6 +666,7 @@ function registerDelete(server: McpServer): void {
       },
       outputSchema: DeleteOutput,
       annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: true },
+      _meta: VISIBLE_TO_MODEL_ONLY,
     },
     async ({ label, host, ...params }, extra) => dispatch(identity(extra), "delete", label, params, host)
   );
@@ -586,6 +691,7 @@ function registerMove(server: McpServer): void {
       },
       outputSchema: OkOutput,
       annotations: { openWorldHint: true },
+      _meta: VISIBLE_TO_MODEL_ONLY,
     },
     async ({ label, host, ...params }, extra) => dispatch(identity(extra), "move", label, params, host)
   );

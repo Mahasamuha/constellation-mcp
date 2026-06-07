@@ -49,6 +49,7 @@ function getTools(server: McpServer): Record<string, RegisteredTool> {
 const EXPECTED_TOOLS = [
   "list_hosts",
   "list_labels",
+  "open_file_browser",
   "list_directory",
   "file_info",
   "find_files",
