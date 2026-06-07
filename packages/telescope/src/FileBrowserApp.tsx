@@ -139,6 +139,16 @@ export function FileBrowserApp() {
   const startEditing = useCallback(() => setIsEditing(true), []);
   const cancelEditing = useCallback(() => setIsEditing(false), []);
 
+  // Prefer floating alongside the conversation (pip) so the browser stays visible
+  // while the user keeps chatting; hosts that don't support it fall back to inline.
+  useEffect(() => {
+    if (!app || !isConnected) return;
+    void (async () => {
+      const { mode } = await app.requestDisplayMode({ mode: "pip" });
+      if (mode !== "pip") await app.requestDisplayMode({ mode: "inline" });
+    })();
+  }, [app, isConnected]);
+
   useEffect(() => {
     if (!app || !isConnected) return;
     void (async () => {
