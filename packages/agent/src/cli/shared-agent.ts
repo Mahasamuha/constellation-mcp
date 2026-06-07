@@ -146,6 +146,18 @@ export function registerSharedAgentCommands(program: Command): void {
         }
       }
 
+      // Check context_file is readable when set and no inline instructions override it
+      for (const label of cfg.labels) {
+        if (!label.instructions && label.context_file) {
+          try {
+            readFileSync(label.context_file, "utf8");
+          } catch (err) {
+            console.error(`Error: label '${label.name}' context_file '${label.context_file}' could not be read: ${(err as Error).message}`);
+            hasError = true;
+          }
+        }
+      }
+
       // Check user_map usernames resolve via getent
       for (const entry of cfg.identity.user_map) {
         const pw = await getpwnam(entry.local_username);

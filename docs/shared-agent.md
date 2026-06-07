@@ -245,6 +245,13 @@ labels:
                                            # warning). Recommended: keep under 250 — this should give
                                            # light context/framing for the label, not document it or
                                            # serve as a heavy instruction set.
+    context_file: /etc/constellation/projects-instructions.txt
+                                           # Optional. Absolute path to a text/markdown file read at
+                                           # sync time and used as `instructions` (same 500-char cap)
+                                           # when no inline `instructions` is set. `instructions` takes
+                                           # precedence when both are present. If missing or unreadable
+                                           # at sync time, instructions is omitted for that sync (logged
+                                           # at info level) rather than causing an error.
     permissions:
       default: read-write                  # read-only | read-write | none
       overrides:

@@ -121,7 +121,7 @@ Starts a device code OAuth flow that requires admin approval. Once approved, wri
 constellation shared-agent validate-config [--config-file <path>]
 ```
 
-Dry-run validation of a shared agent config file. Checks schema, label path existence, `user_map` username resolution, and token availability. Exits non-zero on error.
+Dry-run validation of a shared agent config file. Checks schema, label path existence, `context_file` readability (when set without an inline `instructions` override), `user_map` username resolution, and token availability. Exits non-zero on error.
 
 ### `shared-agent start`
 

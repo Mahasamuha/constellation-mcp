@@ -63,14 +63,26 @@ function buildLabelSyncPayload(cfg: SharedAgentConfig, labelRegistry: Record<str
           reported_path: labelRegistry[l.name]!,
           permission_blob: buildPermissionBlob(l),
         };
+
+        let instructions: string | undefined;
         if (l.instructions) {
-          if (l.instructions.length > MAX_LABEL_INSTRUCTIONS_LENGTH) {
+          instructions = l.instructions;
+        } else if (l.context_file) {
+          try {
+            instructions = readFileSync(l.context_file, "utf8");
+          } catch {
+            log.info({ label: l.name, context_file: l.context_file }, "context_file is set but could not be read — omitting instructions");
+          }
+        }
+
+        if (instructions !== undefined) {
+          if (instructions.length > MAX_LABEL_INSTRUCTIONS_LENGTH) {
             log.warn(
-              { label: l.name, length: l.instructions.length, max: MAX_LABEL_INSTRUCTIONS_LENGTH },
+              { label: l.name, length: instructions.length, max: MAX_LABEL_INSTRUCTIONS_LENGTH },
               "instructions exceeds maximum length — dropping"
             );
           } else {
-            entry.instructions = l.instructions;
+            entry.instructions = instructions;
           }
         }
         return entry;
