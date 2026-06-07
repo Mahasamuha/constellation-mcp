@@ -52,15 +52,20 @@ async function runCli(args: string[], dir: string): Promise<RunResult> {
   });
   program
     .name("constellation")
-    .version(__PKG_VERSION__)
-    .option("--config <dir>", "Override config directory");
+    .version(__PKG_VERSION__);
 
-  registerAgentCommands(program, () => dir);
-  registerBrokerCommands(program, () => dir);
+  registerAgentCommands(program);
+  registerBrokerCommands(program);
+
+  // --config-dir is declared on the `agent`/`broker` parent commands — inject it
+  // right after the subtree name so every test points at the temp config dir.
+  const argv = (args[0] === "agent" || args[0] === "broker")
+    ? [args[0], "--config-dir", dir, ...args.slice(1)]
+    : args;
 
   let exitCode = 0;
   try {
-    await program.parseAsync(["node", "cli", ...args]);
+    await program.parseAsync(["node", "cli", ...argv]);
   } catch (e) {
     if (e instanceof ExitError) {
       exitCode = e.code;

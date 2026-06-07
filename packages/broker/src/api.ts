@@ -88,7 +88,7 @@ apiRouter.get("/api/agents", async (req: Request, res: Response) => {
       host: a.host,
       registered_at: a.registeredAt.toISOString(),
       last_heartbeat_at: a.lastHeartbeatAt?.toISOString() ?? null,
-      last_disconnect_reason: a.lastDisconnectReason ?? null,
+      last_disconnect_reason: a.lastDisconnectReason,
       online: isOnline(a.lastHeartbeatAt),
       connected: getConnection(a.id) !== undefined,
       token_id: a.agentToken.id,

@@ -538,7 +538,7 @@ If the agent does not reconnect within 5 minutes, the new token is revoked and t
 {
   "type": "config_update",
   "paths": [
-    { "label": "projects", "reported_path": "/home/user/projects" },
+    { "label": "projects", "reported_path": "/home/user/projects", "instructions": "optional — see paths.yaml's instructions/context_file; max 500 chars, dropped with a warning if exceeded" },
     { "label": "dotfiles", "reported_path": "/home/user/.config" }
   ]
 }
@@ -562,7 +562,8 @@ If the agent does not reconnect within 5 minutes, the new token is revoked and t
     {
       "name": "projects",
       "reported_path": "/srv/projects",
-      "permission_blob": { ... }
+      "permission_blob": { ... },
+      "instructions": "optional — surfaced via list_labels; max 500 chars, dropped with a warning if exceeded"
     }
   ]
 }

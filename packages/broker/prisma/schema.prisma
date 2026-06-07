@@ -98,11 +98,12 @@ model Agent {
 }
 
 model PathLabel {
-  id           String @id @default(cuid())
-  userId       String @map("user_id")
-  agentId      String @map("agent_id")
+  id           String  @id @default(cuid())
+  userId       String  @map("user_id")
+  agentId      String  @map("agent_id")
   label        String
-  reportedPath String @map("reported_path")
+  reportedPath String  @map("reported_path")
+  instructions String? @map("instructions")
 
   user  User  @relation(fields: [userId], references: [id])
   agent Agent @relation(fields: [agentId], references: [id])
@@ -233,6 +234,7 @@ model SharedPathLabel {
   label          String
   reportedPath   String   @map("reported_path")
   permissionBlob Json     @map("permission_blob")
+  instructions   String?  @map("instructions")
   updatedAt      DateTime @updatedAt @map("updated_at")
 
   agent Agent @relation(fields: [agentId], references: [id])

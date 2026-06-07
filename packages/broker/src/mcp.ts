@@ -25,7 +25,7 @@ const HostEntry = {
 const LabelEntry = {
   label: z.string(),
   host: z.string(),
-  reported_path: z.string(),
+  instructions: z.string().nullable(),
   modality: z.enum(["personal", "shared"]),
   access: z.string(),
 };
@@ -298,13 +298,13 @@ function registerListLabels(server: McpServer): void {
       const labels: Array<{
         label: string;
         host: string;
-        reported_path: string;
+        instructions: string | null;
         modality: "personal" | "shared";
         access: string;
       }> = personalLabels.map((l) => ({
         label: l.label,
         host: l.agent.host,
-        reported_path: l.reportedPath,
+        instructions: l.instructions,
         modality: "personal",
         access: "read-write",
       }));
@@ -316,7 +316,7 @@ function registerListLabels(server: McpServer): void {
         labels.push({
           label: l.label,
           host: l.agent.host,
-          reported_path: l.reportedPath,
+          instructions: l.instructions,
           modality: "shared",
           access,
         });

@@ -136,3 +136,45 @@
   color: #c0392b;
   margin: 0;
 }
+
+.paths-textarea {
+  width: 100%;
+  padding: 0.4rem 0.6rem;
+  font-size: 0.875rem;
+  font-family: inherit;
+  border: 1px solid light-dark(#ccc, #444);
+  border-radius: 5px;
+  background: light-dark(#fff, #1e1e1e);
+  color: light-dark(#111, #f0f0f0);
+  outline: none;
+  resize: vertical;
+  min-height: 3.5rem;
+  box-sizing: border-box;
+}
+
+.paths-char-count {
+  font-size: 0.7rem;
+  color: light-dark(#aaa, #666);
+  text-align: right;
+}
+
+.paths-char-count.over-limit {
+  color: #c0392b;
+}
+
+.paths-char-hint {
+  color: light-dark(#b8860b, #d4a72c);
+}
+
+.paths-table td.instructions-cell {
+  color: light-dark(#666, #999);
+  font-size: 0.8rem;
+  max-width: 16rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.instructions-empty {
+  color: light-dark(#ccc, #555);
+}

@@ -1,6 +1,7 @@
 import { Command } from "commander";
 import open from "open";
 import {
+  configDir,
   loadAgentConfig,
   loadBrokerSession,
   writeBrokerSession,
@@ -198,14 +199,16 @@ function die(res: Response): never {
 // Register all broker commands
 // ---------------------------------------------------------------------------
 
-export function registerBrokerCommands(program: Command, getConfigDir: () => string): void {
-  // Capture as a local const so Commander action callbacks don't confuse it with an arg.
-  const cfgDir = getConfigDir;
-
+export function registerBrokerCommands(program: Command): void {
   const broker = program
     .command("broker")
     .description("Manage the remote Constellation broker")
-    .option("--broker <url>", "Override broker URL");
+    .option("--broker <url>", "Override broker URL")
+    .option("--config-dir <dir>", "Override config directory", process.env["CONSTELLATION_CONFIG_DIR"]);
+
+  const getConfigDir = (): string => configDir(broker.opts<{ configDir?: string }>().configDir);
+  // Capture as a local const so Commander action callbacks don't confuse it with an arg.
+  const cfgDir = getConfigDir;
 
   // -------------------------------------------------------------------------
   // login

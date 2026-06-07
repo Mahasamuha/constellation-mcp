@@ -1,7 +1,7 @@
 import { checkLabelPath } from "./paths.js";
 import { readFileSync, writeFileSync, statSync } from "node:fs";
 import { userInfo } from "node:os";
-import { createLogger } from "@constellation/shared";
+import { createLogger, MAX_LABEL_INSTRUCTIONS_LENGTH } from "@constellation/shared";
 import { loadSharedConfig, validateSharedConfig, type SharedAgentConfig } from "./config.js";
 import { resolveIdentity, isIdentityError } from "./identity.js";
 import { checkPermission, buildPermissionBlob } from "./permissions.js";
@@ -57,11 +57,36 @@ function buildLabelSyncPayload(cfg: SharedAgentConfig, labelRegistry: Record<str
     type: "shared_label_sync",
     labels: cfg.labels
       .filter((l) => labelRegistry[l.name] !== undefined)
-      .map((l) => ({
-        name: l.name,
-        reported_path: labelRegistry[l.name]!,
-        permission_blob: buildPermissionBlob(l),
-      })),
+      .map((l) => {
+        const entry: { name: string; reported_path: string; permission_blob: object; instructions?: string } = {
+          name: l.name,
+          reported_path: labelRegistry[l.name]!,
+          permission_blob: buildPermissionBlob(l),
+        };
+
+        let instructions: string | undefined;
+        if (l.instructions) {
+          instructions = l.instructions;
+        } else if (l.context_file) {
+          try {
+            instructions = readFileSync(l.context_file, "utf8");
+          } catch {
+            log.info({ label: l.name, context_file: l.context_file }, "context_file is set but could not be read — omitting instructions");
+          }
+        }
+
+        if (instructions !== undefined) {
+          if (instructions.length > MAX_LABEL_INSTRUCTIONS_LENGTH) {
+            log.warn(
+              { label: l.name, length: instructions.length, max: MAX_LABEL_INSTRUCTIONS_LENGTH },
+              "instructions exceeds maximum length — dropping"
+            );
+          } else {
+            entry.instructions = instructions;
+          }
+        }
+        return entry;
+      }),
   };
 }
 

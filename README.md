@@ -70,12 +70,15 @@ The fastest path is Railway: deploy a broker with one click, install the agent b
 #    - Generate a public domain under Settings → Networking
 #    - Deploy — railway.toml is detected automatically
 
-# 2. Initialize the agent on each machine you want to expose
+# 2. Visit the broker URL and complete the setup wizard to create your admin account
+#    https://<your-app>.up.railway.app
+
+# 3. Initialize the agent on each machine you want to expose
 constellation agent init --broker https://<your-app>.up.railway.app
 constellation agent paths add projects /home/user/projects
 constellation agent install && constellation agent start
 
-# 3. Add the broker to your MCP client
+# 4. Add the broker to your MCP client
 #    Claude: Settings → Integrations → add URL
 #    Cursor: .cursor/mcp.json
 { "mcpServers": { "constellation": { "url": "https://<your-app>.up.railway.app/mcp" } } }

@@ -19,8 +19,3 @@ export function runDaemon(configDirOverride?: string): void {
   process.on("SIGTERM", () => { conn.stop(); process.exit(0); });
   process.on("SIGINT",  () => { conn.stop(); process.exit(0); });
 }
-
-// Run when executed directly as the daemon entry point.
-if (import.meta.url === `file://${process.argv[1]}`) {
-  runDaemon(process.env["CONSTELLATION_CONFIG_DIR"]);
-}

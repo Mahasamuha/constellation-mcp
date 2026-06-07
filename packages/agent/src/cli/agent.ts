@@ -4,15 +4,18 @@ import { realpathSync, statSync } from "node:fs";
 import WebSocket from "ws";
 import open from "open";
 import {
+  configDir,
   loadAgentConfig,
   loadPathsConfig,
   writeAgentConfig,
   writeAgentToken,
   writePathsConfig,
+  buildConfigUpdatePaths,
   agentYamlPath,
   pathsYamlPath,
   type AgentConfig,
 } from "../config.js";
+import { MAX_LABEL_INSTRUCTIONS_LENGTH, type PathEntry } from "@constellation/shared";
 import {
   install,
   startService,
@@ -24,8 +27,13 @@ import {
 import { runDaemon } from "../index.js";
 import { poll, maskToken } from "./util.js";
 
-export function registerAgentCommands(program: Command, getConfigDir: () => string): void {
-  const agent = program.command("agent").description("Manage the local Constellation agent");
+export function registerAgentCommands(program: Command): void {
+  const agent = program
+    .command("agent")
+    .description("Manage the local Constellation agent")
+    .option("--config-dir <dir>", "Override config directory", process.env["CONSTELLATION_CONFIG_DIR"]);
+
+  const getConfigDir = (): string => configDir(agent.opts<{ configDir?: string }>().configDir);
 
   // -------------------------------------------------------------------------
   // init
@@ -145,7 +153,7 @@ export function registerAgentCommands(program: Command, getConfigDir: () => stri
     .option("--foreground", "Run in the foreground (invoked by the service manager)")
     .action((opts: { foreground?: boolean }) => {
       if (opts.foreground) {
-        runDaemon((agent.opts() as { config?: string }).config);
+        runDaemon(agent.opts<{ configDir?: string }>().configDir);
       } else {
         startService();
       }
@@ -312,8 +320,9 @@ export function registerAgentCommands(program: Command, getConfigDir: () => stri
     .command("add")
     .argument("<label>", "Label name")
     .argument("<path>", "Absolute path on this machine")
+    .option("--instructions <text>", `Inline instructions surfaced to MCP clients (max ${MAX_LABEL_INSTRUCTIONS_LENGTH} characters)`)
     .description("Add a path label and sync to the broker")
-    .action(async (label: string, pathArg: string) => {
+    .action(async (label: string, pathArg: string, opts: { instructions?: string }) => {
       const dir = getConfigDir();
       const cfg = loadPathsConfig(dir);
       if (cfg.paths.some((p) => p.label === label)) {
@@ -331,7 +340,9 @@ export function registerAgentCommands(program: Command, getConfigDir: () => stri
         console.error(`Error: '${pathArg}' is not a directory.`);
         process.exit(1);
       }
-      cfg.paths.push({ label, path: resolvedPath });
+      const entry: PathEntry = { label, path: resolvedPath };
+      if (opts.instructions) entry.instructions = opts.instructions;
+      cfg.paths.push(entry);
       writePathsConfig(dir, cfg);
       await syncPaths(dir);
       console.log(`Label '${label}' added and synced.`);
@@ -364,7 +375,7 @@ async function syncPaths(dir: string): Promise<void> {
   await agentControlCommand(dir, "config_update",
     (_cfg, paths) => ({
       type: "config_update",
-      paths: paths.map((p) => ({ label: p.label, reported_path: p.path })),
+      paths: buildConfigUpdatePaths(paths),
     }),
     "config_update_ok", "config_update_error"
   );
@@ -377,7 +388,7 @@ async function syncPaths(dir: string): Promise<void> {
 async function agentControlCommand(
   dir: string,
   _cmdName: string,
-  buildMsg: (cfg: AgentConfig, paths: Array<{ label: string; path: string }>) => object,
+  buildMsg: (cfg: AgentConfig, paths: PathEntry[]) => object,
   successType: string,
   errorType: string | null
 ): Promise<object | null> {

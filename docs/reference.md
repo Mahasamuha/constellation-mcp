@@ -12,10 +12,10 @@
 ## Agent CLI
 
 ```sh
-constellation [--config <dir>] <command>
+constellation agent [--config-dir <dir>] <command>
 ```
 
-`--config <dir>` and `CONSTELLATION_CONFIG_DIR` both override the default config directory (`~/.config/constellation/` on Linux/macOS, `%APPDATA%\constellation\` on Windows).
+`--config-dir <dir>` (an option on the `agent` subcommand, e.g. `constellation agent --config-dir /path config show`) and `CONSTELLATION_CONFIG_DIR` both override the default config directory (`~/.config/constellation/` on Linux/macOS, `%APPDATA%\constellation\` on Windows).
 
 ### `agent init`
 
@@ -85,9 +85,9 @@ Prints the resolved config directory path.
 
 Lists labels and paths from `paths.yaml`.
 
-### `agent paths add <label> <path>`
+### `agent paths add <label> <path> [--instructions <text>]`
 
-Appends an entry to `paths.yaml` and syncs to the broker immediately.
+Appends an entry to `paths.yaml` and syncs to the broker immediately. `--instructions` sets inline text (max 500 characters) surfaced to MCP clients via `list_labels`; see [`paths.yaml`](configuration.md#pathsyaml) for the relationship with `context_file`.
 
 ### `agent paths remove <label>`
 
@@ -98,6 +98,8 @@ Removes an entry from `paths.yaml` and syncs to the broker immediately.
 ## Shared Agent CLI
 
 The shared agent is a system-level daemon that serves files to multiple users from a single process. It reads from a YAML config file and authenticates via `CONSTELLATION_AGENT_TOKEN` in the environment (typically sourced from an env file).
+
+Every subcommand below that takes `--config-file <path>` resolves it the same way: the flag, then `$CONSTELLATION_SHARED_AGENT_CONFIG`, then `/etc/constellation/shared-agent.yaml` — so `--config-file` can be omitted when using the conventional path.
 
 ### `shared-agent register`
 
@@ -116,23 +118,23 @@ Starts a device code OAuth flow that requires admin approval. Once approved, wri
 ### `shared-agent validate-config`
 
 ```sh
-constellation shared-agent validate-config --config <path>
+constellation shared-agent validate-config [--config-file <path>]
 ```
 
-Dry-run validation of a shared agent config file. Checks schema, label path existence, `user_map` username resolution, and token availability. Exits non-zero on error.
+Dry-run validation of a shared agent config file. Checks schema, label path existence, `context_file` readability (when set without an inline `instructions` override), `user_map` username resolution, and token availability. Exits non-zero on error.
 
 ### `shared-agent start`
 
 ```sh
-constellation shared-agent start --config <path>
+constellation shared-agent start [--config-file <path>]
 ```
 
-Starts the shared agent daemon. `--config` can also be supplied via `CONSTELLATION_SHARED_AGENT_CONFIG`.
+Starts the shared agent daemon.
 
 ### `shared-agent status [--json]`
 
 ```sh
-constellation shared-agent status --config <path>
+constellation shared-agent status [--config-file <path>]
 ```
 
 Prints agent name, broker URL, and label list from the config file.
@@ -140,7 +142,7 @@ Prints agent name, broker URL, and label list from the config file.
 ### `shared-agent install`
 
 ```sh
-constellation shared-agent install --config <path> [--unit-name <name>] [--user <user>]
+constellation shared-agent install [--config-file <path>] [--unit-name <name>] [--user <user>]
 ```
 
 Prints a systemd system unit file to stdout. Redirect it to `/etc/systemd/system/<unit-name>.service` and run `systemctl daemon-reload && systemctl enable --now <unit-name>`.
@@ -161,7 +163,7 @@ Stops the systemd unit (calls `systemctl stop`). If the agent is not managed by 
 ### `shared-agent rotate-token`
 
 ```sh
-constellation shared-agent rotate-token --config <path>
+constellation shared-agent rotate-token [--config-file <path>]
 ```
 
 Rotates the agent token via a WebSocket connection and writes the new token to the `env_file` specified in the config. Restart the agent afterwards to reconnect.
@@ -221,6 +223,8 @@ Edits `agent.yaml` fields:
 ## Broker CLI
 
 These commands manage the broker remotely via the management API. Requires `constellation broker login` first. The session in `broker-session.yaml` is refreshed silently as needed.
+
+`--config-dir <dir>` (e.g. `constellation broker --config-dir /path login`) and `CONSTELLATION_CONFIG_DIR` override the default config directory where `broker-session.yaml` is read and written.
 
 ### `broker login [--broker <url>]`
 
@@ -367,7 +371,9 @@ List path labels, optionally filtered by host.
 |---|---|---|
 | `host` | string? | Filter to a specific host |
 
-**Output**: `{ labels: { label, host, reported_path }[] }`
+**Output**: `{ labels: { label, host, instructions, modality, access }[] }`
+
+`instructions` is the label's configured inline text or `context_file` contents (or `null` if neither is set, the cap was exceeded, or the file couldn't be read). Capped at 500 characters — see [`paths.yaml`](configuration.md#pathsyaml).
 
 ---
 

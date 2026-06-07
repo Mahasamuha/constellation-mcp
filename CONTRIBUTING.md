@@ -12,7 +12,7 @@
 
 ## Development Setup
 
-**Prerequisites:** Node.js 20+, Docker (for Postgres)
+**Prerequisites:** Node.js 24+ (matches CI), Docker (for Postgres)
 
 ```sh
 git clone https://github.com/Mahasamuha/constellation-mcp.git
@@ -20,7 +20,7 @@ cd constellation-mcp
 npm install
 ```
 
-`npm install` at the root installs dependencies for all workspaces (`packages/broker`, `packages/agent`, `packages/shared`).
+`npm install` at the root installs dependencies for all workspaces (`packages/broker`, `packages/agent`, `packages/shared`, `packages/agent-gui`).
 
 ---
 
@@ -110,6 +110,12 @@ For readable logs:
 LOG_LEVEL=debug CONSTELLATION_CONFIG_DIR=/tmp/constellation-dev \
   node packages/agent/dist/cli.js agent start --foreground | npx pino-pretty
 ```
+
+### Shared agent mode
+
+The shared agent (`constellation shared-agent ...` — see `packages/agent/src/cli/shared-agent.ts` and `packages/agent/src/shared/`) is a separate runtime mode for machines shared by multiple OS users. It's Linux-only and needs `CAP_SETUID`/`CAP_SETGID` plus multiple real local accounts to exercise end-to-end, so it's impractical to spin up casually in dev.
+
+For most changes, the unit tests under `packages/agent/src/shared/*.test.ts` (config, identity resolution, permissions, subagent spawning) give fast coverage of the core logic without a live setup. If you do need to validate config parsing or the operator commands without spawning subagents, `constellation shared-agent validate-config` and `constellation shared-agent status` are safe to run as a normal user. Full deployment and security-model details live in [`docs/shared-agent.md`](docs/shared-agent.md).
 
 ---
 
