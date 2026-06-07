@@ -58,6 +58,54 @@ The agent refuses to spawn subagents as:
 
 See the config reference in §5 for details.
 
+### GID restrictions
+
+UID checks gate on a single value, but a subagent's *effective* privileges
+depend on its **entire group membership** — primary group plus every
+supplementary group the OS resolves for that account via `initgroups()` at
+privilege-drop time (see `subagent-worker.ts`). A user with an unremarkable
+primary GID could still be a secondary member of `docker`, `sudo`, or any
+group that owns files outside the labels you've configured — none of which the
+UID allow/block lists would ever see.
+
+Because group membership is multi-valued, there's no equivalent of
+`allowed_range` / a single "blocked GID" that can be trimmed away — the agent
+either spawns the subagent with the user's full, OS-resolved group list (the
+only option `initgroups()` supports; see ADR 0014) or it doesn't spawn at all.
+So **before every dispatch** (not just at first spawn — group membership is
+re-resolved on each call so admin changes take effect without restarting the
+agent or waiting for a pooled worker to be torn down), the agent resolves the
+target user's complete group list and refuses to proceed if *any* member is on
+the blocked set:
+
+- GID 0 (`root`'s group) — always blocked, not configurable
+- The shared agent's own primary GID — always blocked
+- GIDs in `subagent_gid.blocked_gids` (if configured)
+
+If the lookup itself fails (the agent can't enumerate the user's groups), the
+agent fails closed and refuses to spawn rather than risk running with
+unverified membership.
+
+**What gets logged vs. what gets returned.** When a spawn is blocked for GID
+reasons, the agent logs the *full* list of blocked GIDs that triggered the
+rejection — tagged with `request_id`, `username`, and `uid` — so an
+administrator has a concrete starting point to investigate (check the user's
+group memberships with `id <username>` and cross-reference against
+`subagent_gid.blocked_gids`, `root`, and the agent's own group). The error
+returned to the *caller*, however, intentionally says only that *some* group is
+blocked and never names which one(s) — naming them would let a user enumerate
+group membership of accounts they don't otherwise have visibility into. The
+caller-facing message does include the same `request_id` as a correlation
+token, so the user can hand it to an admin who can then grep the agent log /
+audit log for the matching entry and see exactly what was blocked:
+
+```
+Access denied: one or more of your OS groups are blocked by the shared agent
+administrator. Contact your administrator with reference ID: <request_id>
+```
+
+See the config reference in §5 for details.
+
 ---
 
 ## 3. Request Flow
@@ -179,6 +227,14 @@ subagent_uid:
     min: 60000                             # Block UIDs in this range even if in allowed_range
     max: 65534
   blocked_uids: [999]                      # Block specific UIDs
+
+subagent_gid:
+  blocked_gids: [27, 999]                  # Block subagents whose user belongs to ANY of these
+                                           # groups (e.g. 27 = `sudo` on Debian/Ubuntu). Membership
+                                           # is resolved via the full OS group list (primary +
+                                           # supplementary), not just the user's primary GID.
+                                           # GID 0 (root) and the agent's own GID are always
+                                           # blocked, regardless of this list.
 
 labels:
   - name: projects

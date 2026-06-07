@@ -55,6 +55,28 @@ export async function getpwnam(username: string): Promise<{ uid: number; gid: nu
   }
 }
 
+/**
+ * Resolves the full set of group IDs (primary + supplementary) for a username
+ * via `id -G` (NSS-aware; resolves the same membership that initgroups() will
+ * apply to the subagent worker at privilege-drop time). Returns null if the
+ * lookup fails — callers should treat that as "cannot verify, do not proceed"
+ * rather than "user has no groups".
+ */
+export async function getGroupIds(username: string): Promise<number[] | null> {
+  if (!username) return null;
+  try {
+    const { stdout } = await execFileAsync("id", ["-G", username]);
+    const ids = stdout
+      .trim()
+      .split(/\s+/)
+      .map((s) => parseInt(s, 10))
+      .filter((n) => !isNaN(n));
+    return ids.length > 0 ? ids : null;
+  } catch {
+    return null;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Three-tier resolution chain
 // ---------------------------------------------------------------------------

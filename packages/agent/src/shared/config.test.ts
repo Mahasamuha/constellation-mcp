@@ -130,6 +130,7 @@ function baseConfig(overrides: Partial<SharedAgentConfig> = {}): SharedAgentConf
     subagent_idle_timeout_seconds: 300,
     subagent_rpc_timeout_seconds: 30,
     subagent_uid: {},
+    subagent_gid: {},
     labels: [],
     identity: { claims: [], user_map: [], allow_preferred_username: false },
     audit_log: "/var/log/constellation/audit.jsonl",

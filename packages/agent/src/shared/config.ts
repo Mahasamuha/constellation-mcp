@@ -32,6 +32,10 @@ export interface SubagentUidConfig {
   blocked_uids?: number[];
 }
 
+export interface SubagentGidConfig {
+  blocked_gids?: number[];
+}
+
 export interface IdentityConfig {
   claims: string[];
   user_map: Array<{ oidc_sub: string; local_username: string }>;
@@ -45,6 +49,7 @@ export interface SharedAgentConfig {
   subagent_idle_timeout_seconds: number;
   subagent_rpc_timeout_seconds: number;
   subagent_uid: SubagentUidConfig;
+  subagent_gid: SubagentGidConfig;
   labels: LabelConfig[];
   identity: IdentityConfig;
   audit_log: string;
@@ -72,6 +77,7 @@ export function loadSharedConfig(path: string): SharedAgentConfig {
 
   const labels = parseLabels(parsed);
   const subagent_uid = parseSubagentUid((parsed["subagent_uid"] ?? {}) as Record<string, unknown>);
+  const subagent_gid = parseSubagentGid((parsed["subagent_gid"] ?? {}) as Record<string, unknown>);
   const identity = parseIdentity((parsed["identity"] ?? {}) as Record<string, unknown>);
 
   return {
@@ -81,6 +87,7 @@ export function loadSharedConfig(path: string): SharedAgentConfig {
     subagent_idle_timeout_seconds,
     subagent_rpc_timeout_seconds,
     subagent_uid,
+    subagent_gid,
     labels,
     identity,
     audit_log,
@@ -198,6 +205,16 @@ function parseSubagentUid(raw: Record<string, unknown>): SubagentUidConfig {
 
   if (Array.isArray(raw["blocked_uids"])) {
     cfg.blocked_uids = (raw["blocked_uids"] as unknown[]).filter((v): v is number => typeof v === "number");
+  }
+
+  return cfg;
+}
+
+function parseSubagentGid(raw: Record<string, unknown>): SubagentGidConfig {
+  const cfg: SubagentGidConfig = {};
+
+  if (Array.isArray(raw["blocked_gids"])) {
+    cfg.blocked_gids = (raw["blocked_gids"] as unknown[]).filter((v): v is number => typeof v === "number");
   }
 
   return cfg;

@@ -3,7 +3,7 @@ import { userInfo } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { createLogger } from "@constellation/shared";
-import type { ResolvedIdentity } from "./identity.js";
+import { getGroupIds, type ResolvedIdentity } from "./identity.js";
 import type { SharedAgentConfig } from "./config.js";
 
 const log = createLogger("agent:subagent-pool");
@@ -86,6 +86,71 @@ export function checkUidRestrictions(uid: number, cfg: SharedAgentConfig): strin
 }
 
 // ---------------------------------------------------------------------------
+// GID restriction checks
+// ---------------------------------------------------------------------------
+
+/**
+ * Checks the target user's full group membership — primary plus supplementary,
+ * resolved the same way initgroups() will apply it when the worker drops
+ * privileges — against an always-blocked set (root's group, the shared agent's
+ * own group) and the admin-configured blocklist.
+ *
+ * checkUidRestrictions can reject a single bad UID outright; group membership
+ * doesn't have an equivalent single value to gate on; a user can be a member of
+ * many groups, any one of which (e.g. `docker`, `sudo`, a group that owns
+ * sensitive files outside any label) could grant the subagent privileges the
+ * admin never intended. So instead of trying to run with a *trimmed* group
+ * list (which would mean replacing initgroups() with a hand-rolled setgroups()
+ * call — see ADR 0014), we resolve the full set up front and refuse to spawn at
+ * all if any member is on the blocked list.
+ *
+ * The full list of blocked groups is logged for the administrator (keyed by
+ * request_id so they have a starting point to investigate), but the message
+ * returned to the caller intentionally says only that *some* group is blocked —
+ * never which one(s) — so a user can't use this signal to enumerate group
+ * membership of accounts they don't control.
+ */
+async function checkGidRestrictions(
+  identity: ResolvedIdentity,
+  cfg: SharedAgentConfig,
+  requestId: string
+): Promise<DispatchError | null> {
+  const groups = await getGroupIds(identity.username);
+  if (groups === null) {
+    log.error(
+      { username: identity.username, uid: identity.uid, request_id: requestId },
+      "Failed to resolve group membership for subagent user — refusing to spawn"
+    );
+    return {
+      kind: "spawn_failed",
+      message: `Could not verify group membership for this account. Contact your administrator with reference ID: ${requestId}`,
+    };
+  }
+
+  const agentGid = userInfo().gid;
+  const blocked = new Set<number>([0, agentGid, ...(cfg.subagent_gid.blocked_gids ?? [])]);
+  const hits = groups.filter((g) => blocked.has(g));
+
+  if (hits.length > 0) {
+    log.warn(
+      {
+        username: identity.username,
+        uid: identity.uid,
+        request_id: requestId,
+        blocked_groups: hits,
+      },
+      "Subagent spawn blocked — user belongs to one or more blocked groups"
+    );
+    return {
+      kind: "gid_blocked",
+      message: `Access denied: one or more of your OS groups are blocked by the shared agent administrator. Contact your administrator with reference ID: ${requestId}`,
+    };
+  }
+
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // Worker environment
 // ---------------------------------------------------------------------------
 
@@ -133,6 +198,7 @@ export interface DispatchResult {
 
 export type DispatchError =
   | { kind: "uid_blocked"; message: string }
+  | { kind: "gid_blocked"; message: string }
   | { kind: "spawn_failed"; message: string }
   | { kind: "timeout"; message: string }
   | { kind: "worker_error"; message: string };
@@ -174,6 +240,12 @@ export class SubagentPool {
       log.warn({ username: identity.username, uid: identity.uid, restriction }, "UID blocked");
       return { kind: "uid_blocked", message: restriction };
     }
+
+    // GID restriction checks — group membership is resolved fresh on every
+    // dispatch (not just at spawn) so changes to a user's groups take effect
+    // without waiting for their pooled worker to be torn down.
+    const gidBlock = await checkGidRestrictions(identity, this.cfg, requestId);
+    if (gidBlock) return gidBlock;
 
     let entry = this.pool.get(identity.username);
 
