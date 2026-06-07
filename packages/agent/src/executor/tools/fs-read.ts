@@ -12,7 +12,6 @@ import { join, relative } from "node:path";
 import picomatch from "picomatch";
 
 export interface ListDirectoryParams {
-  relative_path?: string;
   recursive?: boolean;
   max_depth?: number;
   limit?: number;
@@ -33,9 +32,9 @@ export interface ListDirectoryResult {
 
 export async function listDirectory(
   root: string,
+  base: string,
   params: ListDirectoryParams
 ): Promise<ListDirectoryResult> {
-  const base = params.relative_path ? join(root, params.relative_path) : root;
   const recursive = params.recursive ?? false;
   const maxDepth = params.max_depth;
   const hardCap = 10_000;
@@ -96,9 +95,8 @@ export interface FileInfoResult {
   target?: string;
 }
 
-export async function fileInfo(root: string, relativePath: string): Promise<FileInfoResult> {
-  const full = join(root, relativePath);
-  const stat = await fs.lstat(full);
+export async function fileInfo(absolutePath: string): Promise<FileInfoResult> {
+  const stat = await fs.lstat(absolutePath);
 
   const type = stat.isSymbolicLink() ? "symlink" : stat.isDirectory() ? "directory" : "file";
   const result: FileInfoResult = {
@@ -108,7 +106,7 @@ export async function fileInfo(root: string, relativePath: string): Promise<File
   };
 
   if (type === "symlink") {
-    result.target = await fs.readlink(full);
+    result.target = await fs.readlink(absolutePath);
   }
 
   return result;
@@ -119,7 +117,6 @@ export async function fileInfo(root: string, relativePath: string): Promise<File
 // ---------------------------------------------------------------------------
 
 export interface ReadFileParams {
-  relative_path: string;
   start_line?: number;
   end_line?: number;
   max_file_size_kb: number;
@@ -131,11 +128,10 @@ export interface ReadFileResult {
 }
 
 export async function readFile(
-  root: string,
+  absolutePath: string,
   params: ReadFileParams
 ): Promise<ReadFileResult> {
-  const fullPath = join(root, params.relative_path);
-  const stat = await fs.stat(fullPath);
+  const stat = await fs.stat(absolutePath);
   const capBytes = params.max_file_size_kb * 1024;
   const isRangeRead = params.start_line !== undefined || params.end_line !== undefined;
 
@@ -147,10 +143,10 @@ export async function readFile(
   }
 
   if (isRangeRead && stat.size > capBytes) {
-    return readRangeStreamed(fullPath, params, capBytes);
+    return readRangeStreamed(absolutePath, params, capBytes);
   }
 
-  const raw = await fs.readFile(fullPath, "utf8");
+  const raw = await fs.readFile(absolutePath, "utf8");
   const lines = raw.split("\n");
   const totalLines = lines.length;
 

@@ -115,7 +115,7 @@ export class AgentExecutor {
     }
 
     try {
-      const content = await this.dispatch(tool, root, p, resolvedDstRoot);
+      const content = await this.dispatch(tool, root, p, resolvedPaths);
       return { content };
     } catch (err) {
       const e = err as Error & {
@@ -137,12 +137,18 @@ export class AgentExecutor {
     tool: string,
     root: string,
     p: Record<string, unknown>,
-    resolvedDstRoot: string | undefined
+    resolvedPaths: Map<string, string>
   ): Promise<object> {
+    // Operate on the realpath-resolved, boundary-checked paths computed during
+    // validation — never re-derive join(root, relative_path), which would
+    // re-walk (and could re-resolve differently from) any symlinks in the path.
+    const relPath = resolvedPaths.get("relative_path");
+    const srcPath = resolvedPaths.get("src_relative_path");
+    const dstPath = resolvedPaths.get("dst_relative_path");
+
     switch (tool) {
       case "list_directory":
-        return listDirectory(root, {
-          relative_path: s(p, "relative_path"),
+        return listDirectory(root, relPath ?? root, {
           recursive: b(p, "recursive"),
           max_depth: n(p, "max_depth"),
           limit: n(p, "limit"),
@@ -150,60 +156,53 @@ export class AgentExecutor {
         });
 
       case "file_info":
-        return fileInfo(root, req(p, "relative_path"));
+        return fileInfo(relPath!);
 
       case "find_files":
-        return findFiles(root, {
+        return findFiles(root, relPath ?? root, {
           pattern: req(p, "pattern"),
-          relative_path: s(p, "relative_path"),
           type: p["type"] as "glob" | "regex" | undefined,
         });
 
       case "read_file":
-        return readFile(root, {
-          relative_path: req(p, "relative_path"),
+        return readFile(relPath!, {
           start_line: n(p, "start_line"),
           end_line: n(p, "end_line"),
           max_file_size_kb: this.maxFileSizeKb,
         });
 
       case "grep_files":
-        return grepFiles(root, {
+        return grepFiles(root, relPath ?? root, {
           pattern: req(p, "pattern"),
-          relative_path: s(p, "relative_path"),
           file_glob: s(p, "file_glob"),
           type: p["type"] as "literal" | "regex" | undefined,
         });
 
       case "write_file":
-        await writeFile(root, {
-          relative_path: req(p, "relative_path"),
+        await writeFile(relPath!, {
           content: req(p, "content"),
           mode: p["mode"] as "overwrite" | "append" | undefined,
         });
         return { ok: true };
 
       case "edit_file":
-        return editFile(root, {
-          relative_path: req(p, "relative_path"),
+        return editFile(relPath!, req(p, "relative_path"), {
           edits: p["edits"] as Array<{ old_text: string; new_text: string }>,
           dry_run: b(p, "dry_run"),
         });
 
       case "copy":
-        await copyPath(root, {
-          src_relative_path: req(p, "src_relative_path"),
+        await copyPath(srcPath!, dstPath!, {
           dst_relative_path: req(p, "dst_relative_path"),
-          dst_root: resolvedDstRoot,
         });
         return { ok: true };
 
       case "create_directory":
-        await createDirectory(root, req(p, "relative_path"));
+        await createDirectory(relPath!);
         return { ok: true };
 
       case "delete": {
-        const summary = await deletePath(root, {
+        const summary = await deletePath(relPath!, {
           relative_path: req(p, "relative_path"),
           recursive: b(p, "recursive"),
         });
@@ -211,10 +210,8 @@ export class AgentExecutor {
       }
 
       case "move":
-        await movePath(root, {
-          src_relative_path: req(p, "src_relative_path"),
+        await movePath(srcPath!, dstPath!, {
           dst_relative_path: req(p, "dst_relative_path"),
-          dst_root: resolvedDstRoot,
         });
         return { ok: true };
 

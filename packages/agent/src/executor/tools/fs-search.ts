@@ -9,7 +9,6 @@ import safeRegex from "safe-regex2";
 
 export interface FindFilesParams {
   pattern: string;
-  relative_path?: string;
   type?: "glob" | "regex";
 }
 
@@ -20,9 +19,9 @@ export interface FindFilesResult {
 
 export async function findFiles(
   root: string,
+  base: string,
   params: FindFilesParams
 ): Promise<FindFilesResult> {
-  const base = params.relative_path ? join(root, params.relative_path) : root;
   if (params.type === "regex" && !safeRegex(params.pattern)) {
     throw new Error("Pattern rejected: potential ReDoS vulnerability");
   }
@@ -62,7 +61,6 @@ export async function findFiles(
 
 export interface GrepFilesParams {
   pattern: string;
-  relative_path?: string;
   file_glob?: string;
   type?: "literal" | "regex";
 }
@@ -84,9 +82,9 @@ export interface GrepFilesResult {
 
 export async function grepFiles(
   root: string,
+  base: string,
   params: GrepFilesParams
 ): Promise<GrepFilesResult> {
-  const base = params.relative_path ? join(root, params.relative_path) : root;
   const isRegex = params.type === "regex";
   if (isRegex && !safeRegex(params.pattern)) {
     throw new Error("Pattern rejected: potential ReDoS vulnerability");
