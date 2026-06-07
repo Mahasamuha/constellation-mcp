@@ -56,7 +56,7 @@ interface PoolEntry {
 // UID restriction checks
 // ---------------------------------------------------------------------------
 
-function checkUidRestrictions(uid: number, cfg: SharedAgentConfig): string | null {
+export function checkUidRestrictions(uid: number, cfg: SharedAgentConfig): string | null {
   if (uid === 0) return "UID 0 (root) is always blocked";
 
   const agentUid = userInfo().uid;
@@ -188,7 +188,7 @@ export class SubagentPool {
   }
 
   private async spawn(identity: ResolvedIdentity): Promise<PoolEntry | DispatchError> {
-    const { username, uid, gid } = identity;
+    const { username, uid } = identity;
 
     log.info({ username, uid }, "Spawning subagent worker");
 
