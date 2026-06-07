@@ -155,6 +155,14 @@ describe("initActivitySinks / postgres sink", () => {
       expect(mockLog.warn).toHaveBeenCalledWith({ err }, "Failed to write activity log entry")
     );
   });
+
+  it("writes events with a null userId — e.g. shared agent connect/disconnect", async () => {
+    sinkCfg.postgres = true;
+    initActivitySinks();
+    const sharedAgentEvent: ActivityEvent = { userId: null, eventType: "agent_connect", host: "nas" };
+    logEvent(sharedAgentEvent);
+    await vi.waitFor(() => expect(db.activityLog.create).toHaveBeenCalledWith({ data: sharedAgentEvent }));
+  });
 });
 
 // ---------------------------------------------------------------------------

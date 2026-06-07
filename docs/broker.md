@@ -311,6 +311,14 @@ The log is capped at `ACTIVITY_LOG_MAX_ENTRIES` rows per user (default 1000). Ol
 
 ---
 
+### `GET /api/admin/activity` · Admin
+
+Activity log entries with no associated user — `agent_connect`/`agent_disconnect` events for **shared agents**, which aren't bound to any single user. Admins collectively own this data, since no individual user does. Newest first.
+
+Accepts the same `event_type`, `limit`, and `offset` query params, and returns the same response shape, as `GET /api/activity`. Entries are capped and pruned the same way, as their own ring buffer (`user_id IS NULL` rows are partitioned together by `ACTIVITY_LOG_MAX_ENTRIES`).
+
+---
+
 ### `GET /api/users` · `POST /api/users` · `POST /api/users/:username/deactivate` · `POST /api/users/:username/reset-password` · Admin
 
 User management endpoints. Available in `AUTH_MODE=local` only. Return `404` in `AUTH_MODE=oidc`.

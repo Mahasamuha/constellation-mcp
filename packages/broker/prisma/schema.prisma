@@ -140,7 +140,10 @@ enum ActivityEventType {
 
 model ActivityLog {
   id           Int               @id @default(autoincrement())
-  userId       String            @map("user_id")
+  // Null for events with no associated user — e.g. connect/disconnect for
+  // shared agents, which aren't bound to any single user. Readable only by
+  // admins via GET /api/admin/activity.
+  userId       String?           @map("user_id")
   eventType    ActivityEventType @map("event_type")
   host         String?
   tool         String?
@@ -151,7 +154,7 @@ model ActivityLog {
   errorMessage String?           @map("error_message")
   createdAt    DateTime          @default(now()) @map("created_at")
 
-  user User @relation(fields: [userId], references: [id])
+  user User? @relation(fields: [userId], references: [id])
 
   @@index([userId, createdAt(sort: Desc)])
   @@map("activity_logs")

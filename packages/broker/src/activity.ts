@@ -17,7 +17,8 @@ export type ActivityEventType =
 
 /** Canonical activity event emitted by the broker routing and hub layers. */
 export interface ActivityEvent {
-  userId: string;
+  /** Null for events with no associated user — e.g. shared agent connect/disconnect. */
+  userId: string | null;
   eventType: ActivityEventType;
   host?: string;
   tool?: string;
