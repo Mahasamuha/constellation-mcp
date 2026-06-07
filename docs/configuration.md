@@ -58,7 +58,7 @@ The broker constructs both callback URLs from `BROKER_URL` automatically — the
 |---|---|---|
 | `PORT` | `3000` | TCP port the HTTP server binds to |
 | `NODE_ENV` | — | Set to `production` to enable `Secure` flag on cookies |
-| `ALLOWED_ORIGINS` | — | Comma-separated list of origins allowed to make cross-origin requests (e.g. `https://claude.ai,https://cursor.com`). Required for browser-based MCP clients. Defaults to no cross-origin access if unset. |
+| `ALLOWED_ORIGINS` | — | Comma-separated list of origins allowed to make cross-origin requests to the broker (e.g. the URL of a reverse proxy or browser-based tool in front of the broker). Defaults to no cross-origin access if unset. |
 | `LOG_LEVEL` | `warn` | Pino log level: `trace`, `debug`, `info`, `warn`, `error`, `fatal` |
 
 **OAuth token lifetimes**

@@ -8,7 +8,7 @@ The broker is a stateful HTTP/WebSocket server that sits between MCP clients and
 
 ```mermaid
 flowchart TD
-    Client["MCP client\n(Claude, Cursor, Copilot)"]
+    Client["MCP client\n(Claude, ChatGPT, Cursor)"]
     Auth["auth middleware\nresolves Bearer token to userId"]
     Tool["MCP tool call"]
     Router["router\nrate check → label resolution → filter check → liveness check"]
@@ -412,7 +412,7 @@ The broker acts as an OAuth 2.0 authorization server backed by an upstream OIDC 
 
 ### Authorization Code Flow (MCP clients)
 
-Used by Claude, Cursor, Copilot, and any OAuth 2.0 client.
+Used by Claude, ChatGPT, Cursor, and any OAuth 2.0 client.
 
 ```mermaid
 sequenceDiagram
@@ -433,9 +433,9 @@ sequenceDiagram
     Broker-->>Client: access_token + refresh_token
 ```
 
-PKCE (`S256`) is **required**. The broker rejects `/oauth/authorize` requests that omit `code_challenge`. The MCP auth spec is based on OAuth 2.1, which mandates PKCE for all authorization code flows. All compliant MCP clients (Claude, Cursor, Copilot) support it.
+PKCE (`S256`) is **required**. The broker rejects `/oauth/authorize` requests that omit `code_challenge`. The MCP auth spec is based on OAuth 2.1, which mandates PKCE for all authorization code flows. All compliant MCP clients (Claude, ChatGPT, Cursor) support it.
 
-**Dynamic Client Registration** (`POST /oauth/register`, RFC 7591) is supported for clients that auto-discover the broker. GitHub Copilot uses this path. Public clients send `token_endpoint_auth_method: "none"` and receive no client secret.
+**Dynamic Client Registration** (`POST /oauth/register`, RFC 7591) is supported for clients that auto-discover the broker. Public clients send `token_endpoint_auth_method: "none"` and receive no client secret.
 
 ### Device Code Flow (agent init + broker login)
 

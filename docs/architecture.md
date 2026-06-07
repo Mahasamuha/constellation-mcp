@@ -27,7 +27,7 @@
 
 ```mermaid
 flowchart TD
-    Client["MCP client\n(Claude, Cursor, Copilot)"]
+    Client["MCP client\n(Claude, ChatGPT, Cursor)"]
     Broker["Broker · VPS / Railway / Fly\nMCP server · OAuth AS · WebSocket hub · request router"]
     Postgres[("Postgres\nagent registry · OAuth sessions · path labels · filters")]
     Agent["Agent · your machine\noutbound WebSocket only — no inbound ports\nlocal filesystem ops · path enforcement"]
@@ -55,7 +55,7 @@ The broker has three layers that operate in sequence on every MCP tool call.
 
 The broker acts as an OAuth 2.0 authorization server to MCP clients, and as an OIDC client to an upstream identity provider (Google, Azure AD, Authentik, or any OIDC-compliant provider).
 
-MCP clients authenticate via the **Authorization Code flow** (with mandatory PKCE). Dynamic Client Registration (RFC 7591) is supported as the primary path — Claude, Cursor, and GitHub Copilot all attempt DCR automatically on first connection.
+MCP clients authenticate via the **Authorization Code flow** (with mandatory PKCE). Dynamic Client Registration (RFC 7591) is supported as the primary path — Claude, ChatGPT, and Cursor attempt DCR automatically on first connection.
 
 The agent CLI and broker CLI authenticate via the **Device Code flow** (RFC 8628). Scope determines which flow is served:
 - `agent:register` — creates an agent registration and returns an agent token
@@ -152,7 +152,7 @@ Config files are read at startup. The agent does not watch them for changes. `co
 
 ## MCP Connection
 
-The broker exposes a standard `/.well-known/oauth-authorization-server` discovery document. MCP clients that support OAuth discovery (Claude, Cursor, GitHub Copilot) find the authorization endpoint automatically when the broker URL is added to their config — no manual OAuth setup is required.
+The broker exposes a standard `/.well-known/oauth-authorization-server` discovery document. MCP clients that support OAuth discovery (Claude, ChatGPT, Cursor) find the authorization endpoint automatically when the broker URL is added to their config — no manual OAuth setup is required.
 
 **First connection flow:**
 1. Client discovers `/.well-known/oauth-authorization-server`
@@ -170,8 +170,8 @@ Refresh tokens are rotated on use. If a refresh token expires, the client prompt
 | Client | Config |
 |---|---|
 | Claude (claude.ai) | Settings → Integrations → add `https://<broker>/mcp` |
+| ChatGPT | Settings → Apps & Connectors → Add new connector (Pro/Team/Enterprise/Edu only) |
 | Cursor | `.cursor/mcp.json`: `{ "mcpServers": { "constellation": { "url": "https://<broker>/mcp" } } }` |
-| GitHub Copilot | IDE MCP settings — Copilot attempts DCR automatically |
 
 ---
 

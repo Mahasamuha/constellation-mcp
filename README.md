@@ -5,7 +5,7 @@
 
 # Constellation
 
-Access any machine's filesystem from any MCP client (Claude, Cursor, GitHub Copilot) through a self-hosted broker — no inbound ports required on the machines you expose.
+Access any machine's filesystem from any MCP client (Claude, ChatGPT, Cursor) through a self-hosted broker — no inbound ports required on the machines you expose.
 
 [![CI / Tests](https://github.com/Mahasamuha/constellation-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/Mahasamuha/constellation-mcp/actions/workflows/ci.yml)
 [![CI / Build](https://github.com/Mahasamuha/constellation-mcp/actions/workflows/build.yml/badge.svg)](https://github.com/Mahasamuha/constellation-mcp/actions/workflows/build.yml)
@@ -114,6 +114,8 @@ Full variable reference: [docs/configuration.md](docs/configuration.md).
 | `LOG_LEVEL` | Agent daemon log verbosity (`trace`…`fatal`) | `warn` |
 
 Full CLI and config reference: [docs/reference.md](docs/reference.md) · [docs/configuration.md](docs/configuration.md).
+
+MCP client setup: [docs/mcp-clients.md](docs/mcp-clients.md).
 
 ## Contributing
 

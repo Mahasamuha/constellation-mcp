@@ -326,7 +326,7 @@ Break-glass operation: creates a shared agent service token without going throug
 
 ## MCP Tools
 
-Tools are called by MCP clients (Claude, Cursor, GitHub Copilot) after authenticating via OAuth. Every tool that operates on files takes a `label` (a named path root registered by an agent) and optionally a `host` to disambiguate when the same label name exists on multiple machines.
+Tools are called by MCP clients (Claude, ChatGPT, Cursor) after authenticating via OAuth. Every tool that operates on files takes a `label` (a named path root registered by an agent) and optionally a `host` to disambiguate when the same label name exists on multiple machines.
 
 ### Agent-enforced caps
 

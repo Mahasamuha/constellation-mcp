@@ -1,6 +1,6 @@
 # Constellation Broker
 
-The broker component of [Constellation](https://github.com/Mahasamuha/constellation-mcp) — a self-hosted MCP file server that lets MCP clients (Claude, Cursor, GitHub Copilot) access the filesystems of your machines through a central relay.
+The broker component of [Constellation](https://github.com/Mahasamuha/constellation-mcp) — a self-hosted MCP file server that lets MCP clients (Claude, ChatGPT, Cursor) access the filesystems of your machines through a central relay.
 
 ```
 MCP client → broker (VPS / Railway / Fly) → agent (your machine)
@@ -95,13 +95,13 @@ Agent binaries for Linux, macOS, and Windows are on [GitHub Releases](https://gi
 
 ## MCP Client Setup
 
-Add the broker URL to your MCP client — clients that support OAuth discovery (Claude, Cursor, GitHub Copilot) authenticate automatically on first connection.
+Add the broker URL to your MCP client — clients that support OAuth discovery (Claude, ChatGPT, Cursor) authenticate automatically on first connection.
 
 | Client | Config |
 |---|---|
 | Claude | Settings → Integrations → add `https://your-broker.example.com/mcp` |
+| ChatGPT | Settings → Apps & Connectors → Add new connector (Pro/Team/Enterprise/Edu only) |
 | Cursor | `.cursor/mcp.json`: `{ "mcpServers": { "constellation": { "url": "https://..." } } }` |
-| GitHub Copilot | Add the server URL in IDE MCP settings — Copilot registers automatically |
 
 ## Documentation
 
