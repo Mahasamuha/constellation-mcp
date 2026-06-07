@@ -41,6 +41,7 @@ The shared agent resolves the requesting user's local OS username using a priori
 - The service-level token is a root-level credential — it is not user-scoped.
 - The token is never stored in the config file. It is read from `CONSTELLATION_AGENT_TOKEN` at startup, optionally sourced from an env file (`env_file` in config).
 - The env file should be `0600`, owned by the service user. The agent warns on startup if permissions are too broad.
+- **Subagent workers never inherit the parent's environment.** `CONSTELLATION_AGENT_TOKEN` (and anything else read from `env_file`) lives in the shared agent's `process.env`, but each tool call is dispatched to a forked worker that immediately `setuid()`s to the requesting user — a possibly low-trust local account that could read its own `/proc/<pid>/environ`. Spreading `process.env` into that fork would hand the broker token (and any other secret) to that user. Instead, `buildWorkerEnv()` in `packages/agent/src/shared/subagent.ts` constructs an explicit allowlisted environment (`CONSTELLATION_TARGET_*`, `HOME`/`USER`/`LOGNAME` for the *target* user, `PATH`, `LOG_LEVEL`). **If you find a variable isn't propagating to the subagent worker, this is why — add it explicitly to `buildWorkerEnv`, do not change it back to `...process.env`.** See ADR 0014.
 
 ### Sub-path access control
 

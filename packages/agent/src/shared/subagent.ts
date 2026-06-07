@@ -86,6 +86,43 @@ function checkUidRestrictions(uid: number, cfg: SharedAgentConfig): string | nul
 }
 
 // ---------------------------------------------------------------------------
+// Worker environment
+// ---------------------------------------------------------------------------
+
+/**
+ * Builds an explicit, minimal environment for the forked subagent worker.
+ *
+ * Deliberately does NOT spread `process.env`: the parent process holds
+ * CONSTELLATION_AGENT_TOKEN (and possibly other secrets sourced from env_file),
+ * and the worker immediately drops privileges to an arbitrary, possibly
+ * low-trust local user. That user can read their own process's
+ * /proc/<pid>/environ, so any secret present here would leak to them. If the
+ * worker ever needs a new variable, add it explicitly below — do not widen
+ * this to a spread of process.env. See ADR 0014 and docs/shared-agent.md
+ * ("Token security").
+ */
+function buildWorkerEnv(identity: ResolvedIdentity): NodeJS.ProcessEnv {
+  const { username, uid, gid, home } = identity;
+
+  const env: NodeJS.ProcessEnv = {
+    CONSTELLATION_TARGET_USER: username,
+    CONSTELLATION_TARGET_UID: String(uid),
+    CONSTELLATION_TARGET_GID: String(gid),
+    // HOME/USER/LOGNAME reflect the *target* user, not the agent's service
+    // account — running with the agent's HOME would point libraries at the
+    // wrong (and inaccessible) home directory once privileges are dropped.
+    HOME: home,
+    USER: username,
+    LOGNAME: username,
+  };
+
+  if (process.env["PATH"] !== undefined) env["PATH"] = process.env["PATH"];
+  if (process.env["LOG_LEVEL"] !== undefined) env["LOG_LEVEL"] = process.env["LOG_LEVEL"];
+
+  return env;
+}
+
+// ---------------------------------------------------------------------------
 // SubagentPool
 // ---------------------------------------------------------------------------
 
@@ -158,12 +195,7 @@ export class SubagentPool {
     let child: ChildProcess;
     try {
       child = fork(workerPath, [], {
-        env: {
-          ...process.env,
-          CONSTELLATION_TARGET_USER: username,
-          CONSTELLATION_TARGET_UID: String(uid),
-          CONSTELLATION_TARGET_GID: String(gid),
-        },
+        env: buildWorkerEnv(identity),
         // Do NOT pass uid/gid fork options — the worker drops privileges itself
         // after calling initgroups(), which requires capabilities still set on spawn.
         stdio: ["ignore", "inherit", "inherit", "ipc"],

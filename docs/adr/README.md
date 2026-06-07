@@ -15,3 +15,4 @@
 | [0011](0011-shared-label-discovery-optimistic.md) | Shared Label Discovery Is Optimistic (Not Authoritative) | Accepted |
 | [0012](0012-in-memory-rate-limiting.md) | In-Memory Rate Limiting (No Redis for v1) | Accepted |
 | [0013](0013-shared-agent-restart-only-config.md) | Shared Agent Config Changes Require Process Restart (No Live Reload) | Accepted |
+| [0014](0014-subagent-worker-explicit-env.md) | Subagent Workers Get an Explicit, Minimal Environment (Never `process.env`) | Accepted |
