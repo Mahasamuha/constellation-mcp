@@ -46,8 +46,6 @@ COPY packages/broker/package.json ./packages/broker/
 
 # Copy pruned node_modules from builder — includes compiled native addons (re2)
 COPY --from=builder /app/node_modules ./node_modules
-# Copy workspace-nested node_modules (packages npm didn't hoist to root)
-COPY --from=builder /app/packages/broker/node_modules ./packages/broker/node_modules
 
 COPY --from=builder /app/packages/shared/dist ./packages/shared/dist
 COPY --from=builder /app/packages/broker/dist ./packages/broker/dist
