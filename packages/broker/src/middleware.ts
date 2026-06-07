@@ -29,7 +29,7 @@ export async function lookupOAuthSession(token: string): Promise<{
     expiresAt: session.expiresAt,
     mcpClientId: session.mcpClientId,
     userId: session.user.id,
-    oidcSub: session.user.oidcSub ?? null,
+    oidcSub: session.user.oidcSub,
     lastKnownClaims: session.user.lastKnownClaims as Record<string, unknown> | null,
   };
 }

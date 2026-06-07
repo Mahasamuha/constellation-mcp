@@ -3,15 +3,20 @@ import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import "./Paths.css";
 
+const MAX_INSTRUCTIONS_LENGTH = 500;
+const RECOMMENDED_INSTRUCTIONS_LENGTH = 250;
+
 interface PathEntry {
   label: string;
   path: string;
+  instructions?: string;
 }
 
 export default function Paths() {
   const [paths, setPaths] = useState<PathEntry[]>([]);
   const [label, setLabel] = useState("");
   const [path, setPath] = useState("");
+  const [instructions, setInstructions] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [removing, setRemoving] = useState<string | null>(null);
@@ -29,10 +34,16 @@ export default function Paths() {
     setError("");
     setLoading(true);
     try {
-      const updated = await invoke<PathEntry[]>("add_path", { label, path });
+      const trimmedInstructions = instructions.trim();
+      const updated = await invoke<PathEntry[]>("add_path", {
+        label,
+        path,
+        instructions: trimmedInstructions || undefined,
+      });
       setPaths(updated);
       setLabel("");
       setPath("");
+      setInstructions("");
     } catch (e) {
       setError(String(e));
     } finally {
@@ -52,7 +63,8 @@ export default function Paths() {
     }
   }
 
-  const canAdd = label.trim().length > 0 && path.trim().length > 0 && !loading;
+  const canAdd = label.trim().length > 0 && path.trim().length > 0
+    && instructions.length <= MAX_INSTRUCTIONS_LENGTH && !loading;
 
   return (
     <div className="paths-container">
@@ -68,6 +80,7 @@ export default function Paths() {
               <tr>
                 <th>Label</th>
                 <th>Path</th>
+                <th>Instructions</th>
                 <th />
               </tr>
             </thead>
@@ -76,6 +89,9 @@ export default function Paths() {
                 <tr key={p.label}>
                   <td className="label-cell">{p.label}</td>
                   <td className="path-cell">{p.path}</td>
+                  <td className="instructions-cell" title={p.instructions ?? ""}>
+                    {p.instructions ? p.instructions : <span className="instructions-empty">—</span>}
+                  </td>
                   <td>
                     <button
                       className="paths-remove-btn"
@@ -109,6 +125,19 @@ export default function Paths() {
             onChange={(e) => setPath(e.target.value)}
           />
           <button className="paths-browse-btn" onClick={browse}>Browse…</button>
+        </div>
+        <textarea
+          className="paths-textarea"
+          placeholder="Brief framing for MCP clients (optional) — light context on this label's purpose, not full documentation"
+          value={instructions}
+          onChange={(e) => setInstructions(e.target.value)}
+          rows={3}
+        />
+        <div className={`paths-char-count${instructions.length > MAX_INSTRUCTIONS_LENGTH ? " over-limit" : ""}`}>
+          {instructions.length} / {MAX_INSTRUCTIONS_LENGTH}
+          {instructions.length > RECOMMENDED_INSTRUCTIONS_LENGTH && instructions.length <= MAX_INSTRUCTIONS_LENGTH && (
+            <span className="paths-char-hint"> — recommended max is {RECOMMENDED_INSTRUCTIONS_LENGTH}; keep it brief</span>
+          )}
         </div>
         {error && <p className="paths-error">{error}</p>}
         <button

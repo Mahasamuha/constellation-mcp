@@ -1,6 +1,6 @@
 import type { PathEntry } from "@constellation/shared";
 import type { AgentConfig } from "./config.js";
-import { writeAgentToken } from "./config.js";
+import { writeAgentToken, buildConfigUpdatePaths } from "./config.js";
 import { handleRpc, type RpcEnvelope } from "./rpc.js";
 import { BrokerSocket } from "./ws-broker-socket.js";
 
@@ -20,7 +20,7 @@ export class AgentConnection extends BrokerSocket {
     const paths = this.opts.getPaths();
     this.send({
       type: "config_update",
-      paths: paths.map((p) => ({ label: p.label, reported_path: p.path })),
+      paths: buildConfigUpdatePaths(paths),
     });
   }
 

@@ -85,9 +85,9 @@ Prints the resolved config directory path.
 
 Lists labels and paths from `paths.yaml`.
 
-### `agent paths add <label> <path>`
+### `agent paths add <label> <path> [--instructions <text>]`
 
-Appends an entry to `paths.yaml` and syncs to the broker immediately.
+Appends an entry to `paths.yaml` and syncs to the broker immediately. `--instructions` sets inline text (max 500 characters) surfaced to MCP clients via `list_labels`; see [`paths.yaml`](configuration.md#pathsyaml) for the relationship with `context_file`.
 
 ### `agent paths remove <label>`
 
@@ -367,7 +367,9 @@ List path labels, optionally filtered by host.
 |---|---|---|
 | `host` | string? | Filter to a specific host |
 
-**Output**: `{ labels: { label, host, reported_path }[] }`
+**Output**: `{ labels: { label, host, instructions, modality, access }[] }`
+
+`instructions` is the label's configured inline text or `context_file` contents (or `null` if neither is set, the cap was exceeded, or the file couldn't be read). Capped at 500 characters — see [`paths.yaml`](configuration.md#pathsyaml).
 
 ---
 

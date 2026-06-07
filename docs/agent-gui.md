@@ -136,10 +136,10 @@ Shows live agent state. Polls the same data sources as the tray.
 
 Manages path labels from `paths.yaml`. Changes sync to the broker immediately via `constellation agent paths add/remove`.
 
-- Table: Label | Path | Remove button
-- **Add path** form: label text field, path text field with Browse… button (native folder picker), Add button
+- Table: Label | Path | Instructions (truncated, full text on hover) | Remove button
+- **Add path** form: label text field, path text field with Browse… button (native folder picker), instructions textarea with a live character counter (500 max), Add button
 - Remove prompts for confirmation before calling `remove_path`
-- Path must be an existing directory; labels must be unique
+- Path must be an existing directory; labels must be unique; instructions over 500 characters disable the Add button
 
 ### Settings Window (`480 × 380`)
 
@@ -236,7 +236,7 @@ All commands are invoked from the frontend via `invoke('<name>', args)`.
 | Command | Args | Returns | Notes |
 |---|---|---|---|
 | `get_paths` | — | `PathEntry[]` | Reads `paths.yaml` |
-| `add_path` | `label`, `path` | `PathEntry[]` | Validates directory exists; calls `agent paths add` |
+| `add_path` | `label`, `path`, `instructions?` | `PathEntry[]` | Validates directory exists; calls `agent paths add [--instructions <text>]` |
 | `remove_path` | `label` | `PathEntry[]` | Calls `agent paths remove` |
 
 `PathEntry`: `{ label: string, path: string }`

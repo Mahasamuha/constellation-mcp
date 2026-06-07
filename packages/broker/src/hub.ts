@@ -365,6 +365,7 @@ async function handleAgentMessage(
 interface ConfigUpdateEntry {
   label: string;
   reported_path: string;
+  instructions?: string;
 }
 
 async function handleConfigUpdate(conn: ConnectedAgent, msg: ConfigUpdateMessage): Promise<void> {
@@ -418,6 +419,7 @@ async function handleConfigUpdate(conn: ConnectedAgent, msg: ConfigUpdateMessage
       }
 
       for (const entry of entries) {
+        const instructions = typeof entry.instructions === "string" ? entry.instructions : null;
         await tx.pathLabel.upsert({
           where: { userId_label: { userId, label: entry.label } },
           create: {
@@ -425,8 +427,9 @@ async function handleConfigUpdate(conn: ConnectedAgent, msg: ConfigUpdateMessage
             agentId: conn.agentId,
             label: entry.label,
             reportedPath: entry.reported_path,
+            instructions,
           },
-          update: { reportedPath: entry.reported_path },
+          update: { reportedPath: entry.reported_path, instructions },
         });
       }
 
@@ -541,6 +544,7 @@ interface SharedLabelEntry {
   name: string;
   reported_path: string;
   permission_blob: object;
+  instructions?: string;
 }
 
 interface SharedLabelSyncMessage {
@@ -580,12 +584,17 @@ async function handleSharedLabelSync(conn: ConnectedAgent, msg: SharedLabelSyncM
       send(conn.ws, { type: "shared_label_sync_error", error: `Label '${entry.name}': permission_blob must be an object` });
       return;
     }
+    if (entry.instructions !== undefined && typeof entry.instructions !== "string") {
+      send(conn.ws, { type: "shared_label_sync_error", error: `Label '${entry.name}': instructions must be a string` });
+      return;
+    }
   }
 
   // Upsert labels and remove stale entries in a transaction
   try {
     await prisma.$transaction(async (tx) => {
       for (const entry of labels) {
+        const instructions = typeof entry.instructions === "string" ? entry.instructions : null;
         await tx.sharedPathLabel.upsert({
           where: { agentId_label: { agentId: conn.agentId, label: entry.name } },
           create: {
@@ -593,10 +602,12 @@ async function handleSharedLabelSync(conn: ConnectedAgent, msg: SharedLabelSyncM
             label: entry.name,
             reportedPath: entry.reported_path,
             permissionBlob: entry.permission_blob,
+            instructions,
           },
           update: {
             reportedPath: entry.reported_path,
             permissionBlob: entry.permission_blob,
+            instructions,
           },
         });
       }

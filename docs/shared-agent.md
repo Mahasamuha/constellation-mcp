@@ -198,6 +198,7 @@ env_file: /etc/constellation/shared-agent.env
 labels:
   - name: projects
     path: /srv/projects
+    instructions: "Shared engineering workspace — read-only outside business hours."
     permissions:
       default: read-write
 
@@ -239,6 +240,11 @@ subagent_gid:
 labels:
   - name: projects
     path: /srv/projects
+    instructions: "Optional text surfaced to MCP clients via list_labels"
+                                           # Hard cap: 500 chars (longer values are dropped with a
+                                           # warning). Recommended: keep under 250 — this should give
+                                           # light context/framing for the label, not document it or
+                                           # serve as a heavy instruction set.
     permissions:
       default: read-write                  # read-only | read-write | none
       overrides:

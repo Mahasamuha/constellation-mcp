@@ -15,6 +15,7 @@ export interface LabelOverride {
 export interface LabelConfig {
   name: string;
   path: string;
+  instructions?: string;
   permissions: {
     default: AccessLevel;
     overrides: LabelOverride[];
@@ -151,6 +152,7 @@ function parseLabels(parsed: Record<string, unknown>): LabelConfig[] {
     const le = l as Record<string, unknown>;
     const name = str(le, "name");
     const path = str(le, "path");
+    const instructions = str(le, "instructions");
     const perms = le["permissions"] as Record<string, unknown> | undefined;
 
     if (!name) throw new Error(`shared agent config: labels[${i}].name is required`);
@@ -182,7 +184,9 @@ function parseLabels(parsed: Record<string, unknown>): LabelConfig[] {
       }
     }
 
-    return { name, path, permissions: { default: defaultAccess, overrides } };
+    const label: LabelConfig = { name, path, permissions: { default: defaultAccess, overrides } };
+    if (instructions) label.instructions = instructions;
+    return label;
   });
 }
 

@@ -6,6 +6,8 @@ use crate::config;
 pub struct PathEntry {
     pub label: String,
     pub path: String,
+    #[serde(default)]
+    pub instructions: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Default)]
@@ -29,13 +31,20 @@ pub fn get_paths() -> Vec<PathEntry> {
 }
 
 #[tauri::command]
-pub async fn add_path(label: String, path: String) -> Result<Vec<PathEntry>, String> {
+pub async fn add_path(label: String, path: String, instructions: Option<String>) -> Result<Vec<PathEntry>, String> {
     let meta = std::fs::metadata(&path)
         .map_err(|_| format!("Path '{}' does not exist", path))?;
     if !meta.is_dir() {
         return Err(format!("'{}' is not a directory", path));
     }
-    crate::cli::run(&["agent", "paths", "add", &label, &path])?;
+    let mut args = vec!["agent", "paths", "add", &label, &path];
+    if let Some(ref text) = instructions {
+        if !text.trim().is_empty() {
+            args.push("--instructions");
+            args.push(text);
+        }
+    }
+    crate::cli::run(&args)?;
     Ok(load_paths())
 }
 
