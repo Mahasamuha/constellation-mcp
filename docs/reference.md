@@ -99,6 +99,8 @@ Removes an entry from `paths.yaml` and syncs to the broker immediately.
 
 The shared agent is a system-level daemon that serves files to multiple users from a single process. It reads from a YAML config file and authenticates via `CONSTELLATION_AGENT_TOKEN` in the environment (typically sourced from an env file).
 
+Every subcommand below that takes `--config <path>` resolves it the same way: the flag, then `$CONSTELLATION_SHARED_AGENT_CONFIG`, then `/etc/constellation/shared-agent.yaml` — so `--config` can be omitted when using the conventional path.
+
 ### `shared-agent register`
 
 ```sh
@@ -116,7 +118,7 @@ Starts a device code OAuth flow that requires admin approval. Once approved, wri
 ### `shared-agent validate-config`
 
 ```sh
-constellation shared-agent validate-config --config <path>
+constellation shared-agent validate-config [--config <path>]
 ```
 
 Dry-run validation of a shared agent config file. Checks schema, label path existence, `user_map` username resolution, and token availability. Exits non-zero on error.
@@ -124,15 +126,15 @@ Dry-run validation of a shared agent config file. Checks schema, label path exis
 ### `shared-agent start`
 
 ```sh
-constellation shared-agent start --config <path>
+constellation shared-agent start [--config <path>]
 ```
 
-Starts the shared agent daemon. `--config` can also be supplied via `CONSTELLATION_SHARED_AGENT_CONFIG`.
+Starts the shared agent daemon.
 
 ### `shared-agent status [--json]`
 
 ```sh
-constellation shared-agent status --config <path>
+constellation shared-agent status [--config <path>]
 ```
 
 Prints agent name, broker URL, and label list from the config file.
@@ -140,7 +142,7 @@ Prints agent name, broker URL, and label list from the config file.
 ### `shared-agent install`
 
 ```sh
-constellation shared-agent install --config <path> [--unit-name <name>] [--user <user>]
+constellation shared-agent install [--config <path>] [--unit-name <name>] [--user <user>]
 ```
 
 Prints a systemd system unit file to stdout. Redirect it to `/etc/systemd/system/<unit-name>.service` and run `systemctl daemon-reload && systemctl enable --now <unit-name>`.
@@ -161,7 +163,7 @@ Stops the systemd unit (calls `systemctl stop`). If the agent is not managed by 
 ### `shared-agent rotate-token`
 
 ```sh
-constellation shared-agent rotate-token --config <path>
+constellation shared-agent rotate-token [--config <path>]
 ```
 
 Rotates the agent token via a WebSocket connection and writes the new token to the `env_file` specified in the config. Restart the agent afterwards to reconnect.

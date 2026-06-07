@@ -15,6 +15,12 @@ import { checkLabelPath } from "../shared/paths.js";
 // Register all shared-agent commands
 // ---------------------------------------------------------------------------
 
+const DEFAULT_SHARED_AGENT_CONFIG = "/etc/constellation/shared-agent.yaml";
+
+function defaultConfigPath(): string {
+  return process.env["CONSTELLATION_SHARED_AGENT_CONFIG"] ?? DEFAULT_SHARED_AGENT_CONFIG;
+}
+
 export function registerSharedAgentCommands(program: Command, _getConfigDir: () => string): void {
   const sharedAgent = program
     .command("shared-agent")
@@ -118,7 +124,7 @@ export function registerSharedAgentCommands(program: Command, _getConfigDir: () 
   sharedAgent
     .command("validate-config")
     .description("Validate a shared agent config file (dry run)")
-    .requiredOption("--config <path>", "Path to shared agent config file")
+    .option("--config <path>", `Path to shared agent config file (default: ${DEFAULT_SHARED_AGENT_CONFIG}, or $CONSTELLATION_SHARED_AGENT_CONFIG)`, defaultConfigPath())
     .action(async (opts: { config: string }) => {
       let cfg;
       try {
@@ -177,12 +183,8 @@ export function registerSharedAgentCommands(program: Command, _getConfigDir: () 
   sharedAgent
     .command("start")
     .description("Start the shared agent service")
-    .requiredOption("--config <path>", "Path to shared agent config file", process.env["CONSTELLATION_SHARED_AGENT_CONFIG"])
+    .option("--config <path>", `Path to shared agent config file (default: ${DEFAULT_SHARED_AGENT_CONFIG}, or $CONSTELLATION_SHARED_AGENT_CONFIG)`, defaultConfigPath())
     .action(async (opts: { config: string }) => {
-      if (!opts.config) {
-        console.error("Error: --config <path> is required (or set CONSTELLATION_SHARED_AGENT_CONFIG)");
-        process.exit(1);
-      }
       await runSharedAgent(opts.config);
     });
 
@@ -193,14 +195,9 @@ export function registerSharedAgentCommands(program: Command, _getConfigDir: () 
   sharedAgent
     .command("status")
     .description("Show shared agent config and label status")
-    .option("--config <path>", "Path to shared agent config file", process.env["CONSTELLATION_SHARED_AGENT_CONFIG"])
+    .option("--config <path>", `Path to shared agent config file (default: ${DEFAULT_SHARED_AGENT_CONFIG}, or $CONSTELLATION_SHARED_AGENT_CONFIG)`, defaultConfigPath())
     .option("--json", "Output as JSON")
-    .action((opts: { config?: string; json?: boolean }) => {
-      if (!opts.config) {
-        console.error("Error: --config <path> is required (or set CONSTELLATION_SHARED_AGENT_CONFIG)");
-        process.exit(1);
-      }
-
+    .action((opts: { config: string; json?: boolean }) => {
       let cfg;
       try {
         cfg = loadSharedConfig(opts.config);
@@ -234,7 +231,7 @@ export function registerSharedAgentCommands(program: Command, _getConfigDir: () 
   sharedAgent
     .command("install")
     .description("Print a systemd unit file for the shared agent (system-level)")
-    .requiredOption("--config <path>", "Path to shared agent config file")
+    .option("--config <path>", `Path to shared agent config file (default: ${DEFAULT_SHARED_AGENT_CONFIG}, or $CONSTELLATION_SHARED_AGENT_CONFIG)`, defaultConfigPath())
     .option("--unit-name <name>", "Systemd unit name", "constellation-shared-agent")
     .option("--user <user>", "Service user to run as (must have CAP_SETUID/CAP_SETGID)", "constellation")
     .action((opts: { config: string; unitName: string; user: string }) => {
@@ -298,13 +295,8 @@ WantedBy=multi-user.target
   sharedAgent
     .command("rotate-token")
     .description("Request a new agent token from the broker and write it to the env file")
-    .option("--config <path>", "Path to shared agent config file", process.env["CONSTELLATION_SHARED_AGENT_CONFIG"])
-    .action(async (opts: { config?: string }) => {
-      if (!opts.config) {
-        console.error("Error: --config <path> is required (or set CONSTELLATION_SHARED_AGENT_CONFIG)");
-        process.exit(1);
-      }
-
+    .option("--config <path>", `Path to shared agent config file (default: ${DEFAULT_SHARED_AGENT_CONFIG}, or $CONSTELLATION_SHARED_AGENT_CONFIG)`, defaultConfigPath())
+    .action(async (opts: { config: string }) => {
       let cfg;
       try {
         cfg = loadSharedConfig(opts.config);

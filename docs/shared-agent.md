@@ -274,7 +274,7 @@ constellation shared-agent install \
 This prints the unit to stdout followed by install instructions. Follow the printed steps to install and enable the service.
 
 Options:
-- `--config` — required; path to config file
+- `--config` — path to config file (default: `/etc/constellation/shared-agent.yaml`, or `$CONSTELLATION_SHARED_AGENT_CONFIG`)
 - `--user` — service user (default: `constellation`); must have `CAP_SETUID`/`CAP_SETGID`
 - `--unit-name` — systemd unit name (default: `constellation-shared-agent`)
 
@@ -294,7 +294,7 @@ sudo systemctl stop constellation-shared-agent
 constellation shared-agent stop --unit-name constellation-shared-agent
 ```
 
-`start` also reads `CONSTELLATION_SHARED_AGENT_CONFIG` from the environment as a fallback for `--config`.
+`--config` defaults to `/etc/constellation/shared-agent.yaml`, overridable via `CONSTELLATION_SHARED_AGENT_CONFIG` or the flag itself — all `shared-agent` subcommands resolve it the same way.
 
 ---
 
