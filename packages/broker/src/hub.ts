@@ -90,11 +90,8 @@ function startHeartbeatLoop(): void {
 
       if (conn.missedPings > HEARTBEAT_MAX_MISSED) {
         log.warn({ agentId, lastPongAt: new Date(conn.lastPongAt) }, "Agent heartbeat timeout — terminating");
-        logEvent({ userId: conn.userId, eventType: "agent_disconnect", host: conn.host, errorCode: "timeout" });
         conn.disconnectReason = "timeout";
         conn.ws.terminate();
-        unregisterConnection(conn);
-        rejectAgentRpcs(agentId);
         continue;
       }
 
@@ -267,9 +264,10 @@ async function handleConnection(ws: WebSocket, meta: {
 
     // Record connection time immediately so list_hosts shows the agent as online
     // before the first heartbeat pong arrives (up to HEARTBEAT_INTERVAL_MS away).
+    // Also clear any stale disconnect reason from a prior session.
     prisma.agent.update({
       where: { id: agentId },
-      data: { lastHeartbeatAt: new Date() },
+      data: { lastHeartbeatAt: new Date(), lastDisconnectReason: null },
     }).catch((err) => log.error({ err, agentId }, "Failed to set initial lastHeartbeatAt"));
 
     log.info({ agentId, host, userId }, "Agent connected");
