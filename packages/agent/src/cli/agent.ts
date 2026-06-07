@@ -4,6 +4,7 @@ import { realpathSync, statSync } from "node:fs";
 import WebSocket from "ws";
 import open from "open";
 import {
+  configDir,
   loadAgentConfig,
   loadPathsConfig,
   writeAgentConfig,
@@ -26,8 +27,13 @@ import {
 import { runDaemon } from "../index.js";
 import { poll, maskToken } from "./util.js";
 
-export function registerAgentCommands(program: Command, getConfigDir: () => string): void {
-  const agent = program.command("agent").description("Manage the local Constellation agent");
+export function registerAgentCommands(program: Command): void {
+  const agent = program
+    .command("agent")
+    .description("Manage the local Constellation agent")
+    .option("--config-dir <dir>", "Override config directory", process.env["CONSTELLATION_CONFIG_DIR"]);
+
+  const getConfigDir = (): string => configDir(agent.opts<{ configDir?: string }>().configDir);
 
   // -------------------------------------------------------------------------
   // init
@@ -147,7 +153,7 @@ export function registerAgentCommands(program: Command, getConfigDir: () => stri
     .option("--foreground", "Run in the foreground (invoked by the service manager)")
     .action((opts: { foreground?: boolean }) => {
       if (opts.foreground) {
-        runDaemon((agent.opts() as { config?: string }).config);
+        runDaemon(agent.opts<{ configDir?: string }>().configDir);
       } else {
         startService();
       }

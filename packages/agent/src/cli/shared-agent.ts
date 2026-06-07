@@ -21,7 +21,7 @@ function defaultConfigPath(): string {
   return process.env["CONSTELLATION_SHARED_AGENT_CONFIG"] ?? DEFAULT_SHARED_AGENT_CONFIG;
 }
 
-export function registerSharedAgentCommands(program: Command, _getConfigDir: () => string): void {
+export function registerSharedAgentCommands(program: Command): void {
   const sharedAgent = program
     .command("shared-agent")
     .description("Manage the Constellation shared agent");
@@ -124,11 +124,11 @@ export function registerSharedAgentCommands(program: Command, _getConfigDir: () 
   sharedAgent
     .command("validate-config")
     .description("Validate a shared agent config file (dry run)")
-    .option("--config <path>", `Path to shared agent config file (default: ${DEFAULT_SHARED_AGENT_CONFIG}, or $CONSTELLATION_SHARED_AGENT_CONFIG)`, defaultConfigPath())
-    .action(async (opts: { config: string }) => {
+    .option("--config-file <path>", `Path to shared agent config file (default: ${DEFAULT_SHARED_AGENT_CONFIG}, or $CONSTELLATION_SHARED_AGENT_CONFIG)`, defaultConfigPath())
+    .action(async (opts: { configFile: string }) => {
       let cfg;
       try {
-        cfg = loadSharedConfig(opts.config);
+        cfg = loadSharedConfig(opts.configFile);
       } catch (err) {
         console.error(`Error loading config: ${(err as Error).message}`);
         process.exit(1);
@@ -167,7 +167,7 @@ export function registerSharedAgentCommands(program: Command, _getConfigDir: () 
       for (const e of result.errors) console.error(`Error: ${e}`);
 
       if (!hasError) {
-        console.log(`Config '${opts.config}' is valid.`);
+        console.log(`Config '${opts.configFile}' is valid.`);
         console.log(`  agent_name: ${cfg.agent_name}`);
         console.log(`  broker_url: ${cfg.broker_url}`);
         console.log(`  labels: ${cfg.labels.map((l) => l.name).join(", ")}`);
@@ -183,9 +183,9 @@ export function registerSharedAgentCommands(program: Command, _getConfigDir: () 
   sharedAgent
     .command("start")
     .description("Start the shared agent service")
-    .option("--config <path>", `Path to shared agent config file (default: ${DEFAULT_SHARED_AGENT_CONFIG}, or $CONSTELLATION_SHARED_AGENT_CONFIG)`, defaultConfigPath())
-    .action(async (opts: { config: string }) => {
-      await runSharedAgent(opts.config);
+    .option("--config-file <path>", `Path to shared agent config file (default: ${DEFAULT_SHARED_AGENT_CONFIG}, or $CONSTELLATION_SHARED_AGENT_CONFIG)`, defaultConfigPath())
+    .action(async (opts: { configFile: string }) => {
+      await runSharedAgent(opts.configFile);
     });
 
   // -------------------------------------------------------------------------
@@ -195,12 +195,12 @@ export function registerSharedAgentCommands(program: Command, _getConfigDir: () 
   sharedAgent
     .command("status")
     .description("Show shared agent config and label status")
-    .option("--config <path>", `Path to shared agent config file (default: ${DEFAULT_SHARED_AGENT_CONFIG}, or $CONSTELLATION_SHARED_AGENT_CONFIG)`, defaultConfigPath())
+    .option("--config-file <path>", `Path to shared agent config file (default: ${DEFAULT_SHARED_AGENT_CONFIG}, or $CONSTELLATION_SHARED_AGENT_CONFIG)`, defaultConfigPath())
     .option("--json", "Output as JSON")
-    .action((opts: { config: string; json?: boolean }) => {
+    .action((opts: { configFile: string; json?: boolean }) => {
       let cfg;
       try {
-        cfg = loadSharedConfig(opts.config);
+        cfg = loadSharedConfig(opts.configFile);
       } catch (err) {
         console.error(`Error loading config: ${(err as Error).message}`);
         process.exit(1);
@@ -231,14 +231,14 @@ export function registerSharedAgentCommands(program: Command, _getConfigDir: () 
   sharedAgent
     .command("install")
     .description("Print a systemd unit file for the shared agent (system-level)")
-    .option("--config <path>", `Path to shared agent config file (default: ${DEFAULT_SHARED_AGENT_CONFIG}, or $CONSTELLATION_SHARED_AGENT_CONFIG)`, defaultConfigPath())
+    .option("--config-file <path>", `Path to shared agent config file (default: ${DEFAULT_SHARED_AGENT_CONFIG}, or $CONSTELLATION_SHARED_AGENT_CONFIG)`, defaultConfigPath())
     .option("--unit-name <name>", "Systemd unit name", "constellation-shared-agent")
     .option("--user <user>", "Service user to run as (must have CAP_SETUID/CAP_SETGID)", "constellation")
-    .action((opts: { config: string; unitName: string; user: string }) => {
+    .action((opts: { configFile: string; unitName: string; user: string }) => {
       const isPkg = (process as typeof process & { pkg?: unknown }).pkg !== undefined;
       const execLine = isPkg
-        ? `${process.execPath} shared-agent start --config ${opts.config}`
-        : `${process.execPath} ${process.argv[1]} shared-agent start --config ${opts.config}`;
+        ? `${process.execPath} shared-agent start --config-file ${opts.configFile}`
+        : `${process.execPath} ${process.argv[1]} shared-agent start --config-file ${opts.configFile}`;
       const unit = `[Unit]
 Description=Constellation Shared Agent
 After=network.target nss-lookup.target
@@ -250,7 +250,7 @@ User=${opts.user}
 ExecStart=${execLine}
 Restart=on-failure
 RestartSec=5
-Environment=CONSTELLATION_SHARED_AGENT_CONFIG=${opts.config}
+Environment=CONSTELLATION_SHARED_AGENT_CONFIG=${opts.configFile}
 # The service user needs CAP_SETUID and CAP_SETGID to spawn per-user subagents.
 AmbientCapabilities=CAP_SETUID CAP_SETGID
 CapabilityBoundingSet=CAP_SETUID CAP_SETGID
@@ -295,11 +295,11 @@ WantedBy=multi-user.target
   sharedAgent
     .command("rotate-token")
     .description("Request a new agent token from the broker and write it to the env file")
-    .option("--config <path>", `Path to shared agent config file (default: ${DEFAULT_SHARED_AGENT_CONFIG}, or $CONSTELLATION_SHARED_AGENT_CONFIG)`, defaultConfigPath())
-    .action(async (opts: { config: string }) => {
+    .option("--config-file <path>", `Path to shared agent config file (default: ${DEFAULT_SHARED_AGENT_CONFIG}, or $CONSTELLATION_SHARED_AGENT_CONFIG)`, defaultConfigPath())
+    .action(async (opts: { configFile: string }) => {
       let cfg;
       try {
-        cfg = loadSharedConfig(opts.config);
+        cfg = loadSharedConfig(opts.configFile);
       } catch (err) {
         console.error(`Error loading config: ${(err as Error).message}`);
         process.exit(1);

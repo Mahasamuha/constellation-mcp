@@ -266,7 +266,7 @@ Generate the unit file:
 
 ```sh
 constellation shared-agent install \
-  --config /etc/constellation/shared-agent.yaml \
+  --config-file /etc/constellation/shared-agent.yaml \
   --user constellation \
   --unit-name constellation-shared-agent
 ```
@@ -274,7 +274,7 @@ constellation shared-agent install \
 This prints the unit to stdout followed by install instructions. Follow the printed steps to install and enable the service.
 
 Options:
-- `--config` — path to config file (default: `/etc/constellation/shared-agent.yaml`, or `$CONSTELLATION_SHARED_AGENT_CONFIG`)
+- `--config-file` — path to config file (default: `/etc/constellation/shared-agent.yaml`, or `$CONSTELLATION_SHARED_AGENT_CONFIG`)
 - `--user` — service user (default: `constellation`); must have `CAP_SETUID`/`CAP_SETGID`
 - `--unit-name` — systemd unit name (default: `constellation-shared-agent`)
 
@@ -284,7 +284,7 @@ The generated unit sets `AmbientCapabilities=CAP_SETUID CAP_SETGID`, `Capability
 
 ```sh
 # Start (direct, non-systemd)
-constellation shared-agent start --config /etc/constellation/shared-agent.yaml
+constellation shared-agent start --config-file /etc/constellation/shared-agent.yaml
 
 # Via systemd
 sudo systemctl start constellation-shared-agent
@@ -294,7 +294,7 @@ sudo systemctl stop constellation-shared-agent
 constellation shared-agent stop --unit-name constellation-shared-agent
 ```
 
-`--config` defaults to `/etc/constellation/shared-agent.yaml`, overridable via `CONSTELLATION_SHARED_AGENT_CONFIG` or the flag itself — all `shared-agent` subcommands resolve it the same way.
+`--config-file` defaults to `/etc/constellation/shared-agent.yaml`, overridable via `CONSTELLATION_SHARED_AGENT_CONFIG` or the flag itself — all `shared-agent` subcommands resolve it the same way.
 
 ---
 
@@ -303,7 +303,7 @@ constellation shared-agent stop --unit-name constellation-shared-agent
 ### Validate config before starting
 
 ```sh
-constellation shared-agent validate-config --config /etc/constellation/shared-agent.yaml
+constellation shared-agent validate-config --config-file /etc/constellation/shared-agent.yaml
 ```
 
 Checks: required fields are present; label paths exist on disk; `user_map` usernames resolve locally; UID range bounds are consistent; token is available (env or env_file).
@@ -311,8 +311,8 @@ Checks: required fields are present; label paths exist on disk; `user_map` usern
 ### Show running config summary
 
 ```sh
-constellation shared-agent status --config /etc/constellation/shared-agent.yaml
-constellation shared-agent status --config /etc/constellation/shared-agent.yaml --json
+constellation shared-agent status --config-file /etc/constellation/shared-agent.yaml
+constellation shared-agent status --config-file /etc/constellation/shared-agent.yaml --json
 ```
 
 ### Apply a config change
@@ -326,7 +326,7 @@ sudo systemctl restart constellation-shared-agent
 ### Rotate the service token
 
 ```sh
-constellation shared-agent rotate-token --config /etc/constellation/shared-agent.yaml
+constellation shared-agent rotate-token --config-file /etc/constellation/shared-agent.yaml
 sudo systemctl restart constellation-shared-agent
 ```
 
