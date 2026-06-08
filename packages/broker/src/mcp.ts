@@ -12,6 +12,14 @@ import { lookupOAuthSession } from "./middleware.js";
 
 const { version } = createRequire(import.meta.url)("../package.json") as { version: string };
 
+// Inlined constellation-favicon.svg (assets/logo/) — surfaced as the icon for
+// the MCP server itself and for the file browser tool/resource.
+const CONSTELLATION_ICON = {
+  src: "data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMzIiIGhlaWdodD0iMzIiIHZpZXdCb3g9IjAgMCAzMiAzMiIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48dGl0bGU+Q29uc3RlbGxhdGlvbjwvdGl0bGU+PHJlY3Qgd2lkdGg9IjMyIiBoZWlnaHQ9IjMyIiByeD0iNyIgZmlsbD0iIzFBMUEyRSIvPjxnIHN0cm9rZT0iIzVEQ0FBNSIgc3Ryb2tlLXdpZHRoPSIxLjQiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgZmlsbD0ibm9uZSIgb3BhY2l0eT0iMC43Ij48bGluZSB4MT0iNSIgIHkxPSIxNyIgeDI9IjEyIiB5Mj0iNSIvPjxsaW5lIHgxPSIxMiIgeTE9IjUiICB4Mj0iMjQiIHkyPSI3Ii8+PGxpbmUgeDE9IjI0IiB5MT0iNyIgIHgyPSIyOCIgeTI9IjE2Ii8+PGxpbmUgeDE9IjI4IiB5MT0iMTYiIHgyPSIyNCIgeTI9IjI1Ii8+PGxpbmUgeDE9IjI0IiB5MT0iMjUiIHgyPSIxMyIgeTI9IjI4Ii8+PGxpbmUgeDE9IjEzIiB5MT0iMjgiIHgyPSI1IiAgeTI9IjE3Ii8+PGxpbmUgeDE9IjUiICB5MT0iMTciIHgyPSIxOCIgeTI9IjE2Ii8+PGxpbmUgeDE9IjEyIiB5MT0iNSIgIHgyPSIxOCIgeTI9IjE2Ii8+PGxpbmUgeDE9IjI4IiB5MT0iMTYiIHgyPSIxOCIgeTI9IjE2Ii8+PGxpbmUgeDE9IjEzIiB5MT0iMjgiIHgyPSIxOCIgeTI9IjE2Ii8+PC9nPjxjaXJjbGUgY3g9IjUiICBjeT0iMTciIHI9IjIuNSIgZmlsbD0iIzVEQ0FBNSIvPjxjaXJjbGUgY3g9IjEyIiBjeT0iNSIgIHI9IjIuNSIgZmlsbD0iIzVEQ0FBNSIvPjxjaXJjbGUgY3g9IjI0IiBjeT0iNyIgIHI9IjIiICAgZmlsbD0iIzVEQ0FBNSIvPjxjaXJjbGUgY3g9IjI4IiBjeT0iMTYiIHI9IjMiICAgZmlsbD0iIzVEQ0FBNSIvPjxjaXJjbGUgY3g9IjI0IiBjeT0iMjUiIHI9IjIiICAgZmlsbD0iIzVEQ0FBNSIvPjxjaXJjbGUgY3g9IjEzIiBjeT0iMjgiIHI9IjIuNSIgZmlsbD0iIzVEQ0FBNSIvPjxjaXJjbGUgY3g9IjE4IiBjeT0iMTYiIHI9IjQuNSIgZmlsbD0iIzVEQ0FBNSIvPjxjaXJjbGUgY3g9IjE4IiBjeT0iMTYiIHI9IjIuMiIgZmlsbD0iIzJBNkI1OCIvPjwvc3ZnPg==",
+  mimeType: "image/svg+xml",
+  sizes: ["any"],
+};
+
 // ---------------------------------------------------------------------------
 // Output schemas — used as outputSchema in registerTool and to type ok()
 // ---------------------------------------------------------------------------
@@ -141,7 +149,7 @@ mcpRouter.all("/mcp", async (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 
 export function buildMcpServer(): McpServer {
-  const server = new McpServer({ name: "constellation", version });
+  const server = new McpServer({ name: "constellation", version, icons: [CONSTELLATION_ICON] });
 
   registerListHosts(server);
   registerListLabels(server);
@@ -403,6 +411,7 @@ function registerFileBrowserResource(server: McpServer): void {
       title: "Constellation File Browser",
       description: "Interactive file browser UI for browsing and editing files within Constellation labels",
       mimeType: "text/html;profile=mcp-app",
+      icons: [CONSTELLATION_ICON],
       _meta: {
         ui: {
           // highlight.js (syntax highlighting) is loaded from cdnjs rather than
