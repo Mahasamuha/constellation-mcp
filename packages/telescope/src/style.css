@@ -5,16 +5,35 @@
 html,
 body,
 #root {
-  height: 100%;
   margin: 0;
 }
 
+/*
+ * Fixed (not 100%) height: the host auto-resizes the iframe to match
+ * document.body's measured size (ResizeObserver). A height: 100% chain
+ * would just mirror whatever size the iframe currently has, so the host
+ * never learns the content wants more room and the app stays collapsed.
+ */
 .app {
-  height: 100%;
+  /*
+   * Mahasamuha brand tokens (ink/paper pairing, reversed in dark mode), picked
+   * via light-dark() so they track the host's theme rather than the browser's
+   * — color-scheme is kept in sync with the host by useHostStyleVariables.
+   */
+  --bg: light-dark(oklch(0.97 0.008 80), oklch(0.22 0.015 60));
+  --text: light-dark(oklch(0.22 0.015 60), oklch(0.97 0.008 80));
+  --text-muted: light-dark(rgba(0, 0, 0, 0.55), rgba(255, 255, 255, 0.55));
+  --field: light-dark(oklch(0.93 0.005 80), oklch(0.90 0.005 80));
+  --divider: light-dark(rgba(0, 0, 0, 0.08), rgba(255, 255, 255, 0.10));
+  --accent: oklch(0.5 0.16 265);
+
+  height: 600px;
   display: flex;
   flex-direction: column;
   font: 14px/1.4 system-ui, sans-serif;
   color-scheme: light dark;
+  background: var(--bg);
+  color: var(--text);
 }
 
 .header {
@@ -22,7 +41,7 @@ body,
   align-items: center;
   gap: 8px;
   padding: 8px;
-  border-bottom: 1px solid color-mix(in srgb, currentColor 15%, transparent);
+  border-bottom: 1px solid var(--divider);
 }
 
 .header select {
@@ -46,8 +65,8 @@ body,
   max-width: 80vw;
   flex: none;
   overflow-y: auto;
-  border-right: 1px solid color-mix(in srgb, currentColor 15%, transparent);
-  background: Canvas;
+  border-right: 1px solid var(--divider);
+  background: var(--field);
 }
 
 .sidebar[hidden] {
@@ -98,37 +117,37 @@ body,
   border: none;
   padding: 8px;
   font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
-  background: Canvas;
-  color: CanvasText;
+  background: var(--bg);
+  color: var(--text);
 }
 
 .editor-actions {
   display: flex;
   gap: 8px;
   padding: 8px;
-  border-top: 1px solid color-mix(in srgb, currentColor 15%, transparent);
+  border-top: 1px solid var(--divider);
 }
 
 .editor-actions button,
 .edit-button {
   padding: 6px 14px;
-  border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
+  border: 1px solid var(--divider);
   border-radius: 4px;
-  background: Canvas;
-  color: CanvasText;
+  background: var(--field);
+  color: var(--text);
   cursor: pointer;
 }
 
 .editor-actions button:hover,
 .edit-button:hover {
-  background: color-mix(in srgb, currentColor 8%, Canvas);
+  background: color-mix(in oklch, var(--field), var(--text) 8%);
 }
 
 .status {
   padding: 4px 8px;
-  border-top: 1px solid color-mix(in srgb, currentColor 15%, transparent);
+  border-top: 1px solid var(--divider);
   font-size: 12px;
-  opacity: 0.7;
+  color: var(--text-muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -153,11 +172,11 @@ ul.tree {
 }
 
 .node:hover {
-  background: color-mix(in srgb, currentColor 8%, transparent);
+  background: color-mix(in oklch, var(--text) 8%, transparent);
 }
 
 .node.selected {
-  background: color-mix(in srgb, royalblue 25%, transparent);
+  background: color-mix(in oklch, var(--accent) 25%, transparent);
 }
 
 .node.dir::before {

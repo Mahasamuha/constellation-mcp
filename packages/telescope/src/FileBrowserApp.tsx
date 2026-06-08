@@ -1,5 +1,5 @@
 import { createContext, use, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useApp, type App } from "@modelcontextprotocol/ext-apps/react";
+import { useApp, useHostStyleVariables, type App } from "@modelcontextprotocol/ext-apps/react";
 
 interface DirNode {
   path: string;
@@ -64,13 +64,19 @@ export function FileBrowserApp() {
 
   const { app, isConnected, error } = useApp({
     appInfo: { name: "constellation-file-browser", version: "0.1.0" },
-    capabilities: {},
+    // Declare which display modes we render correctly in — hosts may use this
+    // to decide whether to honor a requestDisplayMode("pip") call.
+    capabilities: { availableDisplayModes: ["pip", "inline", "fullscreen"] },
     onAppCreated: (app) => {
       app.ontoolinput = (params) => {
         initialInput.current = (params.arguments as { label?: string; path?: string } | undefined) ?? {};
       };
     },
   });
+
+  // Sets `color-scheme` to match the host's actual theme (light/dark), so the
+  // brand colors in style.css — defined via light-dark() — pick the right side.
+  useHostStyleVariables(app, app?.getHostContext());
 
   const openFile = useCallback(
     async (label: string, relativePath: string) => {
