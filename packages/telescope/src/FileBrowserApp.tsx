@@ -12,6 +12,11 @@ interface LabelEntry {
   host: string;
 }
 
+interface StatusMessage {
+  text: string;
+  isError: boolean;
+}
+
 interface BrowserContextValue {
   app: App | null;
   isConnected: boolean;
@@ -21,9 +26,11 @@ interface BrowserContextValue {
   selectedPath: string | null;
   fileContent: string | null;
   isEditing: boolean;
-  status: string;
+  status: StatusMessage;
   sidebarOpen: boolean;
+  wordWrap: boolean;
   toggleSidebar: () => void;
+  toggleWordWrap: () => void;
   selectLabel: (label: string, openPath?: string) => void;
   handleLabelChange: (value: string) => void;
   openFile: (label: string, relativePath: string) => Promise<void>;
@@ -53,6 +60,14 @@ function nodeName(path: string): string {
   return path.split("/").filter(Boolean).pop() ?? path;
 }
 
+// MCP tool errors (e.g. an offline agent host) come back as a normal
+// CallToolResult with isError:true rather than a thrown/rejected call —
+// structuredContent is absent, so callers must check this before reading it.
+function toolErrorMessage(result: { isError?: boolean; content?: ReadonlyArray<{ type: string; text?: string }> }): string | null {
+  if (!result.isError) return null;
+  return result.content?.find((c) => c.type === "text")?.text ?? "Request failed.";
+}
+
 export function FileBrowserApp() {
   const initialInput = useRef<{ label?: string; path?: string }>({});
   const [labels, setLabels] = useState<LabelEntry[]>([]);
@@ -60,8 +75,12 @@ export function FileBrowserApp() {
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [fileContent, setFileContent] = useState<string | null>(null);
   const [isEditing, setIsEditing] = useState(false);
-  const [status, setStatus] = useState("Connecting…");
+  const [status, setStatusMessage] = useState<StatusMessage>({ text: "Connecting…", isError: false });
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [wordWrap, setWordWrap] = useState(false);
+
+  const setStatus = useCallback((text: string) => setStatusMessage({ text, isError: false }), []);
+  const setStatusError = useCallback((text: string) => setStatusMessage({ text, isError: true }), []);
 
   const { app, isConnected, error } = useApp({
     appInfo: { name: "constellation-file-browser", version: "0.1.0" },
@@ -85,6 +104,13 @@ export function FileBrowserApp() {
       setIsEditing(false);
       setStatus(`Loading ${relativePath}…`);
       const result = await app.callServerTool({ name: "read_file", arguments: { label, relative_path: relativePath } });
+      const err = toolErrorMessage(result);
+      if (err) {
+        setSelectedPath(null);
+        setFileContent(null);
+        setStatusError(err);
+        return;
+      }
       setSelectedPath(relativePath);
       setFileContent(String(result.structuredContent?.["content"] ?? ""));
       setStatus(`${label}/${relativePath}`);
@@ -92,27 +118,37 @@ export function FileBrowserApp() {
         content: [{ type: "text", text: `User has file open: ${label}/${relativePath}` }],
       });
     },
-    [app]
+    [app, setStatus, setStatusError]
   );
 
   const saveFile = useCallback(
     async (content: string) => {
       if (!app || !selectedLabel || !selectedPath) return;
       setStatus(`Saving ${selectedPath}…`);
-      await app.callServerTool({
+      const written = await app.callServerTool({
         name: "write_file",
         arguments: { label: selectedLabel, relative_path: selectedPath, content, mode: "overwrite" },
       });
+      const writeErr = toolErrorMessage(written);
+      if (writeErr) {
+        setStatusError(writeErr);
+        return;
+      }
       // Re-read to confirm the round-trip rather than trusting the local draft.
       const reread = await app.callServerTool({
         name: "read_file",
         arguments: { label: selectedLabel, relative_path: selectedPath },
       });
+      const readErr = toolErrorMessage(reread);
+      if (readErr) {
+        setStatusError(readErr);
+        return;
+      }
       setFileContent(String(reread.structuredContent?.["content"] ?? ""));
       setIsEditing(false);
       setStatus(`Saved ${selectedLabel}/${selectedPath} at ${new Date().toLocaleTimeString()}`);
     },
-    [app, selectedLabel, selectedPath]
+    [app, selectedLabel, selectedPath, setStatus, setStatusError]
   );
 
   const selectLabel = useCallback(
@@ -124,7 +160,7 @@ export function FileBrowserApp() {
       setStatus(`Browsing ${label}`);
       if (openPath) void openFile(label, openPath);
     },
-    [openFile]
+    [openFile, setStatus]
   );
 
   const handleLabelChange = useCallback(
@@ -139,10 +175,11 @@ export function FileBrowserApp() {
         setStatus("Select a label to begin.");
       }
     },
-    [selectLabel]
+    [selectLabel, setStatus]
   );
 
   const toggleSidebar = useCallback(() => setSidebarOpen((open) => !open), []);
+  const toggleWordWrap = useCallback(() => setWordWrap((wrap) => !wrap), []);
   const startEditing = useCallback(() => setIsEditing(true), []);
   const cancelEditing = useCallback(() => setIsEditing(false), []);
 
@@ -161,6 +198,11 @@ export function FileBrowserApp() {
     void (async () => {
       setStatus("Loading labels…");
       const result = await app.callServerTool({ name: "list_labels", arguments: {} });
+      const err = toolErrorMessage(result);
+      if (err) {
+        setStatusError(err);
+        return;
+      }
       const loaded = (result.structuredContent?.["labels"] as LabelEntry[] | undefined) ?? [];
       setLabels(loaded);
 
@@ -171,7 +213,7 @@ export function FileBrowserApp() {
         setStatus(loaded.length ? "Select a label to begin." : "No labels available.");
       }
     })();
-  }, [app, isConnected, selectLabel]);
+  }, [app, isConnected, selectLabel, setStatus, setStatusError]);
 
   const context = useMemo<BrowserContextValue>(
     () => ({
@@ -185,7 +227,9 @@ export function FileBrowserApp() {
       isEditing,
       status,
       sidebarOpen,
+      wordWrap,
       toggleSidebar,
+      toggleWordWrap,
       selectLabel,
       handleLabelChange,
       openFile,
@@ -204,7 +248,9 @@ export function FileBrowserApp() {
       isEditing,
       status,
       sidebarOpen,
+      wordWrap,
       toggleSidebar,
+      toggleWordWrap,
       selectLabel,
       handleLabelChange,
       openFile,
@@ -249,7 +295,9 @@ function FileBrowserLayout() {
           <FileEditor />
         </div>
       </div>
-      <div className="status">{status}</div>
+      <div className={`status${status.isError ? " error" : ""}`}>
+        {status.isError ? `⚠ ${status.text}` : status.text}
+      </div>
     </div>
   );
 }
@@ -257,6 +305,7 @@ function FileBrowserLayout() {
 function DirectoryTree({ path }: { path: string }) {
   const { app, selectedLabel } = useBrowserContext();
   const [nodes, setNodes] = useState<DirNode[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!app || !selectedLabel) return;
@@ -267,6 +316,13 @@ function DirectoryTree({ path }: { path: string }) {
         arguments: path ? { label: selectedLabel, relative_path: path } : { label: selectedLabel },
       });
       if (cancelled) return;
+      const err = toolErrorMessage(result);
+      if (err) {
+        setError(err);
+        setNodes(null);
+        return;
+      }
+      setError(null);
       const loaded = ((result.structuredContent?.["nodes"] as DirNode[] | undefined) ?? []).slice().sort(byTypeThenName);
       setNodes(loaded);
     })();
@@ -274,6 +330,14 @@ function DirectoryTree({ path }: { path: string }) {
       cancelled = true;
     };
   }, [app, selectedLabel, path]);
+
+  if (error) {
+    return (
+      <ul className="tree">
+        <li className="node error">⚠ {error}</li>
+      </ul>
+    );
+  }
 
   if (nodes === null) {
     return (
@@ -314,7 +378,18 @@ function TreeNode({ node }: { node: DirNode }) {
 }
 
 function FileEditor() {
-  const { fileContent, selectedPath, isEditing, startEditing, cancelEditing, saveFile } = useBrowserContext();
+  const {
+    fileContent,
+    selectedLabel,
+    selectedPath,
+    isEditing,
+    startEditing,
+    cancelEditing,
+    saveFile,
+    openFile,
+    wordWrap,
+    toggleWordWrap,
+  } = useBrowserContext();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const highlighted = useMemo(() => {
@@ -324,6 +399,24 @@ function FileEditor() {
     if (!language || !grammar) return { html: escapeHtml(fileContent), language: "none" };
     return { html: Prism.highlight(fileContent, grammar, language), language };
   }, [fileContent, selectedPath]);
+
+  // Refreshing re-fetches from the agent host, so a click puts the button on a
+  // 2s cooldown rather than letting repeated clicks pile up redundant calls.
+  const [refreshCooldown, setRefreshCooldown] = useState(false);
+  const refreshTimeoutRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (refreshTimeoutRef.current != null) window.clearTimeout(refreshTimeoutRef.current);
+    };
+  }, []);
+
+  const handleRefresh = useCallback(() => {
+    if (!selectedLabel || !selectedPath || refreshCooldown) return;
+    setRefreshCooldown(true);
+    void openFile(selectedLabel, selectedPath);
+    refreshTimeoutRef.current = window.setTimeout(() => setRefreshCooldown(false), 2000);
+  }, [selectedLabel, selectedPath, openFile, refreshCooldown]);
 
   if (fileContent == null || highlighted == null) return <pre className="viewer" />;
 
@@ -345,12 +438,27 @@ function FileEditor() {
 
   return (
     <div className="viewer-pane">
-      <pre className={`viewer language-${highlighted.language}`}>
+      <pre className={`viewer language-${highlighted.language}${wordWrap ? " wrap" : ""}`}>
         <code className={`language-${highlighted.language}`} dangerouslySetInnerHTML={{ __html: highlighted.html }} />
       </pre>
-      <button type="button" className="edit-button" onClick={startEditing}>
-        Edit
-      </button>
+      <div className="viewer-actions">
+        <button type="button" title="Refresh" aria-label="Refresh" disabled={refreshCooldown} onClick={handleRefresh}>
+          ↻
+        </button>
+        <button
+          type="button"
+          className={wordWrap ? "active" : ""}
+          title="Toggle word wrap"
+          aria-label="Toggle word wrap"
+          aria-pressed={wordWrap}
+          onClick={toggleWordWrap}
+        >
+          ↵
+        </button>
+        <button type="button" title="Edit" aria-label="Edit" onClick={startEditing}>
+          ✎
+        </button>
+      </div>
     </div>
   );
 }

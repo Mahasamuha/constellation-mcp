@@ -26,6 +26,7 @@ body,
   --field: light-dark(oklch(0.93 0.005 80), oklch(0.26 0.005 80));
   --divider: light-dark(rgba(0, 0, 0, 0.08), rgba(255, 255, 255, 0.10));
   --accent: oklch(0.5 0.16 265);
+  --error: light-dark(oklch(0.5 0.2 25), oklch(0.75 0.18 25));
 
   /* Prism token colors, picked to read clearly in both themes via light-dark() */
   --syn-comment: light-dark(oklch(0.55 0.01 80), oklch(0.62 0.01 80));
@@ -106,6 +107,11 @@ body,
   font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
+.viewer.wrap {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .token.comment,
 .token.prolog,
 .token.doctype,
@@ -169,10 +175,12 @@ body,
   font-style: italic;
 }
 
-.edit-button {
+.viewer-actions {
   position: absolute;
   top: 8px;
   right: 8px;
+  display: flex;
+  gap: 4px;
 }
 
 .editor {
@@ -201,7 +209,7 @@ body,
 }
 
 .editor-actions button,
-.edit-button {
+.viewer-actions button {
   padding: 6px 14px;
   border: 1px solid var(--divider);
   border-radius: 4px;
@@ -211,8 +219,25 @@ body,
 }
 
 .editor-actions button:hover,
-.edit-button:hover {
+.viewer-actions button:hover {
   background: color-mix(in oklch, var(--field), var(--text) 8%);
+}
+
+.viewer-actions button {
+  padding: 4px 8px;
+  min-width: 28px;
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.viewer-actions button.active {
+  background: color-mix(in oklch, var(--accent) 25%, var(--field));
+  border-color: var(--accent);
+}
+
+.viewer-actions button:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .status {
@@ -223,6 +248,11 @@ body,
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.status.error {
+  color: var(--error);
+  font-weight: 500;
 }
 
 ul.tree,
@@ -249,6 +279,16 @@ ul.tree {
 
 .node.selected {
   background: color-mix(in oklch, var(--accent) 25%, transparent);
+}
+
+.node.error {
+  color: var(--error);
+  cursor: default;
+  white-space: normal;
+}
+
+.node.error:hover {
+  background: none;
 }
 
 .node.dir::before {
