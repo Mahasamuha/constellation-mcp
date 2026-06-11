@@ -187,11 +187,27 @@ export function FileBrowserApp() {
   // while the user keeps chatting; hosts that don't support it fall back to inline.
   // Guard with a ref so this fires exactly once per app instance — duplicate
   // requests can cause a visual snap-back if the host is mid-transition.
+  // Per spec, View MUST check hostContext.availableDisplayModes before requesting
+  // a mode change; hosts MAY silently decline undeclared or unsupported modes.
   const displayModeRequested = useRef(false);
   useEffect(() => {
     if (!app || !isConnected || displayModeRequested.current) return;
+    const ctx = app.getHostContext();
+    if (!ctx?.availableDisplayModes?.includes("pip")) {
+      console.warn(
+        "[telescope] host does not advertise pip in availableDisplayModes:",
+        ctx?.availableDisplayModes,
+      );
+      return;
+    }
     displayModeRequested.current = true;
-    void app.requestDisplayMode({ mode: "pip" });
+    app.requestDisplayMode({ mode: "pip" }).then(({ mode }) => {
+      if (mode !== "pip") {
+        console.warn("[telescope] pip requested but host returned:", mode);
+      }
+    }).catch((err: unknown) => {
+      console.error("[telescope] requestDisplayMode failed:", err);
+    });
   }, [app, isConnected]);
 
   useEffect(() => {
