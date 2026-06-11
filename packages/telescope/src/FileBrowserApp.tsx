@@ -1,5 +1,6 @@
 import { createContext, use, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useApp, useHostStyleVariables, type App } from "@modelcontextprotocol/ext-apps/react";
+import { Prism, escapeHtml, languageForPath } from "./prism";
 
 interface DirNode {
   path: string;
@@ -313,14 +314,16 @@ function TreeNode({ node }: { node: DirNode }) {
 }
 
 function FileEditor() {
-  const { fileContent, isEditing, startEditing, cancelEditing, saveFile } = useBrowserContext();
+  const { fileContent, selectedPath, isEditing, startEditing, cancelEditing, saveFile } = useBrowserContext();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const highlighted = useMemo(() => {
-    if (fileContent == null || !window.hljs) return null;
-    const result = window.hljs.highlightAuto(fileContent);
-    return { html: result.value, language: result.language ?? "plaintext" };
-  }, [fileContent]);
+    if (fileContent == null) return null;
+    const language = selectedPath ? languageForPath(selectedPath) : null;
+    const grammar = language ? Prism.languages[language] : undefined;
+    if (!language || !grammar) return { html: escapeHtml(fileContent), language: "none" };
+    return { html: Prism.highlight(fileContent, grammar, language), language };
+  }, [fileContent, selectedPath]);
 
   if (fileContent == null || highlighted == null) return <pre className="viewer" />;
 
@@ -342,11 +345,8 @@ function FileEditor() {
 
   return (
     <div className="viewer-pane">
-      <pre className="viewer">
-        <code
-          className={`hljs language-${highlighted.language}`}
-          dangerouslySetInnerHTML={{ __html: highlighted.html }}
-        />
+      <pre className={`viewer language-${highlighted.language}`}>
+        <code className={`language-${highlighted.language}`} dangerouslySetInnerHTML={{ __html: highlighted.html }} />
       </pre>
       <button type="button" className="edit-button" onClick={startEditing}>
         Edit

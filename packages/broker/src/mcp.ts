@@ -414,9 +414,6 @@ function registerFileBrowserResource(server: McpServer): void {
       icons: [CONSTELLATION_ICON],
       _meta: {
         ui: {
-          // highlight.js (syntax highlighting) is loaded from cdnjs rather than
-          // bundled — keeps the inlined single-file UI bundle small.
-          csp: { resourceDomains: ["https://cdnjs.cloudflare.com"] },
           prefersBorder: false,
         },
       },
