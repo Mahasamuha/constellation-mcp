@@ -185,12 +185,13 @@ export function FileBrowserApp() {
 
   // Prefer floating alongside the conversation (pip) so the browser stays visible
   // while the user keeps chatting; hosts that don't support it fall back to inline.
+  // Guard with a ref so this fires exactly once per app instance — duplicate
+  // requests can cause a visual snap-back if the host is mid-transition.
+  const displayModeRequested = useRef(false);
   useEffect(() => {
-    if (!app || !isConnected) return;
-    void (async () => {
-      const { mode } = await app.requestDisplayMode({ mode: "pip" });
-      if (mode !== "pip") await app.requestDisplayMode({ mode: "inline" });
-    })();
+    if (!app || !isConnected || displayModeRequested.current) return;
+    displayModeRequested.current = true;
+    void app.requestDisplayMode({ mode: "pip" });
   }, [app, isConnected]);
 
   useEffect(() => {
