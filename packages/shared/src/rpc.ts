@@ -19,6 +19,13 @@ export interface RpcResponse {
   error?: RpcError;
 }
 
+export interface RpcEnvelope {
+  request_id: string;
+  tool: string;
+  absolute_root: string;
+  [key: string]: unknown;
+}
+
 export interface PathEntry {
   label: string;
   path: string;

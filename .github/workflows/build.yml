@@ -21,9 +21,11 @@ jobs:
 
       - run: npm run build -w packages/shared
 
+      - run: npm run build -w packages/hub
+
       - name: Generate Prisma client
-        run: npm exec -w packages/broker -- prisma generate
+        run: npm exec -w packages/relay -- prisma generate
 
-      - run: npm run build -w packages/broker
+      - run: npm run build -w packages/relay
 
-      - run: npm run build -w packages/agent
+      - run: npm run build -w packages/node

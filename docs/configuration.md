@@ -1,25 +1,25 @@
 # Configuration
 
-- [Broker — Environment Variables](#broker--environment-variables)
+- [Relay — Environment Variables](#relay--environment-variables)
 - [Docker Compose Variables](#docker-compose-variables)
-- [Agent — Config Files](#agent--config-files)
-- [Agent — Environment Variables](#agent--environment-variables)
+- [Node — Config Files](#node--config-files)
+- [Node — Environment Variables](#node--environment-variables)
 - [CLI Flags](#cli-flags)
 
 ---
 
-## Broker — Environment Variables
+## Relay — Environment Variables
 
 ### Required
 
 | Variable | Description |
 |---|---|
 | `DATABASE_URL` | PostgreSQL connection string (e.g. `postgresql://user:pass@localhost:5432/constellation`) |
-| `BROKER_URL` | Public base URL of the broker, no trailing slash (e.g. `https://broker.example.com`). Used to construct OAuth callback URLs and the discovery document — must be the URL MCP clients and browsers can reach. |
+| `RELAY_URL` | Public base URL of the relay, no trailing slash (e.g. `https://relay.example.com`). Used to construct OAuth callback URLs and the discovery document — must be the URL MCP clients and browsers can reach. |
 | `TRUST_PROXY` | Comma-separated list of trusted reverse proxy IP addresses or CIDR ranges. Required unless `TRUST_PROXY_PRESET` is set. Must not be a number or boolean — use explicit IPs/CIDRs. Example: `127.0.0.1` |
 | `TRUST_PROXY_PRESET` | Shorthand alternative to `TRUST_PROXY`. Accepted values: `railway`, `fly`, `cloudflare-tunnel`. Overrides `TRUST_PROXY` if both are set. |
 
-Exactly one of `TRUST_PROXY` or `TRUST_PROXY_PRESET` must be set. The broker refuses to start if both are absent.
+Exactly one of `TRUST_PROXY` or `TRUST_PROXY_PRESET` must be set. The relay refuses to start if both are absent.
 
 ### Auth mode
 
@@ -28,7 +28,7 @@ Exactly one of `TRUST_PROXY` or `TRUST_PROXY_PRESET` must be set. The broker ref
 | Value | Behaviour |
 |---|---|
 | `oidc` (default) | Delegates authentication to an upstream OIDC provider. Requires `OIDC_ISSUER`, `OIDC_CLIENT_ID`, and `OIDC_CLIENT_SECRET`. User management endpoints return `404`. |
-| `local` | Built-in username/password auth. No OIDC provider required. First-run setup wizard creates the admin account. User management available via `constellation broker users` and `GET/POST /api/users`. |
+| `local` | Built-in username/password auth. No OIDC provider required. First-run setup wizard creates the admin account. User management available via `constellation relay users` and `GET/POST /api/users`. |
 
 **OIDC variables** (required when `AUTH_MODE=oidc`):
 
@@ -39,10 +39,10 @@ Exactly one of `TRUST_PROXY` or `TRUST_PROXY_PRESET` must be set. The broker ref
 | `OIDC_CLIENT_SECRET` | Client secret from your OIDC provider |
 
 Register an OAuth application with your provider and add these redirect URIs:
-- `https://your-broker.example.com/oauth/callback` — MCP clients (Claude, Cursor)
-- `https://your-broker.example.com/activate/callback` — agent and broker CLI device flows
+- `https://your-relay.example.com/oauth/callback` — MCP clients (Claude, Cursor)
+- `https://your-relay.example.com/activate/callback` — node and relay CLI device flows
 
-The broker constructs both callback URLs from `BROKER_URL` automatically — there is no separate callback URL variable.
+The relay constructs both callback URLs from `RELAY_URL` automatically — there is no separate callback URL variable.
 
 **Google** — set `OIDC_ISSUER=https://accounts.google.com`. Create a Web application credential in [Google Cloud Console](https://console.cloud.google.com/apis/credentials) and add both redirect URIs above.
 
@@ -58,7 +58,7 @@ The broker constructs both callback URLs from `BROKER_URL` automatically — the
 |---|---|---|
 | `PORT` | `3000` | TCP port the HTTP server binds to |
 | `NODE_ENV` | — | Set to `production` to enable `Secure` flag on cookies |
-| `ALLOWED_ORIGINS` | — | Comma-separated list of origins allowed to make cross-origin requests to the broker (e.g. the URL of a reverse proxy or browser-based tool in front of the broker). Defaults to no cross-origin access if unset. |
+| `ALLOWED_ORIGINS` | — | Comma-separated list of origins allowed to make cross-origin requests to the relay (e.g. the URL of a reverse proxy or browser-based tool in front of the relay). Defaults to no cross-origin access if unset. |
 | `LOG_LEVEL` | `warn` | Pino log level: `trace`, `debug`, `info`, `warn`, `error`, `fatal` |
 
 **OAuth token lifetimes**
@@ -74,15 +74,15 @@ The broker constructs both callback URLs from `BROKER_URL` automatically — the
 | Variable | Default | Description |
 |---|---|---|
 | `RPC_TIMEOUT_MS` | `30000` | Maximum wait for an agent to respond to a tool call, in milliseconds |
-| `HEARTBEAT_INTERVAL_SECONDS` | `60` | How often the broker pings each connected agent |
+| `HEARTBEAT_INTERVAL_SECONDS` | `60` | How often the relay pings each connected agent |
 | `HEARTBEAT_MAX_MISSED` | `3` | Consecutive missed pongs before the agent connection is terminated |
-| `WS_MAX_MESSAGE_BYTES` | `10485760` | Maximum WebSocket message size the broker will accept from an agent, in bytes (default 10 MB) |
+| `WS_MAX_MESSAGE_BYTES` | `10485760` | Maximum WebSocket message size the relay will accept from an agent, in bytes (default 10 MB) |
 
 An agent is considered **online** when `now − last_heartbeat_at < HEARTBEAT_INTERVAL_SECONDS × HEARTBEAT_MAX_MISSED × 1000 ms`.
 
 **Rate limits**
 
-All numeric variables are validated at startup. A non-integer value causes the broker to exit with an error naming the offending variable.
+All numeric variables are validated at startup. A non-integer value causes the relay to exit with an error naming the offending variable.
 
 | Variable | Default | Window | Denominator | Description |
 |---|---|---|---|---|
@@ -92,7 +92,7 @@ All numeric variables are validated at startup. A non-integer value causes the b
 | `RATE_LIMIT_DEVICE_POLL_PER_15MIN` | `200` | 15 min | Per IP | Requests to `/oauth/token` with `grant_type=device_code`. Device clients poll every 5 s for up to 15 min (≈180 requests); this must exceed that. |
 | `RATE_LIMIT_WS_RECONNECT_PER_MIN` | `10` | 60 s | Per agent token | Agent WebSocket reconnect attempts |
 
-Rate limit state is in-memory. It is lost on broker restart, which is acceptable for single-instance deployments.
+Rate limit state is in-memory. It is lost on relay restart, which is acceptable for single-instance deployments.
 
 **Activity log**
 
@@ -109,7 +109,7 @@ Multiple sinks can be active simultaneously. Set `ACTIVITY_SINK_POSTGRES=false` 
 
 ## Docker Compose Variables
 
-These are consumed by the Postgres container in Docker Compose deployments (not by the broker process itself). `DATABASE_URL` must use matching credentials.
+These are consumed by the Postgres container in Docker Compose deployments (not by the relay process itself). `DATABASE_URL` must use matching credentials.
 
 | Variable | Description |
 |---|---|
@@ -127,12 +127,12 @@ The Cloudflare Tunnel deployment additionally requires:
 
 ## Reverse Proxy (standard deployment)
 
-The standard Docker Compose deployment (`docker/standard/`) exposes the broker on port 3000. Put a reverse proxy in front to terminate TLS.
+The standard Docker Compose deployment (`docker/standard/`) exposes the relay on port 3000. Put a reverse proxy in front to terminate TLS.
 
 Example Caddyfile — Caddy obtains and renews a TLS certificate automatically:
 
 ```
-your-broker.example.com {
+your-relay.example.com {
     reverse_proxy localhost:3000
 }
 ```
@@ -141,7 +141,7 @@ Set `TRUST_PROXY=127.0.0.1` in your `.env` when running behind a local reverse p
 
 ---
 
-## Agent — Config Files
+## Node — Config Files
 
 Config files live in the platform-default directory unless overridden.
 
@@ -152,31 +152,31 @@ Config files live in the platform-default directory unless overridden.
 
 Set restrictive permissions on both files:
 ```sh
-chmod 600 ~/.config/constellation/agent.yaml
+chmod 600 ~/.config/constellation/node.yaml
 chmod 600 ~/.config/constellation/paths.yaml
 ```
 
-### `agent.yaml`
+### `node.yaml`
 
-Written by `constellation agent init`. Do not edit `agent_token` by hand.
+Written by `constellation node init`. Do not edit `node_token` by hand.
 
 ```yaml
-broker_url: https://your-broker.example.com
-agent_token: <managed automatically>
+relay_url: https://your-relay.example.com
+node_token: <managed automatically>
 host: home-server
 max_file_size_kb: 100
 ```
 
 | Field | Required | Description |
 |---|---|---|
-| `broker_url` | yes | Full HTTPS URL of the broker, no trailing slash |
-| `agent_token` | yes | Bearer token used to authenticate the WebSocket connection. Managed by `constellation agent init` and `constellation agent rotate`. |
+| `relay_url` | yes | Full HTTPS URL of the relay, no trailing slash |
+| `node_token` | yes | Bearer token used to authenticate the WebSocket connection. Managed by `constellation node init` and `constellation node rotate`. |
 | `host` | yes | Display name for this machine. Must be unique across all agents on your account. |
-| `max_file_size_kb` | no | Maximum KB the agent will return in a single `read_file` call. Default: `100`. Range reads (`start_line`/`end_line`) are subject to the same cap per call. |
+| `max_file_size_kb` | no | Maximum KB the node will return in a single `read_file` call. Default: `100`. Range reads (`start_line`/`end_line`) are subject to the same cap per call. |
 
 ### `paths.yaml`
 
-Managed by `constellation agent paths add/remove`, or edited manually followed by `constellation agent sync`.
+Managed by `constellation node paths add/remove`, or edited manually followed by `constellation node sync`.
 
 ```yaml
 paths:
@@ -192,33 +192,33 @@ paths:
 |---|---|
 | `label` | Unique name for this path across all agents on your account. Used as the routing key in MCP tool calls. |
 | `path` | Absolute path that exists on this machine. |
-| `instructions` | Optional. Inline text surfaced to MCP clients as `instructions` on the label (via `list_labels`) — useful for describing the label's purpose or conventions. Takes precedence over `context_file` when both are set. Hard-capped at 500 characters; longer values are dropped (logged as a warning on the agent) rather than truncated. **Recommended to stay under 250 characters** — this is meant to give a model light context or framing for the label, not to document it or serve as a heavy instruction set. Can also be set from the agent GUI's Paths screen, or via `constellation agent paths add --instructions <text>`. |
-| `context_file` | Optional. Absolute path to a text/markdown file whose contents are read at sync time and used as `instructions` (subject to the same 500-character hard cap and 250-character recommendation) when no inline `instructions` is set. Not required to live within `path`. If missing or unreadable at sync time, `instructions` is omitted for that sync (logged at info level on the agent) rather than causing an error. |
+| `instructions` | Optional. Inline text surfaced to MCP clients as `instructions` on the label (via `list_labels`) — useful for describing the label's purpose or conventions. Takes precedence over `context_file` when both are set. Hard-capped at 500 characters; longer values are dropped (logged as a warning on the node) rather than truncated. **Recommended to stay under 250 characters** — this is meant to give a model light context or framing for the label, not to document it or serve as a heavy instruction set. Can also be set from the node GUI's Paths screen, or via `constellation node paths add --instructions <text>`. |
+| `context_file` | Optional. Absolute path to a text/markdown file whose contents are read at sync time and used as `instructions` (subject to the same 500-character hard cap and 250-character recommendation) when no inline `instructions` is set. Not required to live within `path`. If missing or unreadable at sync time, `instructions` is omitted for that sync (logged at info level on the node) rather than causing an error. |
 
 Labels must be unique per account — two agents on the same account cannot share a label name.
 
-### `broker-session.yaml`
+### `relay-session.yaml`
 
-Written by `constellation broker login`. Stores the management API session used by `constellation broker *` commands. Not used by the agent daemon.
+Written by `constellation relay login`. Stores the management API session used by `constellation relay *` commands. Not used by the node daemon.
 
 ```yaml
-broker_url: https://your-broker.example.com
+relay_url: https://your-relay.example.com
 access_token: <secret>
 access_token_expires_at: "2026-06-25T10:00:00.000Z"
 refresh_token: <secret>
 refresh_token_expires_at: "2026-07-25T10:00:00.000Z"
 ```
 
-The CLI silently refreshes the access token on expiry if a refresh token is present. If the refresh token also expires, re-run `constellation broker login`. `refresh_token` and `refresh_token_expires_at` are omitted if the broker did not issue a refresh token.
+The CLI silently refreshes the access token on expiry if a refresh token is present. If the refresh token also expires, re-run `constellation relay login`. `refresh_token` and `refresh_token_expires_at` are omitted if the relay did not issue a refresh token.
 
 ---
 
-## Agent — Environment Variables
+## Node — Environment Variables
 
 | Variable | Description |
 |---|---|
 | `CONSTELLATION_CONFIG_DIR` | Override the config directory. Equivalent to passing `--config <dir>` to every command. |
-| `LOG_LEVEL` | Agent daemon log verbosity: `trace`, `debug`, `info`, `warn`, `error`, `fatal`. Default: `warn`. Set in the service environment for verbose output. |
+| `LOG_LEVEL` | Node daemon log verbosity: `trace`, `debug`, `info`, `warn`, `error`, `fatal`. Default: `warn`. Set in the service environment for verbose output. |
 
 ---
 
@@ -230,21 +230,21 @@ The CLI silently refreshes the access token on expiry if a refresh token is pres
 |---|---|
 | `--config <dir>` | Override the config directory for this invocation. Also respected as `CONSTELLATION_CONFIG_DIR`. |
 
-### `constellation agent` commands
+### `constellation node` commands
 
 | Flag | Commands | Description |
 |---|---|---|
-| `--broker <url>` | `init` | Broker URL to register with. Overrides any existing `broker_url` in config. |
+| `--relay <url>` | `init` | Relay URL to register with. Overrides any existing `relay_url` in config. |
 | `--foreground` | `start` | Run the daemon directly in the current process instead of via the service manager. Used internally by the service unit. |
 | `--json` | `status`, `paths list` | Emit machine-readable JSON output instead of human-readable text. |
 | `-f` | `logs` | Follow (tail) the log stream. |
 | `--lines <n>` | `logs` | Number of log lines to show. Default: `50`. |
 
-### `constellation broker` commands
+### `constellation relay` commands
 
 | Flag | Commands | Description |
 |---|---|---|
-| `--broker <url>` | `login` | Broker URL to authenticate against. Defaults to `broker_url` from `agent.yaml`. |
+| `--relay <url>` | `login` | Relay URL to authenticate against. Defaults to `relay_url` from `node.yaml`. |
 | `--json` | `agents list`, `labels list`, `filters list`, `sessions list`, `users list` | Emit machine-readable JSON output. |
 | `--agent <id>` | `labels list`, `filters add` | Filter results or scope a filter to a specific agent ID. |
 | `--type glob\|regex` | `filters add` | Pattern type for a new deny filter. Default: `glob`. |

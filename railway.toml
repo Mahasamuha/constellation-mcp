@@ -1,6 +1,6 @@
 [build]
 builder = "DOCKERFILE"
-dockerfilePath = "packages/broker/Dockerfile"
+dockerfilePath = "packages/relay/Dockerfile"
 
 [deploy]
 healthcheckPath = "/healthz"

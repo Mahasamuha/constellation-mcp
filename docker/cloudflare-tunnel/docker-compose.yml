@@ -1,6 +1,6 @@
 services:
-  broker:
-    image: mahasamuha/constellation-broker:latest
+  relay:
+    image: mahasamuha/constellation-relay:latest
     env_file: .env
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
@@ -28,7 +28,7 @@ services:
     environment:
       TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}
     depends_on:
-      - broker
+      - relay
 
 volumes:
   pgdata:

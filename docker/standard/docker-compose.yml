@@ -1,6 +1,6 @@
 services:
-  broker:
-    image: mahasamuha/constellation-broker:latest
+  relay:
+    image: mahasamuha/constellation-relay:latest
     ports:
       - "3000:3000"
     env_file: .env

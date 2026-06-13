@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const { version } = JSON.parse(
-  readFileSync(new URL("./packages/agent/package.json", import.meta.url), "utf8")
+  readFileSync(new URL("./packages/node/package.json", import.meta.url), "utf8")
 ) as { version: string };
 
 export default defineConfig({

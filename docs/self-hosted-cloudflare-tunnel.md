@@ -1,10 +1,10 @@
 # Self-hosted with Cloudflare Tunnel
 
-Run a Constellation broker on your own machine with a stable public HTTPS URL — no open ports, no DNS setup, no reverse proxy required.
+Run a Constellation relay on your own machine with a stable public HTTPS URL — no open ports, no DNS setup, no reverse proxy required.
 
 ## How it works
 
-`cloudflared` opens an outbound connection from your machine to Cloudflare's edge. Cloudflare terminates TLS and proxies inbound HTTPS traffic to the broker running locally. A free Cloudflare account is all you need.
+`cloudflared` opens an outbound connection from your machine to Cloudflare's edge. Cloudflare terminates TLS and proxies inbound HTTPS traffic to the relay running locally. A free Cloudflare account is all you need.
 
 ## Prerequisites
 
@@ -27,12 +27,12 @@ In the tunnel's **Public Hostname** tab, add a route:
 
 | Field | Value |
 |---|---|
-| Subdomain | anything (e.g. `broker`) |
+| Subdomain | anything (e.g. `relay`) |
 | Domain | your Cloudflare-managed domain |
 | Service type | `HTTP` |
-| URL | `broker:3000` |
+| URL | `relay:3000` |
 
-Your tunnel URL will be `https://<subdomain>.<domain>` (e.g. `https://broker.example.com`).
+Your tunnel URL will be `https://<subdomain>.<domain>` (e.g. `https://relay.example.com`).
 
 ### 3. Configure environment variables
 
@@ -44,20 +44,20 @@ cp .env.example .env
 Fill in the required values:
 
 ```
-BROKER_URL=https://broker.example.com    # your tunnel URL from step 2
+RELAY_URL=https://relay.example.com      # your tunnel URL from step 2
 CLOUDFLARE_TUNNEL_TOKEN=<paste token>    # from step 1
 DATABASE_URL=postgresql://postgres:postgres@postgres:5432/constellation
 AUTH_MODE=local                          # or oidc if you have a provider
 TRUST_PROXY_PRESET=cloudflare-tunnel     # already set in .env.example
 ```
 
-### 4. Start the broker
+### 4. Start the relay
 
 ```bash
 docker compose up -d
 ```
 
-This starts three containers: `postgres`, `broker`, and `cloudflared`.
+This starts three containers: `postgres`, `relay`, and `cloudflared`.
 
 ### 5. Complete setup
 

@@ -19,7 +19,7 @@ jobs:
 
       - run: npm ci
 
-      - run: npx prisma generate --schema packages/broker/prisma/schema.prisma
+      - run: npx prisma generate --schema packages/relay/prisma/schema.prisma
 
       - run: npm run lint
 
