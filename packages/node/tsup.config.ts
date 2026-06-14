@@ -1,16 +1,11 @@
 import { defineConfig } from "tsup";
-import { readFileSync } from "fs";
-
-const { version } = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8")) as { version: string };
 
 export default defineConfig({
-  // Main CLI bundle
-  entry: ["src/cli.ts"],
+  // Library entry points consumed by @mahasamuha/constellation-node (packages/cli)
+  entry: ["src/index.ts", "src/cli.ts", "src/config.ts"],
   format: ["esm"],
   outDir: "dist",
   sourcemap: true,
-  noExternal: ["@constellation/shared", "@constellation/hub"],
-  esbuildOptions(options) {
-    options.define = { ...options.define, __PKG_VERSION__: JSON.stringify(version) };
-  },
+  dts: true,
+  noExternal: ["@constellation/shared"],
 });

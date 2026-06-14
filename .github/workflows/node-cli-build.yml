@@ -44,18 +44,20 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # Single esbuild pass: bundles node + shared + hub TypeScript directly to CJS.
+      # Single esbuild pass: bundles cli + node + shared + hub TypeScript directly to CJS.
       # Avoids workspace symlink resolution issues with tsup in CI.
       - name: Bundle to CJS
         shell: bash
         run: |
-          VERSION=$(node -p 'require("./packages/node/package.json").version')
-          npx esbuild packages/node/src/cli.ts \
+          VERSION=$(node -p 'require("./packages/cli/package.json").version')
+          npx esbuild packages/cli/src/cli.ts \
             --bundle \
             --platform=node \
             --format=cjs \
             --external:*.node \
             --alias:@constellation/shared=./packages/shared/src/index.ts \
+            --alias:@constellation/node/cli=./packages/node/src/cli.ts \
+            --alias:@constellation/node/config=./packages/node/src/config.ts \
             --alias:@constellation/hub/cli=./packages/hub/src/cli.ts \
             "--define:__PKG_VERSION__=\"${VERSION}\"" \
             --outfile=cli-bundle.cjs
@@ -82,7 +84,7 @@ jobs:
       - name: Package as deb (Linux)
         if: runner.os == 'Linux'
         run: |
-          VERSION=$(node -p "require('./packages/node/package.json').version")
+          VERSION=$(node -p "require('./packages/cli/package.json').version")
           mkdir -p pkg-root/usr/local/bin/hub
           mkdir -p pkg-root/DEBIAN
           cp constellation pkg-root/usr/local/bin/constellation
@@ -110,7 +112,7 @@ jobs:
       - name: Package as tar.gz (macOS)
         if: runner.os == 'macOS'
         run: |
-          VERSION=$(node -p "require('./packages/node/package.json').version")
+          VERSION=$(node -p "require('./packages/cli/package.json').version")
           tar -czf "constellation-node_${VERSION}_macos-arm64.tar.gz" constellation hub/subnode-worker.cjs
 
       - name: Upload artifact (macOS)
@@ -126,7 +128,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $VERSION = node -p "require('./packages/node/package.json').version"
+          $VERSION = node -p "require('./packages/cli/package.json').version"
           Compress-Archive -Path constellation.exe, hub/subnode-worker.cjs -DestinationPath "constellation-node_${VERSION}_windows-x64.zip"
 
       - name: Upload artifact (Windows)

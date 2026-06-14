@@ -29,3 +29,5 @@ jobs:
       - run: npm run build -w packages/relay
 
       - run: npm run build -w packages/node
+
+      - run: npm run build -w packages/cli

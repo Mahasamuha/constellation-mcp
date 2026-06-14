@@ -1,17 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
-declare const __PKG_VERSION__: string;
 import { Command } from "commander";
 import { promises as fs } from "node:fs";
-import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { registerNodeCommands } from "./cli/node.js";
-import { registerRelayCommands } from "./cli/relay.js";
 import {
   writeNodeConfig,
   writePathsConfig,
-  writeRelaySession,
-  relaySessionPath,
 } from "./config.js";
 import { makeTempDir, cleanTempDir } from "./test/fixtures.js";
 
@@ -50,16 +45,13 @@ async function runCli(args: string[], dir: string): Promise<RunResult> {
     writeOut: (s) => outLines.push(s),
     writeErr: (s) => errLines.push(s),
   });
-  program
-    .name("constellation")
-    .version(__PKG_VERSION__);
+  program.name("constellation");
 
   registerNodeCommands(program);
-  registerRelayCommands(program);
 
-  // --config-dir is declared on the `node`/`relay` parent commands — inject it
-  // right after the subtree name so every test points at the temp config dir.
-  const argv = (args[0] === "node" || args[0] === "relay")
+  // --config-dir is declared on the `node` parent command — inject it right
+  // after the subtree name so every test points at the temp config dir.
+  const argv = args[0] === "node"
     ? [args[0], "--config-dir", dir, ...args.slice(1)]
     : args;
 
@@ -96,42 +88,14 @@ afterEach(async () => {
 });
 
 // ---------------------------------------------------------------------------
-// Version & help
+// Help
 // ---------------------------------------------------------------------------
-
-describe("--version", () => {
-  it("prints the package version", async () => {
-    const { exitCode, out } = await runCli(["--version"], dir);
-    expect(exitCode).toBe(0);
-    expect(out).toContain(__PKG_VERSION__);
-  });
-});
-
-describe("--help", () => {
-  it("exits 0 and lists top-level subcommands", async () => {
-    const { exitCode, out } = await runCli(["--help"], dir);
-    expect(exitCode).toBe(0);
-    expect(out).toContain("constellation");
-    expect(out).toContain("node");
-    expect(out).toContain("relay");
-  });
-});
 
 describe("node --help", () => {
   it("lists node subcommands", async () => {
     const { exitCode, out } = await runCli(["node", "--help"], dir);
     expect(exitCode).toBe(0);
     for (const sub of ["init", "start", "stop", "status", "paths", "config"]) {
-      expect(out).toContain(sub);
-    }
-  });
-});
-
-describe("relay --help", () => {
-  it("lists relay subcommands", async () => {
-    const { exitCode, out } = await runCli(["relay", "--help"], dir);
-    expect(exitCode).toBe(0);
-    for (const sub of ["login", "logout", "executors", "labels", "filters", "sessions"]) {
       expect(out).toContain(sub);
     }
   });
@@ -322,74 +286,5 @@ describe("node paths remove — errors", () => {
     );
     expect(exitCode).toBe(1);
     expect(err).toContain("not found");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// relay logout
-// ---------------------------------------------------------------------------
-
-describe("relay logout", () => {
-  it("succeeds and prints logged out even when no session file exists", async () => {
-    const { exitCode, out } = await runCli(["relay", "logout"], dir);
-    expect(exitCode).toBe(0);
-    expect(out).toContain("Logged out.");
-  });
-
-  it("removes the session file when one exists", async () => {
-    writeRelaySession(dir, {
-      relay_url: "https://relay.example.com",
-      access_token: "tok_abc",
-      access_token_expires_at: new Date(Date.now() + 3_600_000).toISOString(),
-    });
-    expect(existsSync(relaySessionPath(dir))).toBe(true);
-
-    const { exitCode, out } = await runCli(["relay", "logout"], dir);
-    expect(exitCode).toBe(0);
-    expect(out).toContain("Logged out.");
-    expect(existsSync(relaySessionPath(dir))).toBe(false);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// relay commands — no session
-// ---------------------------------------------------------------------------
-
-describe("relay commands without a session", () => {
-  it.each([
-    { cmd: ["relay", "status"] },
-    { cmd: ["relay", "executors", "list"] },
-    { cmd: ["relay", "labels", "list"] },
-    { cmd: ["relay", "filters", "list"] },
-    { cmd: ["relay", "sessions", "list"] },
-  ])("$cmd exits 1 with 'Not logged in'", async ({ cmd }) => {
-    const { exitCode, err } = await runCli(cmd, dir);
-    expect(exitCode).toBe(1);
-    expect(err).toContain("Not logged in");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// relay commands — expired session (no refresh token)
-// ---------------------------------------------------------------------------
-
-describe("relay commands with expired session", () => {
-  beforeEach(() => {
-    writeRelaySession(dir, {
-      relay_url: "https://relay.example.com",
-      access_token: "tok_expired",
-      access_token_expires_at: new Date(Date.now() - 3_600_000).toISOString(),
-      // no refresh_token — silent refresh is skipped
-    });
-  });
-
-  it.each([
-    { cmd: ["relay", "status"] },
-    { cmd: ["relay", "executors", "list"] },
-    { cmd: ["relay", "labels", "list"] },
-  ])("$cmd exits 1 with 'Session expired'", async ({ cmd }) => {
-    const { exitCode, err } = await runCli(cmd, dir);
-    expect(exitCode).toBe(1);
-    expect(err).toContain("Session expired");
   });
 });

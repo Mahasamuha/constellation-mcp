@@ -20,7 +20,7 @@ cd constellation-mcp
 npm install
 ```
 
-`npm install` at the root installs dependencies for all workspaces (`packages/relay`, `packages/node`, `packages/hub`, `packages/shared`, `packages/node-gui`).
+`npm install` at the root installs dependencies for all workspaces (`packages/relay`, `packages/node`, `packages/hub`, `packages/cli`, `packages/shared`, `packages/node-gui`).
 
 ---
 
@@ -85,8 +85,16 @@ Restart the process in Terminal 2 after the compiler finishes rebuilding. The re
 
 ### 1. Build and watch
 
+The `constellation` binary lives in `packages/cli`, which bundles `@constellation/node` (and `@constellation/hub`, `@constellation/relay`) from their built `dist/` output. Open two terminals:
+
+**Terminal 1** — rebuild `packages/node` on change:
 ```sh
 npm run dev -w packages/node
+```
+
+**Terminal 2** — rebundle the CLI on change:
+```sh
+npm run dev -w packages/cli
 ```
 
 ### 2. Run in foreground mode
@@ -95,20 +103,20 @@ Point the node at your local relay and run it directly in the current process:
 
 ```sh
 CONSTELLATION_CONFIG_DIR=/tmp/constellation-dev \
-  node packages/node/dist/cli.js node start --foreground
+  node packages/cli/dist/cli.js node start --foreground
 ```
 
 Using a temporary config directory keeps dev credentials separate from any real node config. If this is a fresh directory, run `init` first:
 
 ```sh
 CONSTELLATION_CONFIG_DIR=/tmp/constellation-dev \
-  node packages/node/dist/cli.js node init --relay http://localhost:3000
+  node packages/cli/dist/cli.js node init --relay http://localhost:3000
 ```
 
 For readable logs:
 ```sh
 LOG_LEVEL=debug CONSTELLATION_CONFIG_DIR=/tmp/constellation-dev \
-  node packages/node/dist/cli.js node start --foreground | npx pino-pretty
+  node packages/cli/dist/cli.js node start --foreground | npx pino-pretty
 ```
 
 ### Hub mode
@@ -150,12 +158,13 @@ npm run tauri dev
 
 This compiles the Rust backend and starts the Vite dev server simultaneously. Hot-reload applies to the React frontend; changes to Rust code trigger a Rust recompile and app restart. The first run takes longer because Cargo downloads and compiles all Rust dependencies.
 
-The GUI expects the `constellation` CLI binary to be on `PATH`. Point it at the locally built node:
+The GUI expects the `constellation` CLI binary to be on `PATH`. Point it at the locally built CLI:
 
 ```sh
-# From the repo root, after building the node:
+# From the repo root, after building node and cli:
 npm run build -w packages/node
-export PATH="$PWD/packages/node/dist:$PATH"
+npm run build -w packages/cli
+export PATH="$PWD/packages/cli/dist:$PATH"
 ```
 
 ### Build a release binary
@@ -180,8 +189,9 @@ npm run test:watch
 # Lint all packages
 npm run lint
 
-# Type-check the node (relay type errors surface via tsc --watch during dev)
+# Type-check the node and CLI (relay type errors surface via tsc --watch during dev)
 npm run typecheck -w packages/node
+npm run typecheck -w packages/cli
 ```
 
 Tests live alongside source files as `*.test.ts`. Vitest discovers them automatically from `packages/*/src/**/*.test.ts`.

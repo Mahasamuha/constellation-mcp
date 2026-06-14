@@ -7,7 +7,7 @@ import {
   writeRelaySession,
   deleteRelaySession,
   type RelaySession,
-} from "../config.js";
+} from "@constellation/node/config";
 import { poll, confirm } from "./util.js";
 
 // ---------------------------------------------------------------------------
