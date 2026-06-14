@@ -21,7 +21,7 @@ envelope. The node independently validates that root against its own allowlist. 
 relay that has been compromised, misconfigured, or acting maliciously cannot instruct
 the node to access a path it has not explicitly registered.
 
-Relay-side path filters (`broker_path_filters`) are a deny-only overlay applied
+Relay-side path filters (`relay_path_filters`) are a deny-only overlay applied
 before dispatch. They can restrict what the relay forwards but cannot grant access
 to anything the node would reject.
 

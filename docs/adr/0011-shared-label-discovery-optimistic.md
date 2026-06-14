@@ -32,7 +32,7 @@ claims) maps the user to a blocked OS account.
 relay's optimistic evaluation yields an access level other than `none`. Labels that
 evaluate to `none` are hidden entirely — their existence is not revealed.
 
-Discovery is backed by `SharedPathLabel` in Postgres, populated by the hub on
+Discovery is backed by `HubPathLabel` in Postgres, populated by the hub on
 connect and on restart. No hub round-trip at query time.
 
 The `list_available_labels` MCP tool availability is controlled by a `list_labels_tool`
@@ -72,9 +72,9 @@ the aggregation point.
   `GET /api/admin/shared-labels` endpoint, admin-gated) provides a full view of the
   shared label registry including inaccessible labels. This is the primary
   troubleshooting tool for permission misconfigurations.
-- Discovery results are served from `SharedPathLabel` in Postgres. Stale data (hub
+- Discovery results are served from `HubPathLabel` in Postgres. Stale data (hub
   config changed between syncs) results in stale discovery — not a security issue since
   enforcement is always at the hub.
-- The `SharedPathLabel` table stores the `permissionBlob` as JSON — the full label
+- The `HubPathLabel` table stores the `permissionBlob` as JSON — the full label
   permission config as received from the hub. The relay evaluates this blob
   at discovery query time.

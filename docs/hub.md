@@ -113,7 +113,7 @@ See the config reference in §5 for details.
 MCP client
   → POST /mcp (Bearer token)
     → Relay authenticates session → retrieves userId, oidcSub, lastKnownClaims
-    → Relay resolves label → checks SharedPathLabel registry (optimistic permission check)
+    → Relay resolves label → checks HubPathLabel registry (optimistic permission check)
     → Relay builds RPC envelope: { tool, label, absolute_root, user_oidc_sub, user_claims, ...params }
     → Relay forwards RPC via WebSocket to hub
       → Hub resolves OS identity (3-tier chain)

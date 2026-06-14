@@ -2,7 +2,7 @@ import { Router, Request, Response, IRouter } from "express";
 import escHtml from "escape-html";
 import { randomBytes } from "node:crypto";
 import { prisma } from "./db.js";
-import { ExecutorTokenType, BrokerRole } from "./generated/prisma/client.js";
+import { ExecutorTokenType, RelayRole } from "./generated/prisma/client.js";
 import { buildAuthorizationUrl, exchangeCodeAndUpsertUser } from "./oidc.js";
 import { issueOAuthSession, sendTokenResponse } from "./oauth-tokens.js";
 import { generateToken, hashToken, createLogger, requireEnv } from "@constellation/shared";
@@ -328,7 +328,7 @@ deviceRouter.post("/activate/confirm", async (req: Request, res: Response) => {
       where: { id: verifiedUserId },
       select: { role: true },
     });
-    if (!user || user.role !== BrokerRole.ADMIN) {
+    if (!user || user.role !== RelayRole.ADMIN) {
       res.clearCookie("csrf_activate");
       // Deny silently — same UX as a normal deny, no oracle about role status.
       await prisma.deviceCode.update({ ...byCode(device_code), data: { status: "denied" } });
@@ -355,7 +355,7 @@ deviceRouter.post("/activate/confirm", async (req: Request, res: Response) => {
       where: { id: verifiedUserId },
       select: { role: true },
     });
-    if (!user || user.role !== BrokerRole.ADMIN) {
+    if (!user || user.role !== RelayRole.ADMIN) {
       res.clearCookie("csrf_activate");
       await prisma.deviceCode.update({ ...byCode(device_code), data: { status: "denied" } });
       res.send(activateDonePage("Access denied. You can close this tab."));

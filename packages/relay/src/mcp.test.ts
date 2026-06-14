@@ -17,7 +17,7 @@ vi.mock("./db.js", () => ({
     oauthSession: { findUnique: vi.fn() },
     executor: { findMany: vi.fn() },
     pathLabel: { findMany: vi.fn() },
-    sharedPathLabel: { findMany: vi.fn() },
+    hubPathLabel: { findMany: vi.fn() },
   },
 }));
 

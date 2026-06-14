@@ -94,7 +94,7 @@ users            id, oidc_sub, email, deactivated_at
 executor_tokens  id, user_id, token_hash, last_used_at, revoked_at
 executors        id, user_id, executor_token_id, host, last_heartbeat_at
 path_labels      id, user_id, executor_id, label, reported_path  [UNIQUE (user_id, label)]
-broker_path_filters  id, user_id, scope_executor_id, pattern, pattern_type
+relay_path_filters   id, user_id, scope_executor_id, pattern, pattern_type
 oauth_clients    id, client_secret_hash, redirect_uris, is_dynamic
 oauth_sessions   id, user_id, mcp_client_id, access_token_hash, expires_at, refresh_token_hash
 ```

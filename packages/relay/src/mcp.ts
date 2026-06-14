@@ -246,7 +246,7 @@ function registerListHosts(server: McpServer): void {
           where: { userId },
           include: { pathLabels: { select: { label: true } } },
         }),
-        prisma.sharedPathLabel.findMany({
+        prisma.hubPathLabel.findMany({
           include: { executor: { select: { id: true, host: true, lastHeartbeatAt: true } } },
         }),
       ]);
@@ -311,7 +311,7 @@ function registerListLabels(server: McpServer): void {
           where: { userId, ...(host ? { executor: { host } } : {}) },
           include: { executor: { select: { host: true } } },
         }),
-        prisma.sharedPathLabel.findMany({
+        prisma.hubPathLabel.findMany({
           where: host ? { executor: { host } } : {},
           include: { executor: { select: { host: true } } },
         }),

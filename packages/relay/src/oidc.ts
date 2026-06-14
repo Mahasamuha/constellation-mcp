@@ -1,5 +1,5 @@
 import * as client from "openid-client";
-import { PrismaClient, Prisma, BrokerRole } from "./generated/prisma/client.js";
+import { PrismaClient, Prisma, RelayRole } from "./generated/prisma/client.js";
 import { createLogger, requireEnv } from "@constellation/shared";
 import { randomBytes } from "node:crypto";
 import { config } from "./config.js";
@@ -143,7 +143,7 @@ export async function exchangeCodeAndUpsertUser(
  * Returns ADMIN if the user belongs to any configured admin_groups, USER if not,
  * or null if admin_groups is not configured (no role update should be applied).
  */
-function deriveRoleFromClaims(claims: Record<string, unknown>): BrokerRole | null {
+function deriveRoleFromClaims(claims: Record<string, unknown>): RelayRole | null {
   if (config.adminGroups.length === 0) return null;
 
   // Check common group claim names. Value may be an array or space-separated string.
@@ -155,9 +155,9 @@ function deriveRoleFromClaims(claims: Record<string, unknown>): BrokerRole | nul
       : typeof raw === "string"
         ? raw.split(" ").filter(Boolean)
         : [];
-    if (groups.some((g) => config.adminGroups.includes(g))) return BrokerRole.ADMIN;
+    if (groups.some((g) => config.adminGroups.includes(g))) return RelayRole.ADMIN;
   }
 
-  return BrokerRole.USER;
+  return RelayRole.USER;
 }
 

@@ -30,8 +30,8 @@ vi.mock("./config.js", () => ({
 vi.mock("./db.js", () => ({
   prisma: {
     pathLabel: { findFirst: vi.fn() },
-    sharedPathLabel: { findMany: vi.fn().mockResolvedValue([]) },
-    brokerPathFilter: { findMany: vi.fn().mockResolvedValue([]) },
+    hubPathLabel: { findMany: vi.fn().mockResolvedValue([]) },
+    relayPathFilter: { findMany: vi.fn().mockResolvedValue([]) },
     executor: { findFirst: vi.fn() },
   },
 }));
@@ -50,7 +50,7 @@ import { config } from "./config.js";
 // Typed access to mocked functions
 const db = prisma as unknown as {
   pathLabel: { findFirst: ReturnType<typeof vi.fn> };
-  brokerPathFilter: { findMany: ReturnType<typeof vi.fn> };
+  relayPathFilter: { findMany: ReturnType<typeof vi.fn> };
   executor: { findFirst: ReturnType<typeof vi.fn> };
 };
 const mockGetConnection = vi.mocked(getConnection);
@@ -62,7 +62,7 @@ function stubLabel(executorId = "executor-1", executorHost = "home-server") {
     reportedPath: "/home/user/projects",
     executor: { id: executorId, host: executorHost, lastHeartbeatAt: new Date() },
   });
-  db.brokerPathFilter.findMany.mockResolvedValue([]);
+  db.relayPathFilter.findMany.mockResolvedValue([]);
   mockGetConnection.mockReturnValue({ ws: {}, executorId } as ReturnType<typeof getConnection>);
   mockDispatchRpc.mockResolvedValue({ request_id: "", result: { ok: true } });
 }
@@ -72,7 +72,7 @@ const uid = () => `user-${uidSeq++}`;
 
 beforeEach(() => {
   vi.clearAllMocks();
-  db.brokerPathFilter.findMany.mockResolvedValue([]);
+  db.relayPathFilter.findMany.mockResolvedValue([]);
   config.rateLimits.toolCallsPerMin = 60;
   config.rateLimits.expensiveToolsPerMin = 20;
 });
@@ -171,7 +171,7 @@ describe("label resolution", () => {
       reportedPath: "/path",
       executor: { id: "executor-offline", host: "home-server", lastHeartbeatAt: new Date(Date.now() - 10_000) },
     });
-    db.brokerPathFilter.findMany.mockResolvedValue([]);
+    db.relayPathFilter.findMany.mockResolvedValue([]);
     mockGetConnection.mockReturnValue(undefined);
 
     const result = await routeToolCall(uid(), "read_file", "projects", {});
@@ -195,7 +195,7 @@ describe("path filtering", () => {
       reportedPath: "/home/user/projects",
       executor: { id: "executor-1", host: "home-server", lastHeartbeatAt: new Date() },
     });
-    db.brokerPathFilter.findMany.mockResolvedValue([
+    db.relayPathFilter.findMany.mockResolvedValue([
       { patternType: "glob", pattern: "**/secrets/**" },
     ]);
     mockGetConnection.mockReturnValue({ ws: {}, executorId: "executor-1" } as ReturnType<typeof getConnection>);
@@ -212,7 +212,7 @@ describe("path filtering", () => {
       reportedPath: "/home/user/projects",
       executor: { id: "executor-1", host: "home-server", lastHeartbeatAt: new Date() },
     });
-    db.brokerPathFilter.findMany.mockResolvedValue([
+    db.relayPathFilter.findMany.mockResolvedValue([
       { patternType: "regex", pattern: "\\.env$" },
     ]);
     mockGetConnection.mockReturnValue({ ws: {}, executorId: "executor-1" } as ReturnType<typeof getConnection>);
@@ -240,7 +240,7 @@ describe("cross-host routing", () => {
         reportedPath: "/dst",
         executor: { id: "executor-2", host: "server-b", lastHeartbeatAt: new Date() },
       });
-    db.brokerPathFilter.findMany.mockResolvedValue([]);
+    db.relayPathFilter.findMany.mockResolvedValue([]);
     mockGetConnection.mockReturnValue({ ws: {}, executorId: "executor-1" } as ReturnType<typeof getConnection>);
 
     const result = await routeToolCall(uid(), "copy", "src-label", {
@@ -257,7 +257,7 @@ describe("cross-host routing", () => {
       reportedPath: "/data",
       executor: { id: "executor-1", host: "server-a", lastHeartbeatAt: new Date() },
     });
-    db.brokerPathFilter.findMany.mockResolvedValue([]);
+    db.relayPathFilter.findMany.mockResolvedValue([]);
     mockGetConnection.mockReturnValue({ ws: {}, executorId: "executor-1" } as ReturnType<typeof getConnection>);
     mockDispatchRpc.mockResolvedValue({ request_id: "", result: { ok: true } });
 

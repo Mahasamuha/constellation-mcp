@@ -32,7 +32,7 @@ expired `adminUntil` returns `403 { "error": "ESCALATION_REQUIRED" }`.
    never leak privilege status in the error).
 3. CLI initiates a device code flow, passing `elevate_session_id` in the request body.
    The relay stores this on the `DeviceCode` row.
-4. On browser approval, the relay checks `BrokerRole.ADMIN` on the `User` row:
+4. On browser approval, the relay checks `RelayRole.ADMIN` on the `User` row:
    - `ADMIN`: sets `adminUntil = now + admin_session_duration` on the target session.
    - `USER`: returns `403 ESCALATION_REQUIRED`. No oracle.
 5. CLI retries the original operation with the same access token.
@@ -52,7 +52,7 @@ These are the only direct role mutations. There is no API endpoint for role mana
 
 **Important distinction:** the `requireAdmin` middleware (checks `adminUntil` on an
 existing session) is separate from the admin check at hub registration approval
-(checks `BrokerRole.ADMIN` on the `User` row at device code approval time, with no
+(checks `RelayRole.ADMIN` on the `User` row at device code approval time, with no
 `adminUntil` involved). These are complementary enforcement points, not redundant ones.
 
 ## Rationale
@@ -85,7 +85,7 @@ access, once for admin. Friction not warranted for the expected admin frequency.
 
 - `admin_session_duration` relay config field (default: 3600 seconds). Configurable.
 - `admin_groups` relay config field — list of OIDC group claim values that map to
-  `BrokerRole.ADMIN`. Empty list means no users are admins via OIDC groups.
+  `RelayRole.ADMIN`. Empty list means no users are admins via OIDC groups.
 - `DeviceCode` schema gets an `elevateSessionId` field to carry the target session
   through the approval flow.
 - For v1, the 1-hour default and the full reauth requirement (not just a token refresh)

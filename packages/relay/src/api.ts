@@ -1,7 +1,7 @@
 import { createRequire } from "node:module";
 import RE2 from "re2";
 import { Router, Request, Response, IRouter } from "express";
-import { ExecutorTokenType, BrokerRole } from "./generated/prisma/client.js";
+import { ExecutorTokenType, RelayRole } from "./generated/prisma/client.js";
 import { prisma } from "./db.js";
 import { requireBearerAuth, requireAdmin, AuthenticatedRequest } from "./middleware.js";
 import { getConnection } from "./hub.js";
@@ -181,13 +181,13 @@ apiRouter.get("/api/filters", async (req: Request, res: Response) => {
   const { limit, offset } = parsePagination(req);
 
   const [filters, total] = await Promise.all([
-    prisma.brokerPathFilter.findMany({
+    prisma.relayPathFilter.findMany({
       where: { scopeUserId: uid },
       orderBy: { createdAt: "desc" },
       take: limit,
       skip: offset,
     }),
-    prisma.brokerPathFilter.count({ where: { scopeUserId: uid } }),
+    prisma.relayPathFilter.count({ where: { scopeUserId: uid } }),
   ]);
 
   res.json({
@@ -247,7 +247,7 @@ apiRouter.post("/api/filters", async (req: Request, res: Response) => {
     }
   }
 
-  const filter = await prisma.brokerPathFilter.create({
+  const filter = await prisma.relayPathFilter.create({
     data: {
       scopeUserId: uid,
       scopeExecutorId: executorId ?? null,
@@ -274,7 +274,7 @@ apiRouter.delete("/api/filters/:id", async (req: Request, res: Response) => {
   const uid = (req as AuthenticatedRequest).userId;
   const filterId = req.params["id"] as string;
 
-  const filter = await prisma.brokerPathFilter.findFirst({
+  const filter = await prisma.relayPathFilter.findFirst({
     where: { id: filterId, scopeUserId: uid },
   });
 
@@ -283,7 +283,7 @@ apiRouter.delete("/api/filters/:id", async (req: Request, res: Response) => {
     return;
   }
 
-  await prisma.brokerPathFilter.delete({ where: { id: filterId } });
+  await prisma.relayPathFilter.delete({ where: { id: filterId } });
   log.info({ filterId, userId: uid }, "Relay filter deleted");
   res.status(204).end();
 });
@@ -537,7 +537,7 @@ adminTokenRouter.post("/api/admin/users/:identifier/promote", async (req: Reques
   const identifier = req.params["identifier"] as string;
   const user = await resolveUserByIdentifier(identifier);
   if (!user) { res.status(404).json({ error: "not_found" }); return; }
-  await prisma.user.update({ where: { id: user.id }, data: { role: BrokerRole.ADMIN } });
+  await prisma.user.update({ where: { id: user.id }, data: { role: RelayRole.ADMIN } });
   log.info({ userId: user.id, identifier }, "User promoted to ADMIN via admin token");
   res.status(204).end();
 });
@@ -547,7 +547,7 @@ adminTokenRouter.post("/api/admin/users/:identifier/demote", async (req: Request
   const identifier = req.params["identifier"] as string;
   const user = await resolveUserByIdentifier(identifier);
   if (!user) { res.status(404).json({ error: "not_found" }); return; }
-  await prisma.user.update({ where: { id: user.id }, data: { role: BrokerRole.USER } });
+  await prisma.user.update({ where: { id: user.id }, data: { role: RelayRole.USER } });
   log.info({ userId: user.id, identifier }, "User demoted to USER via admin token");
   res.status(204).end();
 });
@@ -576,7 +576,7 @@ async function resolveUserByIdentifier(identifier: string): Promise<{ id: string
 apiRouter.get("/api/admin/shared-labels", requireAdmin, async (req: Request, res: Response) => {
   const executorId = typeof req.query["executor"] === "string" ? req.query["executor"] : undefined;
 
-  const labels = await prisma.sharedPathLabel.findMany({
+  const labels = await prisma.hubPathLabel.findMany({
     where: executorId ? { executorId } : {},
     include: { executor: { select: { id: true, host: true } } },
     orderBy: [{ executorId: "asc" }, { label: "asc" }],

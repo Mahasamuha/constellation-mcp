@@ -129,7 +129,7 @@ async function resolveSharedLabel(
   host?: string,
   userOidcSub?: string | null
 ): Promise<RouteResult | null> {
-  const sharedLabels = await prisma.sharedPathLabel.findMany({
+  const sharedLabels = await prisma.hubPathLabel.findMany({
     where: {
       label,
       ...(host ? { executor: { host } } : {}),
@@ -166,7 +166,7 @@ async function isPathFiltered(
   executorId: string,
   resolvedPath: string
 ): Promise<boolean> {
-  const filters = await prisma.brokerPathFilter.findMany({
+  const filters = await prisma.relayPathFilter.findMany({
     where: {
       scopeUserId: userId,
       OR: [{ scopeExecutorId: null }, { scopeExecutorId: executorId }],

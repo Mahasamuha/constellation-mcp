@@ -35,7 +35,7 @@ Agents connect over WebSocket to `wss://<relay>/agent/connect` using a long-live
 Agents come in two modalities, distinguished by `ExecutorTokenType`:
 
 - **Node** (`NODE`) — bound to one user; runs under the user's own OS identity. Labels are user-managed, synced via `config_update`, and stored as `PathLabel` rows.
-- **Hub** (`HUB`) — service-level, not bound to any user; runs on machines shared by multiple people (NAS, dev server). Labels are admin-defined in the hub's config, synced via `shared_label_sync`, and stored as `SharedPathLabel` rows alongside a per-label `permission_blob`. The relay performs an *optimistic* permission check against that blob during label resolution — final enforcement (OS identity resolution, label access, sub-path permissions) happens authoritatively at the hub. See [Hub](hub.md) for the full request flow, identity resolution chain, and permission model.
+- **Hub** (`HUB`) — service-level, not bound to any user; runs on machines shared by multiple people (NAS, dev server). Labels are admin-defined in the hub's config, synced via `shared_label_sync`, and stored as `HubPathLabel` rows alongside a per-label `permission_blob`. The relay performs an *optimistic* permission check against that blob during label resolution — final enforcement (OS identity resolution, label access, sub-path permissions) happens authoritatively at the hub. See [Hub](hub.md) for the full request flow, identity resolution chain, and permission model.
 
 Because the relay cannot resolve a hub's per-request OS identity itself, requests routed to a hub carry the requesting user's `label`, `user_oidc_sub`, and `user_claims` in the RPC envelope — see [RPC Protocol](#rpc-protocol).
 

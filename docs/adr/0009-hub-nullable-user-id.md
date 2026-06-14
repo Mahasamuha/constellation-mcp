@@ -66,5 +66,5 @@ user table with synthetic service accounts and requires ongoing management.
   machine ID (stable across token rotations and process restarts).
 - Existing personal node behavior is unchanged. `NODE` tokens retain a non-null
   `userId` and behave exactly as before.
-- `SharedPathLabel` is a separate table (see ADR 0011) for syncing hub label
+- `HubPathLabel` is a separate table (see ADR 0011) for syncing hub label
   registries to the relay for optimistic discovery.

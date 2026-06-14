@@ -593,7 +593,7 @@ async function handleSharedLabelSync(conn: ConnectedExecutor, msg: SharedLabelSy
     await prisma.$transaction(async (tx) => {
       for (const entry of labels) {
         const instructions = typeof entry.instructions === "string" ? entry.instructions : null;
-        await tx.sharedPathLabel.upsert({
+        await tx.hubPathLabel.upsert({
           where: { executorId_label: { executorId: conn.executorId, label: entry.name } },
           create: {
             executorId: conn.executorId,
@@ -611,7 +611,7 @@ async function handleSharedLabelSync(conn: ConnectedExecutor, msg: SharedLabelSy
       }
 
       const activeLabels = labels.map((e) => e.name);
-      await tx.sharedPathLabel.deleteMany({
+      await tx.hubPathLabel.deleteMany({
         where: {
           executorId: conn.executorId,
           label: { notIn: activeLabels },
