@@ -2,20 +2,20 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Agent: start --foreground",
+      "name": "Node: start --foreground",
       "type": "node",
       "request": "launch",
-      "program": "${workspaceFolder}/packages/agent/dist/cli.js",
-      "args": ["agent", "start", "--foreground"],
+      "program": "${workspaceFolder}/packages/node/dist/cli.js",
+      "args": ["node", "start", "--foreground"],
       "runtimeArgs": ["--enable-source-maps"],
       "cwd": "${workspaceFolder}",
-      "preLaunchTask": "agent: build (watch)",
+      "preLaunchTask": "node: build (watch)",
       "sourceMaps": true,
       "resolveSourceMapLocations": [
-        "${workspaceFolder}/packages/agent/dist/**",
+        "${workspaceFolder}/packages/node/dist/**",
         "!**/node_modules/**"
       ],
-      "outFiles": ["${workspaceFolder}/packages/agent/dist/**/*.js"],
+      "outFiles": ["${workspaceFolder}/packages/node/dist/**/*.js"],
       "env": {
         "LOG_LEVEL": "debug"
       },

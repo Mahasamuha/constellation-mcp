@@ -241,28 +241,28 @@ function registerListHosts(server: McpServer): void {
     async (extra) => {
       const { userId, userOidcSub } = identity(extra);
 
-      const [personalAgents, sharedLabels] = await Promise.all([
-        prisma.agent.findMany({
+      const [personalExecutors, sharedLabels] = await Promise.all([
+        prisma.executor.findMany({
           where: { userId },
           include: { pathLabels: { select: { label: true } } },
         }),
         prisma.sharedPathLabel.findMany({
-          include: { agent: { select: { id: true, host: true, lastHeartbeatAt: true } } },
+          include: { executor: { select: { id: true, host: true, lastHeartbeatAt: true } } },
         }),
       ]);
 
-      // Group accessible shared labels by agent
-      const sharedAgentMap = new Map<string, { host: string; lastHeartbeatAt: Date | null; labels: string[] }>();
+      // Group accessible shared labels by executor
+      const sharedExecutorMap = new Map<string, { host: string; lastHeartbeatAt: Date | null; labels: string[] }>();
       for (const sl of sharedLabels) {
         const blob = sl.permissionBlob as { default: string; overrides?: Array<{ oidc_sub: string; access: string }> };
         if (evaluatePermissionBlob(blob, userOidcSub) === "none") continue;
-        const entry = sharedAgentMap.get(sl.agentId);
+        const entry = sharedExecutorMap.get(sl.executorId);
         if (entry) {
           entry.labels.push(sl.label);
         } else {
-          sharedAgentMap.set(sl.agentId, {
-            host: sl.agent.host,
-            lastHeartbeatAt: sl.agent.lastHeartbeatAt,
+          sharedExecutorMap.set(sl.executorId, {
+            host: sl.executor.host,
+            lastHeartbeatAt: sl.executor.lastHeartbeatAt,
             labels: [sl.label],
           });
         }
@@ -270,13 +270,13 @@ function registerListHosts(server: McpServer): void {
 
       return ok({
         hosts: [
-          ...personalAgents.map((a) => ({
+          ...personalExecutors.map((a) => ({
             host: a.host,
             online: isOnline(a.lastHeartbeatAt),
             last_seen: a.lastHeartbeatAt?.toISOString() ?? null,
             labels: a.pathLabels.map((pl) => pl.label),
           })),
-          ...[...sharedAgentMap.values()].map((a) => ({
+          ...[...sharedExecutorMap.values()].map((a) => ({
             host: a.host,
             online: isOnline(a.lastHeartbeatAt),
             last_seen: a.lastHeartbeatAt?.toISOString() ?? null,
@@ -297,7 +297,7 @@ function registerListLabels(server: McpServer): void {
     "list_labels",
     {
       title: "List Labels",
-      description: "List path labels — personal labels you own and shared labels you have access to. Shared label access is evaluated optimistically and may be further restricted by the agent.",
+      description: "List path labels — personal labels you own and shared labels you have access to. Shared label access is evaluated optimistically and may be further restricted by the executor.",
       inputSchema: { host: z.string().optional() },
       outputSchema: { labels: z.array(z.object(LabelEntry)) },
       annotations: { readOnlyHint: true },
@@ -308,12 +308,12 @@ function registerListLabels(server: McpServer): void {
 
       const [personalLabels, sharedLabels] = await Promise.all([
         prisma.pathLabel.findMany({
-          where: { userId, ...(host ? { agent: { host } } : {}) },
-          include: { agent: { select: { host: true } } },
+          where: { userId, ...(host ? { executor: { host } } : {}) },
+          include: { executor: { select: { host: true } } },
         }),
         prisma.sharedPathLabel.findMany({
-          where: host ? { agent: { host } } : {},
-          include: { agent: { select: { host: true } } },
+          where: host ? { executor: { host } } : {},
+          include: { executor: { select: { host: true } } },
         }),
       ]);
 
@@ -325,7 +325,7 @@ function registerListLabels(server: McpServer): void {
         access: string;
       }> = personalLabels.map((l) => ({
         label: l.label,
-        host: l.agent.host,
+        host: l.executor.host,
         instructions: l.instructions,
         modality: "personal",
         access: "read-write",
@@ -337,7 +337,7 @@ function registerListLabels(server: McpServer): void {
         if (access === "none") continue;
         labels.push({
           label: l.label,
-          host: l.agent.host,
+          host: l.executor.host,
           instructions: l.instructions,
           modality: "shared",
           access,

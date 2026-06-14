@@ -18,7 +18,7 @@ The hub model rests on two assumptions:
 |---|---|---|
 | Runs as | The user's own OS identity | A dedicated low-privilege service user |
 | Label registry | User-managed (via relay sync) | Admin-defined in config file |
-| Token scope | Bound to one user (Personal agent token) | Service-level (Shared agent token, not user-bound) |
+| Token scope | Bound to one user (`ExecutorTokenType.NODE`) | Service-level (`ExecutorTokenType.HUB`, not user-bound) |
 | Per-request identity | N/A — always the user | Resolved from OIDC claims in the RPC envelope |
 | Sub-process spawning | None | Spawns a subnode per OS user on demand |
 
@@ -341,11 +341,11 @@ The command connects to the relay via WebSocket, requests a new token, and write
 ### Revoke a hub
 
 ```sh
-# Get the agent ID from the relay:
-constellation relay agents list --json
+# Get the executor ID from the relay:
+constellation relay executors list --json
 
 # Revoke:
-constellation relay agents revoke <agent-id>
+constellation relay executors revoke <executor-id>
 ```
 
 The hub goes offline immediately. To re-register, run `constellation hub register` again (requires admin approval).
@@ -378,7 +378,7 @@ View the full shared label registry including permission configs:
 
 ```sh
 constellation relay shared-labels list
-constellation relay shared-labels list --agent <agent-id>
+constellation relay shared-labels list --executor <executor-id>
 constellation relay shared-labels list --json
 ```
 

@@ -5,7 +5,7 @@ How to connect Claude, ChatGPT, and Cursor to a running Constellation relay.
 ## Prerequisites
 
 - A Constellation relay running at a publicly accessible HTTPS URL
-- At least one agent registered and online (`constellation relay agents list`)
+- At least one executor registered and online (`constellation relay executors list`)
 
 ---
 

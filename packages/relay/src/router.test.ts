@@ -32,14 +32,14 @@ vi.mock("./db.js", () => ({
     pathLabel: { findFirst: vi.fn() },
     sharedPathLabel: { findMany: vi.fn().mockResolvedValue([]) },
     brokerPathFilter: { findMany: vi.fn().mockResolvedValue([]) },
-    agent: { findFirst: vi.fn() },
+    executor: { findFirst: vi.fn() },
   },
 }));
 
 vi.mock("./hub.js", () => ({
   getConnection: vi.fn(),
   dispatchRpc: vi.fn(),
-  rejectAgentRpcs: vi.fn(),
+  rejectExecutorRpcs: vi.fn(),
 }));
 
 import { prisma } from "./db.js";
@@ -51,19 +51,19 @@ import { config } from "./config.js";
 const db = prisma as unknown as {
   pathLabel: { findFirst: ReturnType<typeof vi.fn> };
   brokerPathFilter: { findMany: ReturnType<typeof vi.fn> };
-  agent: { findFirst: ReturnType<typeof vi.fn> };
+  executor: { findFirst: ReturnType<typeof vi.fn> };
 };
 const mockGetConnection = vi.mocked(getConnection);
 const mockDispatchRpc = vi.mocked(dispatchRpc);
 
-// Stable label stub — agent online with no path filters
-function stubLabel(agentId = "agent-1", agentHost = "home-server") {
+// Stable label stub — executor online with no path filters
+function stubLabel(executorId = "executor-1", executorHost = "home-server") {
   db.pathLabel.findFirst.mockResolvedValue({
     reportedPath: "/home/user/projects",
-    agent: { id: agentId, host: agentHost, lastHeartbeatAt: new Date() },
+    executor: { id: executorId, host: executorHost, lastHeartbeatAt: new Date() },
   });
   db.brokerPathFilter.findMany.mockResolvedValue([]);
-  mockGetConnection.mockReturnValue({ ws: {}, agentId } as ReturnType<typeof getConnection>);
+  mockGetConnection.mockReturnValue({ ws: {}, executorId } as ReturnType<typeof getConnection>);
   mockDispatchRpc.mockResolvedValue({ request_id: "", result: { ok: true } });
 }
 
@@ -152,7 +152,7 @@ describe("rate limiting", () => {
 describe("label resolution", () => {
   it("returns label_not_found for unknown label", async () => {
     db.pathLabel.findFirst.mockResolvedValue(null);
-    db.agent.findFirst.mockResolvedValue(null);
+    db.executor.findFirst.mockResolvedValue(null);
 
     const result = await routeToolCall(uid(), "read_file", "missing", {});
     expect(result).toMatchObject({ code: "label_not_found" });
@@ -160,25 +160,25 @@ describe("label resolution", () => {
 
   it("returns host_not_found when host filter matches no host", async () => {
     db.pathLabel.findFirst.mockResolvedValue(null);
-    db.agent.findFirst.mockResolvedValue(null); // host does not exist
+    db.executor.findFirst.mockResolvedValue(null); // host does not exist
 
     const result = await routeToolCall(uid(), "read_file", "projects", {}, "nonexistent-host");
     expect(result).toMatchObject({ code: "host_not_found" });
   });
 
-  it("returns agent_offline when agent has no active connection", async () => {
+  it("returns executor_offline when executor has no active connection", async () => {
     db.pathLabel.findFirst.mockResolvedValue({
       reportedPath: "/path",
-      agent: { id: "agent-offline", host: "home-server", lastHeartbeatAt: new Date(Date.now() - 10_000) },
+      executor: { id: "executor-offline", host: "home-server", lastHeartbeatAt: new Date(Date.now() - 10_000) },
     });
     db.brokerPathFilter.findMany.mockResolvedValue([]);
     mockGetConnection.mockReturnValue(undefined);
 
     const result = await routeToolCall(uid(), "read_file", "projects", {});
-    expect(result).toMatchObject({ code: "agent_offline" });
+    expect(result).toMatchObject({ code: "executor_offline" });
   });
 
-  it("dispatches and returns result when agent is online", async () => {
+  it("dispatches and returns result when executor is online", async () => {
     stubLabel();
     const result = await routeToolCall(uid(), "read_file", "projects", {});
     expect(result).toMatchObject({ result: { ok: true } });
@@ -193,12 +193,12 @@ describe("path filtering", () => {
   it("returns path_filtered when a glob filter blocks the path", async () => {
     db.pathLabel.findFirst.mockResolvedValue({
       reportedPath: "/home/user/projects",
-      agent: { id: "agent-1", host: "home-server", lastHeartbeatAt: new Date() },
+      executor: { id: "executor-1", host: "home-server", lastHeartbeatAt: new Date() },
     });
     db.brokerPathFilter.findMany.mockResolvedValue([
       { patternType: "glob", pattern: "**/secrets/**" },
     ]);
-    mockGetConnection.mockReturnValue({ ws: {}, agentId: "agent-1" } as ReturnType<typeof getConnection>);
+    mockGetConnection.mockReturnValue({ ws: {}, executorId: "executor-1" } as ReturnType<typeof getConnection>);
 
     const result = await routeToolCall(uid(), "read_file", "projects", {
       relative_path: "secrets/creds.txt",
@@ -210,12 +210,12 @@ describe("path filtering", () => {
   it("returns path_filtered when a regex filter blocks the path", async () => {
     db.pathLabel.findFirst.mockResolvedValue({
       reportedPath: "/home/user/projects",
-      agent: { id: "agent-1", host: "home-server", lastHeartbeatAt: new Date() },
+      executor: { id: "executor-1", host: "home-server", lastHeartbeatAt: new Date() },
     });
     db.brokerPathFilter.findMany.mockResolvedValue([
       { patternType: "regex", pattern: "\\.env$" },
     ]);
-    mockGetConnection.mockReturnValue({ ws: {}, agentId: "agent-1" } as ReturnType<typeof getConnection>);
+    mockGetConnection.mockReturnValue({ ws: {}, executorId: "executor-1" } as ReturnType<typeof getConnection>);
 
     const result = await routeToolCall(uid(), "read_file", "projects", {
       relative_path: ".env",
@@ -230,18 +230,18 @@ describe("path filtering", () => {
 // ---------------------------------------------------------------------------
 
 describe("cross-host routing", () => {
-  it("returns cross_host when dst_label is on a different agent", async () => {
+  it("returns cross_host when dst_label is on a different executor", async () => {
     db.pathLabel.findFirst
       .mockResolvedValueOnce({
         reportedPath: "/src",
-        agent: { id: "agent-1", host: "server-a", lastHeartbeatAt: new Date() },
+        executor: { id: "executor-1", host: "server-a", lastHeartbeatAt: new Date() },
       })
       .mockResolvedValueOnce({
         reportedPath: "/dst",
-        agent: { id: "agent-2", host: "server-b", lastHeartbeatAt: new Date() },
+        executor: { id: "executor-2", host: "server-b", lastHeartbeatAt: new Date() },
       });
     db.brokerPathFilter.findMany.mockResolvedValue([]);
-    mockGetConnection.mockReturnValue({ ws: {}, agentId: "agent-1" } as ReturnType<typeof getConnection>);
+    mockGetConnection.mockReturnValue({ ws: {}, executorId: "executor-1" } as ReturnType<typeof getConnection>);
 
     const result = await routeToolCall(uid(), "copy", "src-label", {
       src_relative_path: "file.txt",
@@ -252,13 +252,13 @@ describe("cross-host routing", () => {
     expect(result).toMatchObject({ code: "cross_host" });
   });
 
-  it("allows copy within the same agent", async () => {
+  it("allows copy within the same executor", async () => {
     db.pathLabel.findFirst.mockResolvedValue({
       reportedPath: "/data",
-      agent: { id: "agent-1", host: "server-a", lastHeartbeatAt: new Date() },
+      executor: { id: "executor-1", host: "server-a", lastHeartbeatAt: new Date() },
     });
     db.brokerPathFilter.findMany.mockResolvedValue([]);
-    mockGetConnection.mockReturnValue({ ws: {}, agentId: "agent-1" } as ReturnType<typeof getConnection>);
+    mockGetConnection.mockReturnValue({ ws: {}, executorId: "executor-1" } as ReturnType<typeof getConnection>);
     mockDispatchRpc.mockResolvedValue({ request_id: "", result: { ok: true } });
 
     const result = await routeToolCall(uid(), "copy", "src-label", {

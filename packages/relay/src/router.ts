@@ -15,14 +15,14 @@ const log = createLogger("router");
 // ---------------------------------------------------------------------------
 
 export interface RouteResult {
-  agentId: string;
+  executorId: string;
   absoluteRoot: string;
   host: string;
   lastHeartbeatAt: Date | null;
 }
 
 export interface RouterError {
-  code: "label_not_found" | "host_not_found" | "agent_offline" | "path_filtered" | "rate_limited" | "timeout" | "cross_host";
+  code: "label_not_found" | "host_not_found" | "executor_offline" | "path_filtered" | "rate_limited" | "timeout" | "cross_host";
   message: string;
 }
 
@@ -71,7 +71,7 @@ function checkToolRateLimit(userId: string, tool: string, params: Record<string,
 // ---------------------------------------------------------------------------
 
 /**
- * Resolves a label (and optional host filter) to an agent and its absolute
+ * Resolves a label (and optional host filter) to an executor and its absolute
  * path root. Checks personal labels first; falls back to shared labels.
  * Returns a RouterError if the label or host isn't found.
  */
@@ -83,20 +83,20 @@ export async function resolveLabel(
 ): Promise<RouteResult | RouterError> {
   // Personal labels (user-scoped)
   const where = host
-    ? { userId, label, agent: { host } }
+    ? { userId, label, executor: { host } }
     : { userId, label };
 
   const pathLabel = await prisma.pathLabel.findFirst({
     where,
-    include: { agent: { select: { id: true, host: true, lastHeartbeatAt: true } } },
+    include: { executor: { select: { id: true, host: true, lastHeartbeatAt: true } } },
   });
 
   if (pathLabel) {
     return {
-      agentId: pathLabel.agent.id,
+      executorId: pathLabel.executor.id,
       absoluteRoot: pathLabel.reportedPath,
-      host: pathLabel.agent.host,
-      lastHeartbeatAt: pathLabel.agent.lastHeartbeatAt,
+      host: pathLabel.executor.host,
+      lastHeartbeatAt: pathLabel.executor.lastHeartbeatAt,
     };
   }
 
@@ -107,7 +107,7 @@ export async function resolveLabel(
   // Give a specific error if the host exists but the label doesn't.
   // Check both personal nodes (userId-scoped) and hubs (userId: null).
   if (host) {
-    const hostExists = await prisma.agent.findFirst({
+    const hostExists = await prisma.executor.findFirst({
       where: { host, OR: [{ userId }, { userId: null }] },
     });
     if (!hostExists) {
@@ -132,19 +132,19 @@ async function resolveSharedLabel(
   const sharedLabels = await prisma.sharedPathLabel.findMany({
     where: {
       label,
-      ...(host ? { agent: { host } } : {}),
+      ...(host ? { executor: { host } } : {}),
     },
-    include: { agent: { select: { id: true, host: true, lastHeartbeatAt: true } } },
+    include: { executor: { select: { id: true, host: true, lastHeartbeatAt: true } } },
   });
 
   for (const sl of sharedLabels) {
     const access = evaluatePermissionBlob(sl.permissionBlob as unknown as PermissionBlob, userOidcSub);
     if (access !== "none") {
       return {
-        agentId: sl.agent.id,
+        executorId: sl.executor.id,
         absoluteRoot: sl.reportedPath,
-        host: sl.agent.host,
-        lastHeartbeatAt: sl.agent.lastHeartbeatAt,
+        host: sl.executor.host,
+        lastHeartbeatAt: sl.executor.lastHeartbeatAt,
       };
     }
   }
@@ -159,17 +159,17 @@ async function resolveSharedLabel(
 
 /**
  * Returns true if the resolved path is blocked by any active relay filter
- * for this user/agent.
+ * for this user/executor.
  */
 async function isPathFiltered(
   userId: string,
-  agentId: string,
+  executorId: string,
   resolvedPath: string
 ): Promise<boolean> {
   const filters = await prisma.brokerPathFilter.findMany({
     where: {
       scopeUserId: userId,
-      OR: [{ scopeAgentId: null }, { scopeAgentId: agentId }],
+      OR: [{ scopeExecutorId: null }, { scopeExecutorId: executorId }],
     },
   });
 
@@ -245,7 +245,7 @@ export async function routeToolCall(
   const resolved = await resolveLabel(userId, label, host, userOidcSub);
   if ("code" in resolved) return resolved;
 
-  const { agentId, absoluteRoot, host: agentHost, lastHeartbeatAt } = resolved;
+  const { executorId, absoluteRoot, host: executorHost, lastHeartbeatAt } = resolved;
 
   // For copy/move with dst_label: resolve the destination label and inject dst_root.
   let effectiveParams = params;
@@ -253,10 +253,10 @@ export async function routeToolCall(
     const dstLabel = params["dst_label"];
     const dstResolved = await resolveLabel(userId, dstLabel, undefined, userOidcSub);
     if ("code" in dstResolved) return dstResolved;
-    if (dstResolved.agentId !== agentId) {
+    if (dstResolved.executorId !== executorId) {
       return {
         code: "cross_host",
-        message: `'${label}' is on '${agentHost}' and '${dstLabel}' is on '${dstResolved.host}' — cross-host move/copy is not supported`,
+        message: `'${label}' is on '${executorHost}' and '${dstLabel}' is on '${dstResolved.host}' — cross-host move/copy is not supported`,
       };
     }
     effectiveParams = { ...params, dst_root: dstResolved.absoluteRoot };
@@ -277,18 +277,18 @@ export async function routeToolCall(
   }
 
   for (const candidatePath of pathsToFilter) {
-    if (await isPathFiltered(userId, agentId, candidatePath)) {
-      log.info({ userId, agentId, tool, candidatePath }, "Path blocked by relay filter");
+    if (await isPathFiltered(userId, executorId, candidatePath)) {
+      log.info({ userId, executorId, tool, candidatePath }, "Path blocked by relay filter");
       return { code: "path_filtered", message: `Path blocked by relay filter: ${candidatePath}` };
     }
   }
 
-  if (!getConnection(agentId)) {
+  if (!getConnection(executorId)) {
     const lastSeen = lastHeartbeatAt ? formatRelativeTime(lastHeartbeatAt) : "never";
-    logEvent({ userId, eventType: "tool_error", host: agentHost, tool, label, requestId, errorCode: "agent_offline" });
+    logEvent({ userId, eventType: "tool_error", host: executorHost, tool, label, requestId, errorCode: "executor_offline" });
     return {
-      code: "agent_offline",
-      message: `'${label}' is on '${agentHost}', which was last seen ${lastSeen}`,
+      code: "executor_offline",
+      message: `'${label}' is on '${executorHost}', which was last seen ${lastSeen}`,
     };
   }
 
@@ -310,18 +310,18 @@ export async function routeToolCall(
     ...effectiveParams,
   };
 
-  log.info({ userId, agentId, tool, label, requestId }, "Dispatching RPC");
+  log.info({ userId, executorId, tool, label, requestId }, "Dispatching RPC");
 
   try {
-    const response = await dispatchRpc(agentId, envelope);
+    const response = await dispatchRpc(executorId, envelope);
     const durationMs = Date.now() - startTime;
 
     if (response.error) {
-      log.info({ userId, agentId, tool, requestId, error: response.error }, "RPC returned error");
+      log.info({ userId, executorId, tool, requestId, error: response.error }, "RPC returned error");
       logEvent({
         userId,
         eventType: "tool_call",
-        host: agentHost,
+        host: executorHost,
         tool,
         label,
         requestId,
@@ -330,21 +330,21 @@ export async function routeToolCall(
         errorMessage: response.error.message,
       });
     } else {
-      log.info({ userId, agentId, tool, requestId }, "RPC completed");
-      logEvent({ userId, eventType: "tool_call", host: agentHost, tool, label, requestId, durationMs });
+      log.info({ userId, executorId, tool, requestId }, "RPC completed");
+      logEvent({ userId, eventType: "tool_call", host: executorHost, tool, label, requestId, durationMs });
     }
 
     return { result: response.result, error: response.error };
   } catch (err) {
-    if (err instanceof Error && err.message === "agent_disconnected") {
-      log.warn({ userId, agentId, tool, requestId }, "RPC failed — agent disconnected");
-      logEvent({ userId, eventType: "tool_error", host: agentHost, tool, label, requestId, errorCode: "agent_disconnected" });
-      return { code: "agent_offline", message: `'${agentHost}' disconnected before responding` };
+    if (err instanceof Error && err.message === "executor_disconnected") {
+      log.warn({ userId, executorId, tool, requestId }, "RPC failed — executor disconnected");
+      logEvent({ userId, eventType: "tool_error", host: executorHost, tool, label, requestId, errorCode: "executor_disconnected" });
+      return { code: "executor_offline", message: `'${executorHost}' disconnected before responding` };
     }
     if (err instanceof Error && err.message === "timeout") {
-      log.warn({ userId, agentId, tool, requestId }, "RPC timed out");
-      logEvent({ userId, eventType: "tool_error", host: agentHost, tool, label, requestId, errorCode: "timeout" });
-      return { code: "timeout", message: `No response from '${agentHost}' within ${timeoutMs / 1000}s` };
+      log.warn({ userId, executorId, tool, requestId }, "RPC timed out");
+      logEvent({ userId, eventType: "tool_error", host: executorHost, tool, label, requestId, errorCode: "timeout" });
+      return { code: "timeout", message: `No response from '${executorHost}' within ${timeoutMs / 1000}s` };
     }
     throw err;
   }

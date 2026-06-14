@@ -159,7 +159,7 @@ describe("initActivitySinks / postgres sink", () => {
   it("writes events with a null userId — e.g. hub connect/disconnect", async () => {
     sinkCfg.postgres = true;
     initActivitySinks();
-    const hubEvent: ActivityEvent = { userId: null, eventType: "agent_connect", host: "nas" };
+    const hubEvent: ActivityEvent = { userId: null, eventType: "executor_connect", host: "nas" };
     logEvent(hubEvent);
     await vi.waitFor(() => expect(db.activityLog.create).toHaveBeenCalledWith({ data: hubEvent }));
   });

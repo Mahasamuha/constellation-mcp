@@ -1,19 +1,19 @@
 import { IncomingMessage, Server } from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
 import { prisma } from "./db.js";
-import { AgentTokenType } from "./generated/prisma/client.js";
+import { ExecutorTokenType } from "./generated/prisma/client.js";
 import { logEvent } from "./activity.js";
 import { hashToken, generateToken, createLogger, type RpcError, type RpcResponse } from "@constellation/shared";
 import { config } from "./config.js";
 import {
-  type ConnectedAgent,
+  type ConnectedExecutor,
   registerConnection,
   unregisterConnection,
   getConnection,
   allConnections,
   dispatchPendingRpc,
   resolvePendingRpc,
-  rejectPendingRpcsForAgent,
+  rejectPendingRpcsForExecutor,
 } from "./registry.js";
 
 const log = createLogger("hub");
@@ -42,7 +42,7 @@ interface UpdateHostMessage {
 }
 
 interface PendingRotationEntry {
-  agentId: string;
+  executorId: string;
   oldTokenId: string;
   timer: ReturnType<typeof setTimeout>;
 }
@@ -57,7 +57,7 @@ const pendingRotations = new Map<string, PendingRotationEntry>();
 const ROTATION_TTL_MS = 5 * 60 * 1000;
 
 // ---------------------------------------------------------------------------
-// Rate limiter — sliding window per agent token
+// Rate limiter — sliding window per executor token
 // ---------------------------------------------------------------------------
 
 const reconnectTimestamps = new Map<string, number[]>();
@@ -85,11 +85,11 @@ let _heartbeatInterval: ReturnType<typeof setInterval> | null = null;
 
 function startHeartbeatLoop(): void {
   _heartbeatInterval = setInterval(() => {
-    for (const [agentId, conn] of allConnections()) {
+    for (const [executorId, conn] of allConnections()) {
       conn.missedPings += 1;
 
       if (conn.missedPings > HEARTBEAT_MAX_MISSED) {
-        log.warn({ agentId, lastPongAt: new Date(conn.lastPongAt) }, "Agent heartbeat timeout — terminating");
+        log.warn({ executorId, lastPongAt: new Date(conn.lastPongAt) }, "Executor heartbeat timeout — terminating");
         conn.disconnectReason = "timeout";
         conn.ws.terminate();
         continue;
@@ -137,72 +137,72 @@ export function attachHub(server: Server): void {
     const token = authHeader.slice(7);
     const tokenHash = hashToken(token);
 
-    const agentToken = await prisma.agentToken.findUnique({
+    const executorToken = await prisma.executorToken.findUnique({
       where: { tokenHash },
       include: {
-        agents: { select: { id: true, userId: true, host: true } },
+        executors: { select: { id: true, userId: true, host: true } },
       },
     });
 
-    if (!agentToken || agentToken.revokedAt !== null || (agentToken.expiresAt !== null && agentToken.expiresAt < new Date())) {
+    if (!executorToken || executorToken.revokedAt !== null || (executorToken.expiresAt !== null && executorToken.expiresAt < new Date())) {
       socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
       socket.destroy();
       return;
     }
 
-    // Primary lookup: find the agent that currently references this token.
-    // For a pending rotation token, agentTokenId hasn't been updated yet — fall
+    // Primary lookup: find the executor that currently references this token.
+    // For a pending rotation token, executorTokenId hasn't been updated yet — fall
     // back to the pendingRotations map.
-    let agent = agentToken.agents[0];
+    let executor = executorToken.executors[0];
     let pendingRotation: PendingRotationEntry | undefined;
 
-    if (!agent) {
-      pendingRotation = pendingRotations.get(agentToken.id);
+    if (!executor) {
+      pendingRotation = pendingRotations.get(executorToken.id);
       if (!pendingRotation) {
         socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
         socket.destroy();
         return;
       }
-      const agentRecord = await prisma.agent.findUnique({
-        where: { id: pendingRotation.agentId },
+      const executorRecord = await prisma.executor.findUnique({
+        where: { id: pendingRotation.executorId },
         select: { id: true, userId: true, host: true },
       });
-      if (!agentRecord) {
+      if (!executorRecord) {
         socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
         socket.destroy();
         return;
       }
-      agent = agentRecord;
+      executor = executorRecord;
     }
 
-    if (!checkReconnectRateLimit(agentToken.id)) {
+    if (!checkReconnectRateLimit(executorToken.id)) {
       socket.write("HTTP/1.1 429 Too Many Requests\r\n\r\n");
       socket.destroy();
       return;
     }
 
     // Update last_used_at on the token.
-    await prisma.agentToken.update({
-      where: { id: agentToken.id },
+    await prisma.executorToken.update({
+      where: { id: executorToken.id },
       data: { lastUsedAt: new Date() },
     });
 
     wss.handleUpgrade(req, socket, head, (ws) => {
       wss.emit("connection", ws, req, {
-        agentId: agent.id,
-        userId: agent.userId,
-        tokenType: agentToken.tokenType,
-        host: agent.host,
-        tokenId: agentToken.id,
+        executorId: executor.id,
+        userId: executor.userId,
+        tokenType: executorToken.tokenType,
+        host: executor.host,
+        tokenId: executorToken.id,
         pendingRotation,
       });
     });
   });
 
   wss.on("connection", (ws: WebSocket, _req: IncomingMessage, meta: {
-    agentId: string;
+    executorId: string;
     userId: string | null;
-    tokenType: AgentTokenType;
+    tokenType: ExecutorTokenType;
     host: string;
     tokenId: string;
     pendingRotation?: PendingRotationEntry;
@@ -214,16 +214,16 @@ export function attachHub(server: Server): void {
 }
 
 async function handleConnection(ws: WebSocket, meta: {
-  agentId: string;
+  executorId: string;
   userId: string | null;
-  tokenType: AgentTokenType;
+  tokenType: ExecutorTokenType;
   host: string;
   tokenId: string;
   pendingRotation?: PendingRotationEntry;
 }): Promise<void> {
-    const { agentId, userId, tokenType, host, tokenId, pendingRotation } = meta;
+    const { executorId, userId, tokenType, host, tokenId, pendingRotation } = meta;
 
-    // Complete a pending token rotation: atomically update agentTokenId and revoke the old token,
+    // Complete a pending token rotation: atomically update executorTokenId and revoke the old token,
     // then cancel the expiry timer.
     // Guard against concurrent reconnects with the same new token: only the first handleConnection
     // to run (before any await) will find the entry still in the map and proceed; the second
@@ -233,20 +233,20 @@ async function handleConnection(ws: WebSocket, meta: {
       pendingRotations.delete(tokenId);
       try {
         await prisma.$transaction([
-          prisma.agent.update({ where: { id: agentId }, data: { agentTokenId: tokenId } }),
-          prisma.agentToken.update({ where: { id: pendingRotation.oldTokenId }, data: { revokedAt: new Date() } }),
+          prisma.executor.update({ where: { id: executorId }, data: { executorTokenId: tokenId } }),
+          prisma.executorToken.update({ where: { id: pendingRotation.oldTokenId }, data: { revokedAt: new Date() } }),
         ]);
       } catch (err) {
-        log.error({ err, agentId }, "Failed to complete token rotation — closing connection");
+        log.error({ err, executorId }, "Failed to complete token rotation — closing connection");
         ws.close(1011, "Internal error during token rotation");
         return;
       }
-      log.info({ agentId, host }, "Token rotation completed");
+      log.info({ executorId, host }, "Token rotation completed");
     }
 
-    const conn: ConnectedAgent = {
+    const conn: ConnectedExecutor = {
       ws,
-      agentId,
+      executorId,
       userId,
       tokenType,
       host,
@@ -258,28 +258,28 @@ async function handleConnection(ws: WebSocket, meta: {
     // Handle duplicate connections — terminate the old one.
     const existing = registerConnection(conn);
     if (existing) {
-      log.info({ agentId, host }, "Replacing stale agent connection");
+      log.info({ executorId, host }, "Replacing stale executor connection");
       existing.ws.terminate();
     }
 
-    // Record connection time immediately so list_hosts shows the agent as online
+    // Record connection time immediately so list_hosts shows the executor as online
     // before the first heartbeat pong arrives (up to HEARTBEAT_INTERVAL_MS away).
     // Also clear any stale disconnect reason from a prior session.
-    prisma.agent.update({
-      where: { id: agentId },
+    prisma.executor.update({
+      where: { id: executorId },
       data: { lastHeartbeatAt: new Date(), lastDisconnectReason: null },
-    }).catch((err) => log.error({ err, agentId }, "Failed to set initial lastHeartbeatAt"));
+    }).catch((err) => log.error({ err, executorId }, "Failed to set initial lastHeartbeatAt"));
 
-    log.info({ agentId, host, userId }, "Agent connected");
-    logEvent({ userId, eventType: "agent_connect", host });
+    log.info({ executorId, host, userId }, "Executor connected");
+    logEvent({ userId, eventType: "executor_connect", host });
 
     ws.on("pong", () => {
       conn.lastPongAt = Date.now();
       conn.missedPings = 0;
-      prisma.agent.update({
-        where: { id: agentId },
+      prisma.executor.update({
+        where: { id: executorId },
         data: { lastHeartbeatAt: new Date() },
-      }).catch((err) => log.error({ err, agentId }, "Failed to update last_heartbeat_at"));
+      }).catch((err) => log.error({ err, executorId }, "Failed to update last_heartbeat_at"));
     });
 
     ws.on("message", (data) => {
@@ -289,7 +289,7 @@ async function handleConnection(ws: WebSocket, meta: {
           ? data.reduce((sum, b) => sum + b.length, 0)
           : data.byteLength;
       if (byteLength > WS_MAX_MESSAGE_BYTES) {
-        log.warn({ agentId, size: byteLength, limit: WS_MAX_MESSAGE_BYTES }, "Agent message exceeds size limit — terminating");
+        log.warn({ executorId, size: byteLength, limit: WS_MAX_MESSAGE_BYTES }, "Executor message exceeds size limit — terminating");
         conn.disconnectReason = "error";
         ws.terminate();
         return;
@@ -298,12 +298,12 @@ async function handleConnection(ws: WebSocket, meta: {
       try {
         msg = JSON.parse(data.toString()) as Record<string, unknown>;
       } catch {
-        log.warn({ agentId }, "Received non-JSON message from agent");
+        log.warn({ executorId }, "Received non-JSON message from executor");
         return;
       }
-      handleAgentMessage(conn, msg).catch((err) => {
-        log.error({ err, agentId }, "Error handling agent message");
-        // Best-effort: send a typed error back so the agent doesn't wait indefinitely.
+      handleExecutorMessage(conn, msg).catch((err) => {
+        log.error({ err, executorId }, "Error handling executor message");
+        // Best-effort: send a typed error back so the executor doesn't wait indefinitely.
         const type = typeof msg["type"] === "string" ? msg["type"] : undefined;
         if (type === "config_update") send(conn.ws, { type: "config_update_error", error: "Internal error" });
         else if (type === "update_host") send(conn.ws, { type: "update_host_error", error: "Internal error" });
@@ -312,22 +312,22 @@ async function handleConnection(ws: WebSocket, meta: {
 
     ws.on("close", () => {
       const reason = conn.disconnectReason ?? "clean";
-      // Guard against the race where a reconnecting agent registers a new connection
+      // Guard against the race where a reconnecting executor registers a new connection
       // before this close event fires — avoid clobbering the live entry.
       if (unregisterConnection(conn)) {
-        rejectAgentRpcs(agentId);
-        prisma.agent.update({
-          where: { id: agentId },
+        rejectExecutorRpcs(executorId);
+        prisma.executor.update({
+          where: { id: executorId },
           data: { lastHeartbeatAt: null, lastDisconnectReason: reason },
-        }).catch((err) => log.error({ err, agentId }, "Failed to update disconnect state"));
-        log.info({ agentId, host, userId, reason }, "Agent disconnected");
-        logEvent({ userId, eventType: "agent_disconnect", host, errorCode: reason !== "clean" ? reason : undefined });
+        }).catch((err) => log.error({ err, executorId }, "Failed to update disconnect state"));
+        log.info({ executorId, host, userId, reason }, "Executor disconnected");
+        logEvent({ userId, eventType: "executor_disconnect", host, errorCode: reason !== "clean" ? reason : undefined });
       }
     });
 
     ws.on("error", (err) => {
       conn.disconnectReason = "error";
-      log.error({ err, agentId }, "Agent WebSocket error");
+      log.error({ err, executorId }, "Executor WebSocket error");
     });
 }
 
@@ -335,8 +335,8 @@ async function handleConnection(ws: WebSocket, meta: {
 // Inbound message handlers
 // ---------------------------------------------------------------------------
 
-async function handleAgentMessage(
-  conn: ConnectedAgent,
+async function handleExecutorMessage(
+  conn: ConnectedExecutor,
   msg: Record<string, unknown>
 ): Promise<void> {
   // RPC responses carry request_id with result or error but no type field.
@@ -356,7 +356,7 @@ async function handleAgentMessage(
   } else if (type === "shared_label_sync") {
     await handleSharedLabelSync(conn, msg as unknown as SharedLabelSyncMessage);
   } else {
-    log.warn({ agentId: conn.agentId, type }, "Unknown control message from agent — dropping");
+    log.warn({ executorId: conn.executorId, type }, "Unknown control message from executor — dropping");
   }
 }
 
@@ -366,12 +366,12 @@ interface ConfigUpdateEntry {
   instructions?: string;
 }
 
-async function handleConfigUpdate(conn: ConnectedAgent, msg: ConfigUpdateMessage): Promise<void> {
-  if (conn.tokenType === AgentTokenType.SHARED) {
+async function handleConfigUpdate(conn: ConnectedExecutor, msg: ConfigUpdateMessage): Promise<void> {
+  if (conn.tokenType === ExecutorTokenType.HUB) {
     send(conn.ws, { type: "config_update_error", error: "Hubs use admin-defined labels; config_update is not supported" });
     return;
   }
-  // After SHARED guard: userId is guaranteed non-null for PERSONAL connections.
+  // After HUB guard: userId is guaranteed non-null for NODE connections.
   const userId = conn.userId!;
   const paths = msg.paths;
   if (!Array.isArray(paths)) {
@@ -397,7 +397,7 @@ async function handleConfigUpdate(conn: ConnectedAgent, msg: ConfigUpdateMessage
 
   // Upsert all provided labels and remove any that are no longer present.
   // Conflict check is inside the transaction to avoid a TOCTOU race where two
-  // agents register the same label concurrently and both pass a pre-transaction check.
+  // executors register the same label concurrently and both pass a pre-transaction check.
   // Throwing inside the transaction rolls it back cleanly.
   class LabelConflictError extends Error {
     constructor(public readonly label: string) { super(); }
@@ -410,7 +410,7 @@ async function handleConfigUpdate(conn: ConnectedAgent, msg: ConfigUpdateMessage
           where: {
             userId,
             label: entry.label,
-            NOT: { agentId: conn.agentId },
+            NOT: { executorId: conn.executorId },
           },
         });
         if (conflict) throw new LabelConflictError(entry.label);
@@ -422,7 +422,7 @@ async function handleConfigUpdate(conn: ConnectedAgent, msg: ConfigUpdateMessage
           where: { userId_label: { userId, label: entry.label } },
           create: {
             userId,
-            agentId: conn.agentId,
+            executorId: conn.executorId,
             label: entry.label,
             reportedPath: entry.reported_path,
             instructions,
@@ -431,11 +431,11 @@ async function handleConfigUpdate(conn: ConnectedAgent, msg: ConfigUpdateMessage
         });
       }
 
-      // Remove labels belonging to this agent that are no longer in the payload.
+      // Remove labels belonging to this executor that are no longer in the payload.
       const activeLabels = entries.map((e) => e.label);
       await tx.pathLabel.deleteMany({
         where: {
-          agentId: conn.agentId,
+          executorId: conn.executorId,
           label: { notIn: activeLabels },
         },
       });
@@ -444,23 +444,23 @@ async function handleConfigUpdate(conn: ConnectedAgent, msg: ConfigUpdateMessage
     if (err instanceof LabelConflictError) {
       send(conn.ws, {
         type: "config_update_error",
-        error: `Label "${err.label}" is already registered by another agent`,
+        error: `Label "${err.label}" is already registered by another executor`,
       });
       return;
     }
     throw err;
   }
 
-  log.info({ agentId: conn.agentId, count: entries.length }, "Config updated");
+  log.info({ executorId: conn.executorId, count: entries.length }, "Config updated");
   send(conn.ws, { type: "config_update_ok" });
 }
 
-async function handleUpdateHost(conn: ConnectedAgent, msg: UpdateHostMessage): Promise<void> {
-  if (conn.tokenType === AgentTokenType.SHARED) {
+async function handleUpdateHost(conn: ConnectedExecutor, msg: UpdateHostMessage): Promise<void> {
+  if (conn.tokenType === ExecutorTokenType.HUB) {
     send(conn.ws, { type: "update_host_error", error: "Hubs use a fixed host (machine ID); update_host is not supported" });
     return;
   }
-  // After SHARED guard: userId is guaranteed non-null for PERSONAL connections.
+  // After HUB guard: userId is guaranteed non-null for NODE connections.
   const userId = conn.userId!;
   const newHost = typeof msg.host === "string" ? msg.host.trim() : "";
 
@@ -474,8 +474,8 @@ async function handleUpdateHost(conn: ConnectedAgent, msg: UpdateHostMessage): P
     return;
   }
 
-  const conflict = await prisma.agent.findFirst({
-    where: { userId, host: newHost, NOT: { id: conn.agentId } },
+  const conflict = await prisma.executor.findFirst({
+    where: { userId, host: newHost, NOT: { id: conn.executorId } },
   });
 
   if (conflict) {
@@ -483,18 +483,18 @@ async function handleUpdateHost(conn: ConnectedAgent, msg: UpdateHostMessage): P
     return;
   }
 
-  await prisma.agent.update({ where: { id: conn.agentId }, data: { host: newHost } });
+  await prisma.executor.update({ where: { id: conn.executorId }, data: { host: newHost } });
   conn.host = newHost;
 
-  log.info({ agentId: conn.agentId, newHost }, "Agent host updated");
+  log.info({ executorId: conn.executorId, newHost }, "Executor host updated");
   send(conn.ws, { type: "update_host_ok", host: newHost });
 }
 
-async function handleRotateToken(conn: ConnectedAgent): Promise<void> {
+async function handleRotateToken(conn: ConnectedExecutor): Promise<void> {
   const newToken = generateToken();
   const newTokenHash = hashToken(newToken);
 
-  const newAgentToken = await prisma.agentToken.create({
+  const newExecutorToken = await prisma.executorToken.create({
     data: {
       userId: conn.userId,
       tokenType: conn.tokenType,
@@ -504,33 +504,33 @@ async function handleRotateToken(conn: ConnectedAgent): Promise<void> {
     select: { id: true },
   });
 
-  // Cancel any prior pending rotation for this agent to avoid orphaned tokens.
+  // Cancel any prior pending rotation for this executor to avoid orphaned tokens.
   for (const [priorTokenId, entry] of pendingRotations) {
-    if (entry.agentId === conn.agentId) {
+    if (entry.executorId === conn.executorId) {
       clearTimeout(entry.timer);
       pendingRotations.delete(priorTokenId);
-      prisma.agentToken.update({ where: { id: priorTokenId }, data: { revokedAt: new Date() } })
+      prisma.executorToken.update({ where: { id: priorTokenId }, data: { revokedAt: new Date() } })
         .catch((err) => log.error({ err, priorTokenId }, "Failed to revoke superseded rotation token"));
       break;
     }
   }
 
-  // Do NOT update agent.agentTokenId yet — the agent must reconnect with the new token first.
+  // Do NOT update executor.executorTokenId yet — the executor must reconnect with the new token first.
   // If it does not reconnect within the TTL, revoke the new token so the old one stays valid.
   const timer = setTimeout(() => {
-    pendingRotations.delete(newAgentToken.id);
-    prisma.agentToken.update({ where: { id: newAgentToken.id }, data: { revokedAt: new Date() } })
-      .catch((err) => log.error({ err, agentId: conn.agentId }, "Failed to revoke expired rotation token"));
-    log.warn({ agentId: conn.agentId }, "Rotation token expired unused — old token remains active");
+    pendingRotations.delete(newExecutorToken.id);
+    prisma.executorToken.update({ where: { id: newExecutorToken.id }, data: { revokedAt: new Date() } })
+      .catch((err) => log.error({ err, executorId: conn.executorId }, "Failed to revoke expired rotation token"));
+    log.warn({ executorId: conn.executorId }, "Rotation token expired unused — old token remains active");
   }, ROTATION_TTL_MS);
 
-  pendingRotations.set(newAgentToken.id, {
-    agentId: conn.agentId,
+  pendingRotations.set(newExecutorToken.id, {
+    executorId: conn.executorId,
     oldTokenId: conn.tokenId,
     timer,
   });
 
-  log.info({ agentId: conn.agentId }, "Token rotation prepared");
+  log.info({ executorId: conn.executorId }, "Token rotation prepared");
   send(conn.ws, { type: "token_rotated", token: newToken });
 }
 
@@ -550,9 +550,9 @@ interface SharedLabelSyncMessage {
   labels: unknown;
 }
 
-async function handleSharedLabelSync(conn: ConnectedAgent, msg: SharedLabelSyncMessage): Promise<void> {
-  if (conn.tokenType !== AgentTokenType.SHARED) {
-    send(conn.ws, { type: "shared_label_sync_error", error: "shared_label_sync is only valid for SHARED agent tokens" });
+async function handleSharedLabelSync(conn: ConnectedExecutor, msg: SharedLabelSyncMessage): Promise<void> {
+  if (conn.tokenType !== ExecutorTokenType.HUB) {
+    send(conn.ws, { type: "shared_label_sync_error", error: "shared_label_sync is only valid for HUB tokens (ExecutorTokenType.HUB)" });
     return;
   }
 
@@ -594,9 +594,9 @@ async function handleSharedLabelSync(conn: ConnectedAgent, msg: SharedLabelSyncM
       for (const entry of labels) {
         const instructions = typeof entry.instructions === "string" ? entry.instructions : null;
         await tx.sharedPathLabel.upsert({
-          where: { agentId_label: { agentId: conn.agentId, label: entry.name } },
+          where: { executorId_label: { executorId: conn.executorId, label: entry.name } },
           create: {
-            agentId: conn.agentId,
+            executorId: conn.executorId,
             label: entry.name,
             reportedPath: entry.reported_path,
             permissionBlob: entry.permission_blob,
@@ -613,18 +613,18 @@ async function handleSharedLabelSync(conn: ConnectedAgent, msg: SharedLabelSyncM
       const activeLabels = labels.map((e) => e.name);
       await tx.sharedPathLabel.deleteMany({
         where: {
-          agentId: conn.agentId,
+          executorId: conn.executorId,
           label: { notIn: activeLabels },
         },
       });
     });
   } catch (err) {
-    log.error({ err, agentId: conn.agentId }, "Failed to sync shared labels");
+    log.error({ err, executorId: conn.executorId }, "Failed to sync shared labels");
     send(conn.ws, { type: "shared_label_sync_error", error: "Internal error during label sync" });
     return;
   }
 
-  log.info({ agentId: conn.agentId, count: labels.length }, "Shared labels synced");
+  log.info({ executorId: conn.executorId, count: labels.length }, "Shared labels synced");
   send(conn.ws, { type: "shared_label_sync_ok" });
 }
 
@@ -635,17 +635,17 @@ async function handleSharedLabelSync(conn: ConnectedAgent, msg: SharedLabelSyncM
 export type { RpcError };
 export { getConnection };
 
-/** Revokes AgentToken rows that are not referenced by any Agent, were never revoked, and have
+/** Revokes ExecutorToken rows that are not referenced by any Executor, were never revoked, and have
  * passed their expiry. Handles tokens left behind by a relay restart mid-rotation. Fresh
- * rotation tokens (expiresAt in the future) are left intact so the agent can complete rotation.
+ * rotation tokens (expiresAt in the future) are left intact so the executor can complete rotation.
  * Called at startup and on the periodic prune interval. */
 export async function pruneExpiredOrphanedTokens(): Promise<void> {
-  const result = await prisma.agentToken.updateMany({
-    where: { revokedAt: null, agents: { none: {} }, expiresAt: { lt: new Date() } },
+  const result = await prisma.executorToken.updateMany({
+    where: { revokedAt: null, executors: { none: {} }, expiresAt: { lt: new Date() } },
     data: { revokedAt: new Date() },
   });
   if (result.count > 0) {
-    log.warn({ count: result.count }, "Revoked orphaned agent tokens from prior restart");
+    log.warn({ count: result.count }, "Revoked orphaned executor tokens from prior restart");
   }
 }
 
@@ -660,20 +660,20 @@ export function pruneReconnectTimestamps(): void {
   }
 }
 
-/** Rejects all pending RPCs for a given agent — called on disconnect. */
-export function rejectAgentRpcs(agentId: string): void {
-  rejectPendingRpcsForAgent(agentId, new Error("agent_disconnected"));
+/** Rejects all pending RPCs for a given executor — called on disconnect. */
+export function rejectExecutorRpcs(executorId: string): void {
+  rejectPendingRpcsForExecutor(executorId, new Error("executor_disconnected"));
 }
 
 export function dispatchRpc(
-  agentId: string,
+  executorId: string,
   payload: RpcEnvelope
 ): Promise<RpcResponse> {
-  const conn = getConnection(agentId);
-  if (!conn) throw new Error(`Agent ${agentId} is not connected`);
+  const conn = getConnection(executorId);
+  if (!conn) throw new Error(`Executor ${executorId} is not connected`);
 
   const requestId = payload["request_id"] as string;
-  const promise = dispatchPendingRpc(requestId, agentId, RPC_TIMEOUT_MS);
+  const promise = dispatchPendingRpc(requestId, executorId, RPC_TIMEOUT_MS);
   send(conn.ws, payload);
   return promise;
 }

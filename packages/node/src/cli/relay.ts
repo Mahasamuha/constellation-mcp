@@ -14,7 +14,7 @@ import { poll, confirm } from "./util.js";
 // API response types
 // ---------------------------------------------------------------------------
 
-interface AgentEntry {
+interface ExecutorEntry {
   id: string;
   host: string;
   online: boolean;
@@ -32,7 +32,7 @@ interface FilterEntry {
   id: string;
   pattern: string;
   pattern_type: string;
-  scope_agent_id: string | null;
+  scope_executor_id: string | null;
   created_at: string;
 }
 
@@ -45,8 +45,8 @@ interface SessionEntry {
 }
 
 interface SharedLabelEntry {
-  agent_id: string;
-  agent_host: string;
+  executor_id: string;
+  executor_host: string;
   label: string;
   reported_path: string;
   permission_blob: {
@@ -324,18 +324,18 @@ export function registerRelayCommands(program: Command): void {
     });
 
   // -------------------------------------------------------------------------
-  // agents
+  // executors
   // -------------------------------------------------------------------------
 
-  const agents = relay.command("agents").description("Manage registered agents");
+  const executors = relay.command("executors").description("Manage registered executors");
 
-  agents
+  executors
     .command("list")
-    .description("List all registered agents")
+    .description("List all registered executors")
     .option("--json", "Output as JSON")
     .action(async (opts: { json?: boolean }) => {
       const session = await getValidSession(cfgDir);
-      const data = await apiGet<AgentEntry[]>(session, "/api/agents");
+      const data = await apiGet<ExecutorEntry[]>(session, "/api/executors");
       if (opts.json) { console.log(JSON.stringify(data, null, 2)); return; }
       for (const a of data) {
         console.log(`${a.host} (${a.id})`);
@@ -344,15 +344,15 @@ export function registerRelayCommands(program: Command): void {
       }
     });
 
-  agents
+  executors
     .command("revoke")
-    .argument("<agent-id>", "Agent ID to revoke")
-    .description("Immediately revoke an agent token")
-    .action(async (agentId: string) => {
-      const ok = await confirm(`Revoke token for agent ${agentId}? The agent will go offline.`);
+    .argument("<executor-id>", "Executor ID to revoke")
+    .description("Immediately revoke an executor token")
+    .action(async (executorId: string) => {
+      const ok = await confirm(`Revoke token for executor ${executorId}? The executor will go offline.`);
       if (!ok) { console.log("Cancelled."); return; }
       const session = await getValidSession(cfgDir);
-      await apiDelete(session, `/api/agents/${agentId}/token`);
+      await apiDelete(session, `/api/executors/${executorId}/token`);
       console.log("Token revoked.");
     });
 
@@ -365,11 +365,11 @@ export function registerRelayCommands(program: Command): void {
   labels
     .command("list")
     .description("List path labels")
-    .option("--agent <id>", "Filter by agent ID")
+    .option("--executor <id>", "Filter by executor ID")
     .option("--json", "Output as JSON")
-    .action(async (opts: { agent?: string; json?: boolean }) => {
+    .action(async (opts: { executor?: string; json?: boolean }) => {
       const session = await getValidSession(cfgDir);
-      const qs = opts.agent ? `?agent_id=${encodeURIComponent(opts.agent)}` : "";
+      const qs = opts.executor ? `?executor_id=${encodeURIComponent(opts.executor)}` : "";
       const data = await apiGet<LabelEntry[]>(session, `/api/labels${qs}`);
       if (opts.json) { console.log(JSON.stringify(data, null, 2)); return; }
       for (const l of data) {
@@ -392,7 +392,7 @@ export function registerRelayCommands(program: Command): void {
       const data = await apiGet<FilterEntry[]>(session, "/api/filters");
       if (opts.json) { console.log(JSON.stringify(data, null, 2)); return; }
       for (const f of data) {
-        const scope = f.scope_agent_id ? ` [agent: ${f.scope_agent_id}]` : "";
+        const scope = f.scope_executor_id ? ` [executor: ${f.scope_executor_id}]` : "";
         console.log(`${f.id}  ${f.pattern_type}:${f.pattern}${scope}  (${f.created_at})`);
       }
     });
@@ -402,15 +402,15 @@ export function registerRelayCommands(program: Command): void {
     .argument("<pattern>", "Glob or regex pattern to deny")
     .description("Add a deny filter")
     .option("--type <type>", "Pattern type: glob or regex", "glob")
-    .option("--agent <id>", "Scope filter to a specific agent")
-    .action(async (pattern: string, opts: { type: string; agent?: string }) => {
+    .option("--executor <id>", "Scope filter to a specific executor")
+    .action(async (pattern: string, opts: { type: string; executor?: string }) => {
       if (opts.type !== "glob" && opts.type !== "regex") {
         console.error("--type must be glob or regex");
         process.exit(1);
       }
       const session = await getValidSession(cfgDir);
       const body: Record<string, string> = { pattern, pattern_type: opts.type };
-      if (opts.agent) body["agent_id"] = opts.agent;
+      if (opts.executor) body["executor_id"] = opts.executor;
       const data = await apiPost<{ id: string }>(session, "/api/filters", body);
       console.log(`Filter created: ${data.id}`);
     });
@@ -528,7 +528,7 @@ export function registerRelayCommands(program: Command): void {
     .command("deactivate")
     .description("Deactivate your account — blocks all access immediately")
     .action(async () => {
-      console.log("WARNING: This will immediately block all agent connections and MCP client access.");
+      console.log("WARNING: This will immediately block all executor connections and MCP client access.");
       console.log("Your configuration is preserved but all tokens become invalid.\n");
       const ok = await confirm("Are you sure you want to deactivate your account?");
       if (!ok) { console.log("Cancelled."); return; }
@@ -685,11 +685,11 @@ export function registerRelayCommands(program: Command): void {
   sharedLabels
     .command("list")
     .description("List all shared labels synced to the relay")
-    .option("--agent <id>", "Filter to a specific hub by ID")
+    .option("--executor <id>", "Filter to a specific hub by ID")
     .option("--json", "Output as JSON")
-    .action(async (opts: { agent?: string; json?: boolean }) => {
+    .action(async (opts: { executor?: string; json?: boolean }) => {
       const session = await getValidSession(cfgDir);
-      const qs = opts.agent ? `?agent=${encodeURIComponent(opts.agent)}` : "";
+      const qs = opts.executor ? `?executor=${encodeURIComponent(opts.executor)}` : "";
       const data = await apiGet<{ data: SharedLabelEntry[] }>(session, `/api/admin/shared-labels${qs}`);
       if (opts.json) { console.log(JSON.stringify(data.data, null, 2)); return; }
 
@@ -698,11 +698,11 @@ export function registerRelayCommands(program: Command): void {
         return;
       }
 
-      let lastAgentId = "";
+      let lastExecutorId = "";
       for (const l of data.data) {
-        if (l.agent_id !== lastAgentId) {
-          console.log(`\nAgent: ${l.agent_host} (${l.agent_id})`);
-          lastAgentId = l.agent_id;
+        if (l.executor_id !== lastExecutorId) {
+          console.log(`\nExecutor: ${l.executor_host} (${l.executor_id})`);
+          lastExecutorId = l.executor_id;
         }
         const overrides = l.permission_blob.overrides ?? [];
         const overrideStr = overrides.length > 0
@@ -716,12 +716,12 @@ export function registerRelayCommands(program: Command): void {
   // token — break-glass token management
   // -------------------------------------------------------------------------
 
-  const tokenCmd = relay.command("token").description("Manage agent tokens (break-glass operations)");
+  const tokenCmd = relay.command("token").description("Manage executor tokens (break-glass operations)");
 
   tokenCmd
     .command("create")
-    .description("Create a new agent token")
-    .requiredOption("--shared", "Create a SHARED service token (break-glass — prefer: constellation hub register)")
+    .description("Create a new executor token")
+    .requiredOption("--shared", "Create a HUB service token (break-glass — prefer: constellation hub register)")
     .action(async () => {
       console.error("╔══════════════════════════════════════════════════════════════════════════╗");
       console.error("║  BREAK-GLASS OPERATION                                                   ║");
@@ -755,7 +755,7 @@ export function registerRelayCommands(program: Command): void {
       console.log(`Created at: ${data.created_at}`);
       console.log("");
       console.log("Store this token as CONSTELLATION_HUB_TOKEN in the hub's environment.");
-      console.log("It will not be shown again. Revoke via: constellation relay agents revoke <agent-id>");
+      console.log("It will not be shown again. Revoke via: constellation relay executors revoke <executor-id>");
     });
 }
 

@@ -10,7 +10,7 @@
 | [0006](0006-agent-initiated-token-rotation.md) | Node-Initiated Token Rotation; Tokens Stored as Hashes | Accepted |
 | [0007](0007-remove-broker-manage-scope.md) | Remove relay:manage Scope; Replace with Per-User RLS Filtering | Accepted |
 | [0008](0008-admin-elevation-admin-until.md) | Admin Elevation via adminUntil on OauthSession (Not a Separate Token) | Accepted |
-| [0009](0009-hub-nullable-user-id.md) | Hub Uses Nullable userId on AgentToken (Service-Level Token) | Accepted |
+| [0009](0009-hub-nullable-user-id.md) | Hub Uses Nullable userId on ExecutorToken (Service-Level Token) | Accepted |
 | [0010](0010-hub-three-tier-identity.md) | Three-Tier OS Identity Resolution for Hub | Accepted |
 | [0011](0011-shared-label-discovery-optimistic.md) | Shared Label Discovery Is Optimistic (Not Authoritative) | Accepted |
 | [0012](0012-in-memory-rate-limiting.md) | In-Memory Rate Limiting (No Redis for v1) | Accepted |

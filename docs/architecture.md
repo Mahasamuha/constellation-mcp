@@ -65,7 +65,7 @@ Tokens are 32-byte cryptographically random values stored as SHA-256 hashes. The
 
 ### WebSocket hub
 
-Agents connect to `/agent/connect` with their agent token in the `Authorization` header. The relay validates the token, then holds the connection in an in-memory map keyed by `agent_id`. Only one WebSocket per agent is permitted — a new connection from the same agent terminates the previous one (assumed stale).
+Agents connect to `/agent/connect` with their agent token in the `Authorization` header. The relay validates the token, then holds the connection in an in-memory map keyed by `executorId`. Only one WebSocket per agent is permitted — a new connection from the same agent terminates the previous one (assumed stale).
 
 The relay pings each connected agent every `HEARTBEAT_INTERVAL_SECONDS` (default 60s). The agent's WebSocket library responds with a pong automatically. Each pong updates `last_heartbeat_at` in Postgres. After `HEARTBEAT_MAX_MISSED` (default 3) consecutive missed pongs, the relay terminates the connection.
 
@@ -76,7 +76,7 @@ On connect, the agent immediately sends a `config_update` message with its curre
 When an MCP client calls a tool, the relay:
 
 1. Resolves the Bearer token to a `user_id`
-2. Resolves the `label` (and optional `host`) to a target `agent_id` and `absolute_root` path
+2. Resolves the `label` (and optional `host`) to a target `executor_id` and `absolute_root` path
 3. Applies relay-side deny filters (glob or regex patterns)
 4. Looks up the live WebSocket for that agent
 5. Forwards an RPC envelope: `{ request_id, tool, absolute_root, ...tool_params }`
@@ -91,15 +91,15 @@ If the node disconnects while an RPC is in flight, the relay immediately rejects
 
 ```
 users            id, oidc_sub, email, deactivated_at
-agent_tokens     id, user_id, token_hash, last_used_at, revoked_at
-agents           id, user_id, agent_token_id, host, last_heartbeat_at
-path_labels      id, user_id, agent_id, label, reported_path  [UNIQUE (user_id, label)]
-broker_path_filters  id, user_id, scope_agent_id, pattern, pattern_type
+executor_tokens  id, user_id, token_hash, last_used_at, revoked_at
+executors        id, user_id, executor_token_id, host, last_heartbeat_at
+path_labels      id, user_id, executor_id, label, reported_path  [UNIQUE (user_id, label)]
+broker_path_filters  id, user_id, scope_executor_id, pattern, pattern_type
 oauth_clients    id, client_secret_hash, redirect_uris, is_dynamic
 oauth_sessions   id, user_id, mcp_client_id, access_token_hash, expires_at, refresh_token_hash
 ```
 
-`deactivated_at` on `users` is nullable — when set, all requests and agent connections for that user are rejected immediately; config and registrations are preserved but inert. `revoked_at` on `agent_tokens` is nullable; `IS NOT NULL` is the revocation check.
+`deactivated_at` on `users` is nullable — when set, all requests and executor connections for that user are rejected immediately; config and registrations are preserved but inert. `revoked_at` on `executor_tokens` is nullable; `IS NOT NULL` is the revocation check.
 
 ---
 

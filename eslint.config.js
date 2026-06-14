@@ -20,17 +20,17 @@ export default tseslint.config(
     },
   },
 
-  // Agent is a CLI tool — console.log is the output mechanism
+  // Node and hub are CLI tools — console.log is the output mechanism
   {
-    files: ["packages/agent/src/**/*.ts"],
+    files: ["packages/node/src/**/*.ts", "packages/hub/src/**/*.ts"],
     rules: {
       "no-console": "off",
     },
   },
 
-  // React rules for agent-gui only
+  // React rules for node-gui only
   {
-    files: ["packages/agent-gui/src/**/*.{ts,tsx}"],
+    files: ["packages/node-gui/src/**/*.{ts,tsx}"],
     plugins: { "react-hooks": reactHooks },
     rules: {
       ...reactHooks.configs.recommended.rules,

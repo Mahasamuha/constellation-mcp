@@ -238,25 +238,25 @@ Deletes `relay-session.yaml`. Does not revoke the token on the relay.
 
 Shows relay health, uptime, and version.
 
-### `relay agents list [--json]`
+### `relay executors list [--json]`
 
-Lists all agents registered to your account with their online status and labels.
+Lists all executors registered to your account with their online status and labels.
 
-### `relay agents revoke <agent-id>`
+### `relay executors revoke <executor-id>`
 
-Revokes the agent's token. The agent goes offline immediately and cannot reconnect until re-initialized. Prompts for confirmation.
+Revokes the executor's token. The executor goes offline immediately and cannot reconnect until re-initialized. Prompts for confirmation.
 
-### `relay labels list [--agent <id>] [--json]`
+### `relay labels list [--executor <id>] [--json]`
 
-Lists path labels across all agents, optionally filtered to a specific agent ID.
+Lists path labels across all executors, optionally filtered to a specific executor ID.
 
 ### `relay filters list [--json]`
 
 Lists active relay-side path deny filters.
 
-### `relay filters add <pattern> [--type glob|regex] [--agent <id>]`
+### `relay filters add <pattern> [--type glob|regex] [--executor <id>]`
 
-Adds a deny filter. `--type` defaults to `glob`. `--agent` scopes it to a specific agent; omit to apply to all agents.
+Adds a deny filter. `--type` defaults to `glob`. `--executor` scopes it to a specific executor; omit to apply to all executors.
 
 ### `relay filters remove <filter-id>`
 
@@ -288,7 +288,7 @@ Sets a new password for a local user and immediately invalidates all of their ex
 
 ### `relay account deactivate`
 
-Deactivates your account after an interactive confirmation prompt. All agent connections and MCP client sessions are immediately blocked. Re-running `constellation node init` is required to restore access.
+Deactivates your account after an interactive confirmation prompt. All executor connections and MCP client sessions are immediately blocked. Re-running `constellation node init` is required to restore access.
 
 ### `relay elevate`
 
@@ -314,9 +314,9 @@ constellation relay user demote <identifier> [--admin-token <token>] [--relay <u
 
 Revokes admin role from a user. Same auth requirements as `relay user promote`.
 
-### `relay shared-labels list [--agent <id>] [--json]`
+### `relay shared-labels list [--executor <id>] [--json]`
 
-Lists all shared labels synced to the relay. Requires an elevated admin session (`relay elevate` first). `--agent` filters to a specific hub by ID.
+Lists all shared labels synced to the relay. Requires an elevated admin session (`relay elevate` first). `--executor` filters to a specific hub by ID.
 
 ### `relay token create --shared`
 
@@ -630,35 +630,35 @@ Returns the current session ID and user ID. Used internally by `relay elevate` t
 
 ---
 
-### `GET /api/agents`
+### `GET /api/executors`
 
-List all agents registered to the authenticated user.
+List all executors registered to the authenticated user.
 
 **Response `200`** — paginated:
 
 | Field | Type | Description |
 |---|---|---|
-| `id` | string | Agent ID (cuid) |
+| `id` | string | Executor ID (cuid) |
 | `host` | string | Host name |
-| `registered_at` | ISO 8601 | When the agent was first registered |
+| `registered_at` | ISO 8601 | When the executor was first registered |
 | `last_heartbeat_at` | ISO 8601 \| null | Last successful heartbeat pong |
 | `last_disconnect_reason` | string \| null | Reason for last WebSocket disconnect, if any |
 | `online` | boolean | Whether the last heartbeat is within the threshold |
 | `connected` | boolean | Whether a live WebSocket is open right now |
-| `token_id` | string | Current agent token ID |
+| `token_id` | string | Current executor token ID |
 | `token_last_used_at` | ISO 8601 \| null | Last time the token authenticated a connection |
-| `labels` | `{ label, reported_path }[]` | Path labels reported by the agent |
+| `labels` | `{ label, reported_path }[]` | Path labels reported by the executor |
 
 ---
 
-### `DELETE /api/agents/:id/token`
+### `DELETE /api/executors/:id/token`
 
-Revoke an agent's token. Any active WebSocket for that agent is terminated immediately.
+Revoke an executor's token. Any active WebSocket for that executor is terminated immediately.
 
 | Status | Meaning |
 |---|---|
 | `204` | Token revoked |
-| `404` | Agent not found or belongs to another user |
+| `404` | Executor not found or belongs to another user |
 | `409` | Token already revoked |
 
 ---
@@ -667,7 +667,7 @@ Revoke an agent's token. Any active WebSocket for that agent is terminated immed
 
 List path labels for the authenticated user.
 
-**Query params**: `agent_id` — filter to a specific agent (optional).
+**Query params**: `executor_id` — filter to a specific executor (optional).
 
 **Response `200`** — paginated:
 
@@ -676,7 +676,7 @@ List path labels for the authenticated user.
 | `id` | string |
 | `label` | string |
 | `reported_path` | string |
-| `agent_id` | string |
+| `executor_id` | string |
 | `host` | string |
 
 ---
@@ -692,7 +692,7 @@ List active relay path filters.
 | `id` | string | Filter ID |
 | `pattern` | string | Glob or regex pattern |
 | `pattern_type` | `"glob"` \| `"regex"` | |
-| `scope_agent_id` | string \| null | Null = applies to all agents |
+| `scope_executor_id` | string \| null | Null = applies to all executors |
 | `created_at` | ISO 8601 | |
 
 ---
@@ -707,7 +707,7 @@ Add a relay path filter.
 |---|---|---|
 | `pattern` | yes | Glob or regex string (max 1000 characters) |
 | `pattern_type` | yes | `"glob"` or `"regex"` |
-| `agent_id` | no | Scope to a specific agent; omit for all agents |
+| `executor_id` | no | Scope to a specific executor; omit for all executors |
 
 **Response `201`** — the created filter object.
 
@@ -715,7 +715,7 @@ Add a relay path filter.
 |---|---|
 | `201` | Filter created |
 | `400` | Missing/invalid fields, invalid regex, or pattern too long |
-| `404` | `agent_id` not found for this user |
+| `404` | `executor_id` not found for this user |
 
 ---
 
@@ -761,14 +761,14 @@ Revoke an OAuth session. Both access and refresh tokens are invalidated immediat
 
 ### `POST /api/tokens/shared`
 
-Break-glass hub token creation. Requires an elevated admin session. Creates a user-less `SHARED` token that a hub can use to authenticate. The preferred path is `constellation hub register` — use this endpoint only when the device code flow is unavailable.
+Break-glass hub token creation. Requires an elevated admin session. Creates a user-less `HUB` token that a hub can use to authenticate. The preferred path is `constellation hub register` — use this endpoint only when the device code flow is unavailable.
 
 **Response `201`**
 ```json
 { "token": "...", "token_id": "...", "created_at": "..." }
 ```
 
-The token is returned once and not stored. Revoke via `DELETE /api/agents/:id/token`.
+The token is returned once and not stored. Revoke via `DELETE /api/executors/:id/token`.
 
 ---
 
@@ -832,15 +832,15 @@ Revoke admin role from a user. Same auth requirements as promote.
 
 List all shared labels synced to the relay from hubs. Requires an elevated admin session.
 
-**Query params**: `agent` — filter to a specific hub by ID (optional).
+**Query params**: `executor` — filter to a specific hub by ID (optional).
 
 **Response `200`**
 ```json
 {
   "data": [
     {
-      "agent_id": "...",
-      "agent_host": "prod-server",
+      "executor_id": "...",
+      "executor_host": "prod-server",
       "label": "projects",
       "reported_path": "/srv/projects",
       "permission_blob": {

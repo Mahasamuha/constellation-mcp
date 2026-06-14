@@ -8,8 +8,8 @@ Usage:
     python3 assets/logo/generate_tray_icons.py
 
 Output:
-  packages/agent-gui/src-tauri/icons/tray/{state}.png      — Win/Linux (dark bg)
-  packages/agent-gui/src-tauri/icons/tray/mac/{state}.png  — macOS (transparent bg)
+  packages/node-gui/src-tauri/icons/tray/{state}.png      — Win/Linux (dark bg)
+  packages/node-gui/src-tauri/icons/tray/mac/{state}.png  — macOS (transparent bg)
 """
 
 import re
@@ -20,7 +20,7 @@ from PIL import Image, ImageDraw
 SCRIPT_DIR  = Path(__file__).parent
 REPO_ROOT   = SCRIPT_DIR.parent.parent
 SPEC_FILE   = SCRIPT_DIR / "hub_state_colors.html"
-OUT_DIR     = REPO_ROOT / "packages/agent-gui/src-tauri/icons/tray"
+OUT_DIR     = REPO_ROOT / "packages/node-gui/src-tauri/icons/tray"
 MAC_OUT_DIR = OUT_DIR / "mac"
 
 # Maps the color-label in hub_state_colors.html to the tray icon filename.

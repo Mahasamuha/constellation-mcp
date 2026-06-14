@@ -2,7 +2,7 @@ import { Router, Request, Response, IRouter } from "express";
 import escHtml from "escape-html";
 import { randomBytes } from "node:crypto";
 import { prisma } from "./db.js";
-import { AgentTokenType, BrokerRole } from "./generated/prisma/client.js";
+import { ExecutorTokenType, BrokerRole } from "./generated/prisma/client.js";
 import { buildAuthorizationUrl, exchangeCodeAndUpsertUser } from "./oidc.js";
 import { issueOAuthSession, sendTokenResponse } from "./oauth-tokens.js";
 import { generateToken, hashToken, createLogger, requireEnv } from "@constellation/shared";
@@ -458,40 +458,40 @@ export async function handleDeviceCodeGrant(
     const tokenHash = hashToken(token);
 
     await prisma.$transaction(async (tx) => {
-      // Revoke any existing active SHARED token for this host.
-      const existingAgent = await tx.agent.findFirst({
+      // Revoke any existing active HUB token for this host.
+      const existingExecutor = await tx.executor.findFirst({
         where: {
           userId: null,
           host: entry.hostName!,
-          agentToken: { tokenType: AgentTokenType.SHARED, revokedAt: null },
+          executorToken: { tokenType: ExecutorTokenType.HUB, revokedAt: null },
         },
-        select: { agentTokenId: true, id: true },
+        select: { executorTokenId: true, id: true },
       });
-      if (existingAgent) {
-        await tx.agentToken.update({
-          where: { id: existingAgent.agentTokenId },
+      if (existingExecutor) {
+        await tx.executorToken.update({
+          where: { id: existingExecutor.executorTokenId },
           data: { revokedAt: new Date() },
         });
       }
 
-      const agentToken = await tx.agentToken.create({
+      const executorToken = await tx.executorToken.create({
         data: {
           userId: null,
-          tokenType: AgentTokenType.SHARED,
+          tokenType: ExecutorTokenType.HUB,
           tokenHash,
           approvedByUserId: userId,
         },
         select: { id: true },
       });
 
-      if (existingAgent) {
-        await tx.agent.update({
-          where: { id: existingAgent.id },
-          data: { agentTokenId: agentToken.id, lastHeartbeatAt: null, lastDisconnectReason: null },
+      if (existingExecutor) {
+        await tx.executor.update({
+          where: { id: existingExecutor.id },
+          data: { executorTokenId: executorToken.id, lastHeartbeatAt: null, lastDisconnectReason: null },
         });
       } else {
-        await tx.agent.create({
-          data: { userId: null, agentTokenId: agentToken.id, host: entry.hostName! },
+        await tx.executor.create({
+          data: { userId: null, executorTokenId: executorToken.id, host: entry.hostName! },
         });
       }
     });
@@ -512,39 +512,39 @@ export async function handleDeviceCodeGrant(
 
     await prisma.$transaction(async (tx) => {
       // The userId_host compound unique was replaced by partial unique indexes
-      // (agents_user_id_host_key) which Prisma cannot express natively. Use
+      // (executors_user_id_host_key) which Prisma cannot express natively. Use
       // findFirst + create/update instead of upsert.
-      const existingAgent = await tx.agent.findFirst({
+      const existingExecutor = await tx.executor.findFirst({
         where: { userId, host: entry.hostName! },
-        select: { id: true, agentTokenId: true },
+        select: { id: true, executorTokenId: true },
       });
 
       // Revoke the existing token if re-registering the same host.
-      if (existingAgent) {
-        await tx.agentToken.update({
-          where: { id: existingAgent.agentTokenId },
+      if (existingExecutor) {
+        await tx.executorToken.update({
+          where: { id: existingExecutor.executorTokenId },
           data: { revokedAt: new Date() },
         });
       }
 
-      const agentToken = await tx.agentToken.create({
+      const executorToken = await tx.executorToken.create({
         data: { userId, tokenHash },
         select: { id: true },
       });
 
-      if (existingAgent) {
-        await tx.agent.update({
-          where: { id: existingAgent.id },
-          data: { agentTokenId: agentToken.id, lastHeartbeatAt: null, lastDisconnectReason: null },
+      if (existingExecutor) {
+        await tx.executor.update({
+          where: { id: existingExecutor.id },
+          data: { executorTokenId: executorToken.id, lastHeartbeatAt: null, lastDisconnectReason: null },
         });
       } else {
-        await tx.agent.create({
-          data: { userId, agentTokenId: agentToken.id, host: entry.hostName! },
+        await tx.executor.create({
+          data: { userId, executorTokenId: executorToken.id, host: entry.hostName! },
         });
       }
     });
 
-    log.info({ userId, host: entry.hostName }, "Agent registered via device flow");
+    log.info({ userId, host: entry.hostName }, "Executor registered via device flow");
 
     res.json({
       access_token: token,

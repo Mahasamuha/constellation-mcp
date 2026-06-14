@@ -2,10 +2,10 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "agent: build (watch)",
+      "label": "node: build (watch)",
       "type": "shell",
       "command": "npm run dev",
-      "options": { "cwd": "${workspaceFolder}/packages/agent" },
+      "options": { "cwd": "${workspaceFolder}/packages/node" },
       "isBackground": true,
       "problemMatcher": {
         "owner": "tsup",

@@ -17,7 +17,7 @@ initiates connections to nodes. The node exposes no inbound ports.
 
 The node connects to `wss://<relay>/agent/connect` on startup, authenticates with
 its agent token, and holds that connection open. All communication flows through this
-relay-held connection. The in-memory connection map (`agent_id → WebSocket`) on the
+relay-held connection. The in-memory connection map (`executorId → WebSocket`) on the
 relay is the sole state for routing RPCs to a connected node.
 
 ## Rationale

@@ -12,8 +12,8 @@ export type ActivityEventType =
   | "tool_call"
   | "tool_error"
   | "rate_limited"
-  | "agent_connect"
-  | "agent_disconnect";
+  | "executor_connect"
+  | "executor_disconnect";
 
 /** Canonical activity event emitted by the relay routing and hub layers. */
 export interface ActivityEvent {

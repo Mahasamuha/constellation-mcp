@@ -245,6 +245,6 @@ The CLI silently refreshes the access token on expiry if a refresh token is pres
 | Flag | Commands | Description |
 |---|---|---|
 | `--relay <url>` | `login` | Relay URL to authenticate against. Defaults to `relay_url` from `node.yaml`. |
-| `--json` | `agents list`, `labels list`, `filters list`, `sessions list`, `users list` | Emit machine-readable JSON output. |
-| `--agent <id>` | `labels list`, `filters add` | Filter results or scope a filter to a specific agent ID. |
+| `--json` | `executors list`, `labels list`, `filters list`, `sessions list`, `users list` | Emit machine-readable JSON output. |
+| `--executor <id>` | `labels list`, `filters add` | Filter results or scope a filter to a specific executor ID. |
 | `--type glob\|regex` | `filters add` | Pattern type for a new deny filter. Default: `glob`. |

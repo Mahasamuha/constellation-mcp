@@ -32,10 +32,10 @@ flowchart TD
 
 Agents connect over WebSocket to `wss://<relay>/agent/connect` using a long-lived bearer token. The relay keeps one connection per agent in memory (see [`registry.ts`](../packages/relay/src/registry.ts)) and heartbeats it with WebSocket pings.
 
-Agents come in two modalities, distinguished by `AgentTokenType`:
+Agents come in two modalities, distinguished by `ExecutorTokenType`:
 
-- **Personal** (a node) — bound to one user; runs under the user's own OS identity. Labels are user-managed, synced via `config_update`, and stored as `PathLabel` rows.
-- **Shared** (a hub) — service-level, not bound to any user; runs on machines shared by multiple people (NAS, dev server). Labels are admin-defined in the hub's config, synced via `shared_label_sync`, and stored as `SharedPathLabel` rows alongside a per-label `permission_blob`. The relay performs an *optimistic* permission check against that blob during label resolution — final enforcement (OS identity resolution, label access, sub-path permissions) happens authoritatively at the hub. See [Hub](hub.md) for the full request flow, identity resolution chain, and permission model.
+- **Node** (`NODE`) — bound to one user; runs under the user's own OS identity. Labels are user-managed, synced via `config_update`, and stored as `PathLabel` rows.
+- **Hub** (`HUB`) — service-level, not bound to any user; runs on machines shared by multiple people (NAS, dev server). Labels are admin-defined in the hub's config, synced via `shared_label_sync`, and stored as `SharedPathLabel` rows alongside a per-label `permission_blob`. The relay performs an *optimistic* permission check against that blob during label resolution — final enforcement (OS identity resolution, label access, sub-path permissions) happens authoritatively at the hub. See [Hub](hub.md) for the full request flow, identity resolution chain, and permission model.
 
 Because the relay cannot resolve a hub's per-request OS identity itself, requests routed to a hub carry the requesting user's `label`, `user_oidc_sub`, and `user_claims` in the RPC envelope — see [RPC Protocol](#rpc-protocol).
 
@@ -124,39 +124,39 @@ Return current session info.
 
 ---
 
-### `GET /api/agents`
+### `GET /api/executors`
 
-List all agents registered to the authenticated user. Paginated.
+List all executors registered to the authenticated user. Paginated.
 
-**Response `200`** — paginated array of agent objects:
+**Response `200`** — paginated array of executor objects:
 
 | Field | Type | Description |
 |---|---|---|
-| `id` | string | Agent ID (cuid) |
+| `id` | string | Executor ID (cuid) |
 | `host` | string | Host name assigned at registration |
-| `registered_at` | ISO 8601 | When the agent was first registered |
+| `registered_at` | ISO 8601 | When the executor was first registered |
 | `last_heartbeat_at` | ISO 8601 \| null | Last successful heartbeat pong |
 | `last_disconnect_reason` | string \| null | Reason for last WebSocket close, if any |
 | `online` | boolean | Whether the last heartbeat is within the threshold |
 | `connected` | boolean | Whether a live WebSocket is open right now |
-| `token_id` | string | Current agent token ID |
+| `token_id` | string | Current executor token ID |
 | `token_last_used_at` | ISO 8601 \| null | Last time the token authenticated a connection |
-| `labels` | `{ label, reported_path }[]` | Path labels reported by the agent |
+| `labels` | `{ label, reported_path }[]` | Path labels reported by the executor |
 
 ---
 
-### `DELETE /api/agents/:id/token`
+### `DELETE /api/executors/:id/token`
 
-Revoke an agent's token. Any active WebSocket for that agent is terminated immediately. The agent will fail to reconnect until re-initialized.
+Revoke an executor's token. Any active WebSocket for that executor is terminated immediately. The executor will fail to reconnect until re-initialized.
 
-**Path params**: `id` — agent ID from `GET /api/agents`.
+**Path params**: `id` — executor ID from `GET /api/executors`.
 
 **Responses**
 
 | Status | Meaning |
 |---|---|
 | `204` | Token revoked |
-| `404` | Agent not found or belongs to another user |
+| `404` | Executor not found or belongs to another user |
 | `409` | Token already revoked |
 
 ---
@@ -169,7 +169,7 @@ List path labels for the authenticated user. Paginated.
 
 | Param | Description |
 |---|---|
-| `agent_id` | Filter to a specific agent (optional) |
+| `executor_id` | Filter to a specific executor (optional) |
 | `limit` | Max results (default 100, max 1000) |
 | `offset` | Pagination offset (default 0) |
 
@@ -179,8 +179,8 @@ List path labels for the authenticated user. Paginated.
 |---|---|
 | `id` | string |
 | `label` | string |
-| `reported_path` | string — absolute path on the agent machine |
-| `agent_id` | string |
+| `reported_path` | string — absolute path on the executor machine |
+| `executor_id` | string |
 | `host` | string |
 
 ---
@@ -196,7 +196,7 @@ List active relay path filters for the authenticated user. Paginated.
 | `id` | string | Filter ID |
 | `pattern` | string | Glob or regex pattern |
 | `pattern_type` | `"glob"` \| `"regex"` | |
-| `scope_agent_id` | string \| null | Null = applies to all agents |
+| `scope_executor_id` | string \| null | Null = applies to all executors |
 | `created_at` | ISO 8601 | |
 
 ---
@@ -211,7 +211,7 @@ Add a relay path filter.
 |---|---|---|
 | `pattern` | yes | Glob or regex string |
 | `pattern_type` | yes | `"glob"` or `"regex"` |
-| `agent_id` | no | Scope to a specific agent; omit for all agents |
+| `executor_id` | no | Scope to a specific executor; omit for all executors |
 
 Regex patterns are validated server-side before storage. Invalid patterns return `400`. Patterns are limited to 1000 characters.
 
@@ -223,7 +223,7 @@ Regex patterns are validated server-side before storage. Invalid patterns return
 |---|---|
 | `201` | Filter created |
 | `400` | Missing/invalid fields, invalid regex, or pattern exceeds 1000 characters |
-| `404` | `agent_id` specified but not found for this user |
+| `404` | `executor_id` specified but not found for this user |
 
 ---
 
@@ -290,7 +290,7 @@ The token is returned once in the response and cannot be retrieved again.
 
 ### `GET /api/activity`
 
-Activity log for the authenticated user. Returns tool calls, errors, rate limit hits, and agent connection events, newest first.
+Activity log for the authenticated user. Returns tool calls, errors, rate limit hits, and executor connection events, newest first.
 
 **Query params**
 
@@ -327,11 +327,11 @@ Activity log for the authenticated user. Returns tool calls, errors, rate limit 
 
 | `event_type` | Populated fields | Description |
 |---|---|---|
-| `tool_call` | `host`, `tool`, `label`, `request_id`, `duration_ms`; `error_code` + `error_message` when the agent returned an error | RPC reached the agent and a response was received |
-| `tool_error` | `host`, `tool`, `label`, `request_id`, `error_code` | RPC could not be delivered: `agent_offline`, `agent_disconnected`, or `timeout` |
+| `tool_call` | `host`, `tool`, `label`, `request_id`, `duration_ms`; `error_code` + `error_message` when the executor returned an error | RPC reached the executor and a response was received |
+| `tool_error` | `host`, `tool`, `label`, `request_id`, `error_code` | RPC could not be delivered: `executor_offline`, `executor_disconnected`, or `timeout` |
 | `rate_limited` | `tool`, `label`, `request_id` | Call rejected before dispatch — per-user rate limit exceeded |
-| `agent_connect` | `host` | Agent opened a WebSocket connection |
-| `agent_disconnect` | `host`; `error_code` (`timeout` or `error`) for non-clean disconnects | Agent connection closed |
+| `executor_connect` | `host` | Executor opened a WebSocket connection |
+| `executor_disconnect` | `host`; `error_code` (`timeout` or `error`) for non-clean disconnects | Executor connection closed |
 
 The `request_id` on `tool_call`, `tool_error`, and `rate_limited` events matches the `request_id` field in the relay's structured log output, allowing activity entries to be correlated with log lines.
 
@@ -341,7 +341,7 @@ The log is capped at `ACTIVITY_LOG_MAX_ENTRIES` rows per user (default 1000). Ol
 
 ### `GET /api/admin/activity` · Admin
 
-Activity log entries with no associated user — `agent_connect`/`agent_disconnect` events for **hubs**, which aren't bound to any single user. Admins collectively own this data, since no individual user does. Newest first.
+Activity log entries with no associated user — `executor_connect`/`executor_disconnect` events for **hubs**, which aren't bound to any single user. Admins collectively own this data, since no individual user does. Newest first.
 
 Accepts the same `event_type`, `limit`, and `offset` query params, and returns the same response shape, as `GET /api/activity`. Entries are capped and pruned the same way, as their own ring buffer (`user_id IS NULL` rows are partitioned together by `ACTIVITY_LOG_MAX_ENTRIES`).
 
@@ -398,17 +398,17 @@ Requires `RELAY_ADMIN_TOKEN` env var on the relay, passed as `Authorization: Bea
 
 ### `GET /api/admin/shared-labels` · Admin
 
-List all shared path labels synced to the relay from hubs. Paginated by agent.
+List all shared path labels synced to the relay from hubs. Paginated by executor.
 
-**Query params**: `agent` — filter by agent ID (optional).
+**Query params**: `executor` — filter by executor ID (optional).
 
 **Response `200`**
 ```json
 {
   "data": [
     {
-      "agent_id": "<id>",
-      "agent_host": "nas-shared",
+      "executor_id": "<id>",
+      "executor_host": "nas-shared",
       "label": "projects",
       "reported_path": "/srv/projects",
       "permission_blob": { ... },
@@ -418,7 +418,7 @@ List all shared path labels synced to the relay from hubs. Paginated by agent.
 }
 ```
 
-CLI wrapper: `constellation relay shared-labels list [--agent <id>] [--json]` (requires `constellation relay elevate`).
+CLI wrapper: `constellation relay shared-labels list [--executor <id>] [--json]` (requires `constellation relay elevate`).
 
 ---
 
@@ -499,8 +499,8 @@ sequenceDiagram
     Relay-->>CLI: access_token (next poll succeeds)
 ```
 
-- `agent:register` — on approval, the relay creates an `Agent` row and an `AgentToken`, then returns `{ access_token, token_type: "agent", host }`.
-- `agent:register:shared` — creates a shared (non-user-bound) `AgentToken`; requires admin approval.
+- `agent:register` — on approval, the relay creates an `Agent` row and an `ExecutorToken`, then returns `{ access_token, token_type: "agent", host }`.
+- `agent:register:shared` — creates a shared (non-user-bound) `ExecutorToken`; requires admin approval.
 - `relay:manage` — issues a standard OAuth session tied to a static first-party client.
 
 Device codes expire after 15 minutes. The polling interval is 5 seconds. Responses follow RFC 8628: `authorization_pending`, `access_denied`, `expired_token`.
@@ -525,7 +525,7 @@ The relay validates the token, enforces the reconnect rate limit, and upgrades t
 
 The relay sends a WebSocket `ping` frame every `HEARTBEAT_INTERVAL_SECONDS` seconds. The agent must respond with `pong`. After `HEARTBEAT_MAX_MISSED` consecutive missed pongs, the relay terminates the connection and marks the agent offline.
 
-Each pong updates `last_heartbeat_at` on the agent row, which is what `online` status in `list_hosts` / `GET /api/agents` reflects.
+Each pong updates `last_heartbeat_at` on the executor row, which is what `online` status in `list_hosts` / `GET /api/executors` reflects.
 
 ### Control Messages (relay → agent)
 
@@ -692,6 +692,6 @@ A call is blocked if **any** of its candidate paths matches a filter.
 
 ### Scope
 
-Filters are per-user. Each filter can optionally be scoped to a specific agent (`scope_agent_id`). Filters with `scope_agent_id: null` apply to all agents on the account.
+Filters are per-user. Each filter can optionally be scoped to a specific executor (`scope_executor_id`). Filters with `scope_executor_id: null` apply to all executors on the account.
 
 A path is blocked if **any** matching filter matches it — there is no allow override.

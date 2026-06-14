@@ -1,7 +1,7 @@
 import { createRequire } from "node:module";
 import RE2 from "re2";
 import { Router, Request, Response, IRouter } from "express";
-import { AgentTokenType, BrokerRole } from "./generated/prisma/client.js";
+import { ExecutorTokenType, BrokerRole } from "./generated/prisma/client.js";
 import { prisma } from "./db.js";
 import { requireBearerAuth, requireAdmin, AuthenticatedRequest } from "./middleware.js";
 import { getConnection } from "./hub.js";
@@ -61,39 +61,39 @@ apiRouter.get("/api/me", (req: Request, res: Response) => {
 });
 
 // ---------------------------------------------------------------------------
-// GET /api/agents
+// GET /api/executors
 // ---------------------------------------------------------------------------
 
-apiRouter.get("/api/agents", async (req: Request, res: Response) => {
+apiRouter.get("/api/executors", async (req: Request, res: Response) => {
   const uid = (req as AuthenticatedRequest).userId;
   const { limit, offset } = parsePagination(req);
 
-  const [agents, total] = await Promise.all([
-    prisma.agent.findMany({
+  const [executors, total] = await Promise.all([
+    prisma.executor.findMany({
       where: { userId: uid },
       include: {
         pathLabels: { select: { label: true, reportedPath: true } },
-        agentToken: { select: { id: true, lastUsedAt: true } },
+        executorToken: { select: { id: true, lastUsedAt: true } },
       },
       orderBy: { host: "asc" },
       take: limit,
       skip: offset,
     }),
-    prisma.agent.count({ where: { userId: uid } }),
+    prisma.executor.count({ where: { userId: uid } }),
   ]);
 
   res.json({
-    data: agents.map((a) => ({
-      id: a.id,
-      host: a.host,
-      registered_at: a.registeredAt.toISOString(),
-      last_heartbeat_at: a.lastHeartbeatAt?.toISOString() ?? null,
-      last_disconnect_reason: a.lastDisconnectReason,
-      online: isOnline(a.lastHeartbeatAt),
-      connected: getConnection(a.id) !== undefined,
-      token_id: a.agentToken.id,
-      token_last_used_at: a.agentToken.lastUsedAt?.toISOString() ?? null,
-      labels: a.pathLabels.map((pl) => ({ label: pl.label, reported_path: pl.reportedPath })),
+    data: executors.map((e) => ({
+      id: e.id,
+      host: e.host,
+      registered_at: e.registeredAt.toISOString(),
+      last_heartbeat_at: e.lastHeartbeatAt?.toISOString() ?? null,
+      last_disconnect_reason: e.lastDisconnectReason,
+      online: isOnline(e.lastHeartbeatAt),
+      connected: getConnection(e.id) !== undefined,
+      token_id: e.executorToken.id,
+      token_last_used_at: e.executorToken.lastUsedAt?.toISOString() ?? null,
+      labels: e.pathLabels.map((pl) => ({ label: pl.label, reported_path: pl.reportedPath })),
     })),
     total,
     limit,
@@ -102,38 +102,38 @@ apiRouter.get("/api/agents", async (req: Request, res: Response) => {
 });
 
 // ---------------------------------------------------------------------------
-// DELETE /api/agents/:id/token — revoke agent token
+// DELETE /api/executors/:id/token — revoke executor token
 // ---------------------------------------------------------------------------
 
-apiRouter.delete("/api/agents/:id/token", async (req: Request, res: Response) => {
+apiRouter.delete("/api/executors/:id/token", async (req: Request, res: Response) => {
   const uid = (req as AuthenticatedRequest).userId;
-  const agentId = req.params["id"] as string;
+  const executorId = req.params["id"] as string;
 
-  const agent = await prisma.agent.findFirst({
-    where: { id: agentId, userId: uid },
-    include: { agentToken: { select: { id: true, revokedAt: true } } },
+  const executor = await prisma.executor.findFirst({
+    where: { id: executorId, userId: uid },
+    include: { executorToken: { select: { id: true, revokedAt: true } } },
   });
 
-  if (!agent) {
+  if (!executor) {
     res.status(404).json({ error: "not_found" });
     return;
   }
 
-  if (agent.agentToken.revokedAt !== null) {
+  if (executor.executorToken.revokedAt !== null) {
     res.status(409).json({ error: "already_revoked" });
     return;
   }
 
-  await prisma.agentToken.update({
-    where: { id: agent.agentToken.id },
+  await prisma.executorToken.update({
+    where: { id: executor.executorToken.id },
     data: { revokedAt: new Date() },
   });
 
-  // Terminate any active WebSocket connection for this agent.
-  const conn = getConnection(agentId);
+  // Terminate any active WebSocket connection for this executor.
+  const conn = getConnection(executorId);
   if (conn) conn.ws.terminate();
 
-  log.info({ agentId, userId: uid }, "Agent token revoked");
+  log.info({ executorId, userId: uid }, "Executor token revoked");
   res.status(204).end();
 });
 
@@ -143,14 +143,14 @@ apiRouter.delete("/api/agents/:id/token", async (req: Request, res: Response) =>
 
 apiRouter.get("/api/labels", async (req: Request, res: Response) => {
   const uid = (req as AuthenticatedRequest).userId;
-  const agentId = typeof req.query["agent_id"] === "string" ? req.query["agent_id"] : undefined;
+  const executorId = typeof req.query["executor_id"] === "string" ? req.query["executor_id"] : undefined;
   const { limit, offset } = parsePagination(req);
-  const where = { userId: uid, ...(agentId ? { agentId } : {}) };
+  const where = { userId: uid, ...(executorId ? { executorId } : {}) };
 
   const [labels, total] = await Promise.all([
     prisma.pathLabel.findMany({
       where,
-      include: { agent: { select: { host: true } } },
+      include: { executor: { select: { host: true } } },
       orderBy: { label: "asc" },
       take: limit,
       skip: offset,
@@ -163,8 +163,8 @@ apiRouter.get("/api/labels", async (req: Request, res: Response) => {
       id: l.id,
       label: l.label,
       reported_path: l.reportedPath,
-      agent_id: l.agentId,
-      host: l.agent.host,
+      executor_id: l.executorId,
+      host: l.executor.host,
     })),
     total,
     limit,
@@ -195,7 +195,7 @@ apiRouter.get("/api/filters", async (req: Request, res: Response) => {
       id: f.id,
       pattern: f.pattern,
       pattern_type: f.patternType,
-      scope_agent_id: f.scopeAgentId,
+      scope_executor_id: f.scopeExecutorId,
       created_at: f.createdAt.toISOString(),
     })),
     total,
@@ -228,11 +228,11 @@ apiRouter.post("/api/filters", async (req: Request, res: Response) => {
     return;
   }
 
-  const agentId = typeof body["agent_id"] === "string" ? body["agent_id"] : undefined;
-  if (agentId) {
-    const agent = await prisma.agent.findFirst({ where: { id: agentId, userId: uid } });
-    if (!agent) {
-      res.status(404).json({ error: "not_found", error_description: "Agent not found" });
+  const executorId = typeof body["executor_id"] === "string" ? body["executor_id"] : undefined;
+  if (executorId) {
+    const executor = await prisma.executor.findFirst({ where: { id: executorId, userId: uid } });
+    if (!executor) {
+      res.status(404).json({ error: "not_found", error_description: "Executor not found" });
       return;
     }
   }
@@ -250,7 +250,7 @@ apiRouter.post("/api/filters", async (req: Request, res: Response) => {
   const filter = await prisma.brokerPathFilter.create({
     data: {
       scopeUserId: uid,
-      scopeAgentId: agentId ?? null,
+      scopeExecutorId: executorId ?? null,
       pattern,
       patternType,
     },
@@ -261,7 +261,7 @@ apiRouter.post("/api/filters", async (req: Request, res: Response) => {
     id: filter.id,
     pattern: filter.pattern,
     pattern_type: filter.patternType,
-    scope_agent_id: filter.scopeAgentId,
+    scope_executor_id: filter.scopeExecutorId,
     created_at: filter.createdAt.toISOString(),
   });
 });
@@ -360,16 +360,16 @@ apiRouter.post("/api/tokens/shared", requireAdmin, async (_req: Request, res: Re
   const token = generateToken();
   const tokenHash = hashToken(token);
 
-  const agentToken = await prisma.agentToken.create({
-    data: { userId: null, tokenType: AgentTokenType.SHARED, tokenHash },
+  const executorToken = await prisma.executorToken.create({
+    data: { userId: null, tokenType: ExecutorTokenType.HUB, tokenHash },
     select: { id: true, createdAt: true },
   });
 
-  log.info({ tokenId: agentToken.id }, "Hub token created via break-glass API");
+  log.info({ tokenId: executorToken.id }, "Hub token created via break-glass API");
   res.status(201).json({
     token,
-    token_id: agentToken.id,
-    created_at: agentToken.createdAt.toISOString(),
+    token_id: executorToken.id,
+    created_at: executorToken.createdAt.toISOString(),
   });
 });
 
@@ -574,18 +574,18 @@ async function resolveUserByIdentifier(identifier: string): Promise<{ id: string
 // ---------------------------------------------------------------------------
 
 apiRouter.get("/api/admin/shared-labels", requireAdmin, async (req: Request, res: Response) => {
-  const agentId = typeof req.query["agent"] === "string" ? req.query["agent"] : undefined;
+  const executorId = typeof req.query["executor"] === "string" ? req.query["executor"] : undefined;
 
   const labels = await prisma.sharedPathLabel.findMany({
-    where: agentId ? { agentId } : {},
-    include: { agent: { select: { id: true, host: true } } },
-    orderBy: [{ agentId: "asc" }, { label: "asc" }],
+    where: executorId ? { executorId } : {},
+    include: { executor: { select: { id: true, host: true } } },
+    orderBy: [{ executorId: "asc" }, { label: "asc" }],
   });
 
   res.json({
     data: labels.map((l) => ({
-      agent_id: l.agentId,
-      agent_host: l.agent.host,
+      executor_id: l.executorId,
+      executor_host: l.executor.host,
       label: l.label,
       reported_path: l.reportedPath,
       permission_blob: l.permissionBlob,
@@ -598,7 +598,7 @@ apiRouter.get("/api/admin/shared-labels", requireAdmin, async (req: Request, res
 // GET /api/activity
 // ---------------------------------------------------------------------------
 
-const VALID_EVENT_TYPES = new Set<string>(["tool_call", "tool_error", "rate_limited", "agent_connect", "agent_disconnect"]);
+const VALID_EVENT_TYPES = new Set<string>(["tool_call", "tool_error", "rate_limited", "executor_connect", "executor_disconnect"]);
 
 function parseEventTypeFilter(req: Request, res: Response): { eventType?: ActivityEventType } | undefined {
   const rawEventType = typeof req.query["event_type"] === "string" ? req.query["event_type"] : undefined;

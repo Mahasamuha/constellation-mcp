@@ -15,7 +15,7 @@ vi.mock("@constellation/shared", async (importOriginal) => {
 vi.mock("./db.js", () => ({
   prisma: {
     oauthSession: { findUnique: vi.fn() },
-    agent: { findMany: vi.fn() },
+    executor: { findMany: vi.fn() },
     pathLabel: { findMany: vi.fn() },
     sharedPathLabel: { findMany: vi.fn() },
   },
