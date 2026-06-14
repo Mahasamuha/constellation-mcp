@@ -628,16 +628,16 @@ function activateEntryPage(error?: string): string {
 function consentPage(deviceCode: string, scope: DeviceScope, hostName: string | null | undefined, error?: string, csrfToken?: string): string {
   const isAgent = scope === "agent:register";
   const isEscalate = scope === "agent:escalate";
-  const isSharedAgent = scope === "agent:register:shared";
+  const isHubRegistration = scope === "agent:register:shared";
   const title = isAgent ? "Register Node"
     : isEscalate ? "Authorize Admin Escalation"
-    : isSharedAgent ? "Register Hub"
+    : isHubRegistration ? "Register Hub"
     : "Authorize Management Access";
   const description = isAgent
     ? "A <strong>Constellation node</strong> is requesting access to connect to this relay."
     : isEscalate
       ? "The <strong>Constellation CLI</strong> is requesting temporary admin access. This elevates your session for a limited time window."
-      : isSharedAgent
+      : isHubRegistration
         ? `A <strong>Constellation hub</strong> on host <strong>${escHtml(hostName ?? "unknown")}</strong> is requesting registration. Approving will allow this hub to handle file access requests on behalf of multiple users. <strong>This requires admin privileges.</strong>`
         : "The <strong>Constellation CLI</strong> is requesting management access to this relay.";
 

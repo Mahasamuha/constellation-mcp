@@ -241,7 +241,7 @@ function registerListHosts(server: McpServer): void {
     async (extra) => {
       const { userId, userOidcSub } = identity(extra);
 
-      const [personalExecutors, sharedLabels] = await Promise.all([
+      const [nodeExecutors, sharedLabels] = await Promise.all([
         prisma.executor.findMany({
           where: { userId },
           include: { pathLabels: { select: { label: true } } },
@@ -252,15 +252,15 @@ function registerListHosts(server: McpServer): void {
       ]);
 
       // Group accessible shared labels by executor
-      const sharedExecutorMap = new Map<string, { host: string; lastHeartbeatAt: Date | null; labels: string[] }>();
+      const hubExecutorMap = new Map<string, { host: string; lastHeartbeatAt: Date | null; labels: string[] }>();
       for (const sl of sharedLabels) {
         const blob = sl.permissionBlob as { default: string; overrides?: Array<{ oidc_sub: string; access: string }> };
         if (evaluatePermissionBlob(blob, userOidcSub) === "none") continue;
-        const entry = sharedExecutorMap.get(sl.executorId);
+        const entry = hubExecutorMap.get(sl.executorId);
         if (entry) {
           entry.labels.push(sl.label);
         } else {
-          sharedExecutorMap.set(sl.executorId, {
+          hubExecutorMap.set(sl.executorId, {
             host: sl.executor.host,
             lastHeartbeatAt: sl.executor.lastHeartbeatAt,
             labels: [sl.label],
@@ -270,13 +270,13 @@ function registerListHosts(server: McpServer): void {
 
       return ok({
         hosts: [
-          ...personalExecutors.map((a) => ({
+          ...nodeExecutors.map((a) => ({
             host: a.host,
             online: isOnline(a.lastHeartbeatAt),
             last_seen: a.lastHeartbeatAt?.toISOString() ?? null,
             labels: a.pathLabels.map((pl) => pl.label),
           })),
-          ...[...sharedExecutorMap.values()].map((a) => ({
+          ...[...hubExecutorMap.values()].map((a) => ({
             host: a.host,
             online: isOnline(a.lastHeartbeatAt),
             last_seen: a.lastHeartbeatAt?.toISOString() ?? null,

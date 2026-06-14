@@ -549,7 +549,7 @@ The agent must persist the new token and reconnect within **5 minutes**. The rel
 
 If the agent does not reconnect within 5 minutes, the new token is revoked and the old token continues to work — no lockout occurs.
 
-**Lockout scenario:** if both tokens are independently revoked (e.g. the old token is revoked via the management API while the rotation window is open, and the timer then revokes the new token), the agent cannot reconnect and must re-register (`constellation node init` for a personal agent, `constellation hub register` for a hub).
+**Lockout scenario:** if both tokens are independently revoked (e.g. the old token is revoked via the management API while the rotation window is open, and the timer then revokes the new token), the agent cannot reconnect and must re-register (`constellation node init` for a node, `constellation hub register` for a hub).
 
 **`update_host_ok`** / **`update_host_error`** — response to a host rename request.
 ```json
