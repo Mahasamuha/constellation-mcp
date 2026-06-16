@@ -155,7 +155,12 @@ process.on("message", (rawMsg: unknown) => {
         }
       })
       .catch((err: Error) => {
-        send({ type: "response", request_id, error: { message: err.message } });
+        // FileExecutor.execute() already catches and sanitizes its own errors —
+        // reaching here means something unexpected escaped it. Log full detail,
+        // return a generic message (err.message could carry OS-level detail,
+        // e.g. an absolute path from an uncaught fs error).
+        log.error({ err, request_id, tool }, "Unexpected error escaped FileExecutor.execute");
+        send({ type: "response", request_id, error: { message: "Internal error" } });
       })
       .finally(() => {
         inFlight--;

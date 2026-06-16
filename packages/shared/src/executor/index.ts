@@ -255,6 +255,18 @@ function arr(p: Record<string, unknown>, key: string): string[] | undefined {
 // Error builder
 // ---------------------------------------------------------------------------
 
+/**
+ * Only KNOWN_CODES errors are deliberately constructed with caller-safe
+ * detail (e.g. DEST_EXISTS carries the client-supplied relative path, never
+ * a resolved absolute one — see assertNotExists in fs-write.ts). Anything
+ * else reaching here is an uncaught raw Node error — most often a
+ * NodeJS.ErrnoException from `fs` (ENOENT/EACCES/EISDIR/...) — whose
+ * `.message`/`.path` contain the resolved *absolute* filesystem path,
+ * leaking the host's directory layout to the RPC caller. Full detail is
+ * already logged server-side by execute()'s catch block; only a generic
+ * message and the bare error code (a POSIX errno mnemonic, not
+ * server-layout-revealing on its own) cross the boundary for those.
+ */
 function buildError(e: Error & {
   code?: string;
   edit_index?: number;
@@ -263,13 +275,21 @@ function buildError(e: Error & {
   max_file_size_kb?: number;
   path?: string;
 }): object {
-  const err: Record<string, unknown> = { message: e.message ?? "Internal error" };
-  if (e.code !== undefined)             err["code"]             = e.code;
-  if (e.edit_index !== undefined)       err["edit_index"]       = e.edit_index;
-  if (e.match_count !== undefined)      err["match_count"]      = e.match_count;
-  if (e.read_size_kb !== undefined)     err["read_size_kb"]     = e.read_size_kb;
-  if (e.max_file_size_kb !== undefined) err["max_file_size_kb"] = e.max_file_size_kb;
-  if (e.path !== undefined)             err["path"]             = e.path;
+  const known = KNOWN_CODES.has(e.code ?? "");
+
+  const err: Record<string, unknown> = {
+    message: known ? (e.message ?? "Internal error") : "Operation failed",
+  };
+  if (e.code !== undefined) err["code"] = e.code;
+
+  if (known) {
+    if (e.edit_index !== undefined)       err["edit_index"]       = e.edit_index;
+    if (e.match_count !== undefined)      err["match_count"]      = e.match_count;
+    if (e.read_size_kb !== undefined)     err["read_size_kb"]     = e.read_size_kb;
+    if (e.max_file_size_kb !== undefined) err["max_file_size_kb"] = e.max_file_size_kb;
+    if (e.path !== undefined)             err["path"]             = e.path;
+  }
+
   return err;
 }
 
