@@ -131,6 +131,42 @@ Two enforcement points:
 - **Relay (optimistic):** evaluates the synced permission blob (`default` access and per-`oidc_sub` overrides) at label resolution time. May grant access that the hub subsequently denies (e.g. due to Tier 1 identity resolution failure).
 - **Hub (authoritative):** full identity resolution and permission check. Result at the hub always takes precedence.
 
+### Subnode worker pool
+
+Each resolved user gets a logical **subnode** — a per-user container that owns
+1..N worker processes. Workers are forked on demand and reused across requests.
+
+**Tiers.** Workers are split into two tiers, fixed at spawn time:
+
+| Tier | Count | Idle timeout config |
+|---|---|---|
+| **Warm** | First `min` workers per user | `warm_idle_seconds` (default 300 s) |
+| **Burst** | Workers beyond `min`, up to `max` | `burst_idle_seconds` (default 30 s) |
+
+By default `min=1, max=1` — one warm worker per active user, same concurrency
+as before. Admins opt into burst concurrency by raising `max`.
+
+**Idle timeout floor.** Both `warm_idle_seconds` and `burst_idle_seconds` are
+hard-floored at 30 seconds (configurable floor constant `MIN_WORKER_IDLE_SECONDS`
+in `config.ts`). There is no "terminate immediately after every request" mode —
+the minimum is a 30 s idle window.
+
+**Dispatch and queueing.** When a request arrives for a user:
+
+1. If an idle worker exists, it receives the request immediately.
+2. If no idle worker exists but `workers.length < max`, a new worker is spawned
+   (warm tier if `workers.length < min`, burst otherwise).
+3. If all workers are busy and `workers.length === max`, the request is queued.
+   Queued requests wait up to `queue_timeout` (see config reference); if no
+   worker frees up in time, the request is rejected with a timeout error.
+
+The assignment decision (steps 1–3) is serialized per user via a promise lock
+so concurrent dispatches cannot race to double-spawn.
+
+**Subnode lifecycle.** Once a user's last worker is removed (idle timeout, RPC
+timeout, crash), the subnode is deleted. The next request from that user creates
+a fresh subnode.
+
 ---
 
 ## 4. Permission Model
@@ -216,8 +252,25 @@ audit_log: /var/log/constellation/hub-audit.jsonl
 
 # Optional
 env_file: /etc/constellation/hub.env       # Source CONSTELLATION_HUB_TOKEN from this file
-subnode_idle_timeout_seconds: 300          # Kill idle subnode workers after N seconds (default: 300)
-subnode_rpc_timeout_seconds: 30            # Timeout per tool call (default: 30)
+subnode_rpc_timeout_seconds: 30            # Timeout per in-flight tool call IPC round-trip (default: 30)
+
+subnode_workers:
+  min: 1                                   # Always-warm workers per user (floor: 1; default: 1)
+  max: 1                                   # Total worker cap per user (floor: min; default: min)
+  warm_idle_seconds: 300                   # Idle timeout for the first `min` workers (floor: 30; default: 300)
+  burst_idle_seconds: 30                   # Idle timeout for workers beyond `min` (floor: 30; default: 30)
+  queue_timeout: 0.5                       # How long a request waits for a free worker when all are busy
+                                           # and workers.length == max.
+                                           #
+                                           # Float: fraction of subnode_rpc_timeout_seconds (e.g. 0.5 = half).
+                                           # Integer: explicit seconds, clamped to subnode_rpc_timeout_seconds.
+                                           # Note: in YAML, 1.0 parses as integer 1 (1 s). Fractions outside
+                                           # [0.3, 0.8] are not recommended (hub logs a startup warning, does
+                                           # not fail validation): below 0.3, queued requests tend to time out
+                                           # before a worker frees up; above 0.8, a request that does get a
+                                           # worker has too little of the RPC budget left to finish before
+                                           # subnode_rpc_timeout_seconds elapses.
+                                           # Default: 0.5
 
 subnode_uid:
   allowed_range:

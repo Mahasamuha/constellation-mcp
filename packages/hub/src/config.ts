@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import yaml from "js-yaml";
+import { resolveQueueTimeout } from "@constellation/shared";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -38,6 +39,17 @@ export interface SubnodeGidConfig {
   blocked_gids?: number[];
 }
 
+export interface SubnodeWorkersConfig {
+  min: number;
+  max: number;
+  warm_idle_seconds: number;
+  burst_idle_seconds: number;
+  queue_timeout: number;
+}
+
+/** Hard floor on worker idle timeouts (seconds). */
+export const MIN_WORKER_IDLE_SECONDS = 30;
+
 export interface IdentityConfig {
   claims: string[];
   user_map: Array<{ oidc_sub: string; local_username: string }>;
@@ -48,7 +60,7 @@ export interface HubConfig {
   relay_url: string;
   hub_name: string;
   env_file?: string;
-  subnode_idle_timeout_seconds: number;
+  subnode_workers: SubnodeWorkersConfig;
   subnode_rpc_timeout_seconds: number;
   subnode_uid: SubnodeUidConfig;
   subnode_gid: SubnodeGidConfig;
@@ -74,19 +86,19 @@ export function loadHubConfig(path: string): HubConfig {
   if (!audit_log) throw new Error("hub config: audit_log is required");
 
   const env_file = str(parsed, "env_file") || undefined;
-  const subnode_idle_timeout_seconds = num(parsed, "subnode_idle_timeout_seconds") ?? 300;
   const subnode_rpc_timeout_seconds = num(parsed, "subnode_rpc_timeout_seconds") ?? 30;
 
   const labels = parseLabels(parsed);
   const subnode_uid = parseSubnodeUid((parsed["subnode_uid"] ?? {}) as Record<string, unknown>);
   const subnode_gid = parseSubnodeGid((parsed["subnode_gid"] ?? {}) as Record<string, unknown>);
+  const subnode_workers = parseSubnodeWorkers((parsed["subnode_workers"] ?? {}) as Record<string, unknown>);
   const identity = parseIdentity((parsed["identity"] ?? {}) as Record<string, unknown>);
 
   return {
     relay_url,
     hub_name,
     env_file,
-    subnode_idle_timeout_seconds,
+    subnode_workers,
     subnode_rpc_timeout_seconds,
     subnode_uid,
     subnode_gid,
@@ -112,6 +124,32 @@ export function validateHubConfig(cfg: HubConfig): ValidationResult {
 
   if (cfg.subnode_rpc_timeout_seconds <= 0) {
     errors.push("subnode_rpc_timeout_seconds must be a positive integer");
+  }
+
+  const w = cfg.subnode_workers;
+  if (w.min < 1) {
+    errors.push("subnode_workers.min must be >= 1");
+  }
+  if (w.max < w.min) {
+    errors.push("subnode_workers.max must be >= subnode_workers.min");
+  }
+  if (w.warm_idle_seconds < MIN_WORKER_IDLE_SECONDS) {
+    errors.push(`subnode_workers.warm_idle_seconds must be >= ${MIN_WORKER_IDLE_SECONDS}`);
+  }
+  if (w.burst_idle_seconds < MIN_WORKER_IDLE_SECONDS) {
+    errors.push(`subnode_workers.burst_idle_seconds must be >= ${MIN_WORKER_IDLE_SECONDS}`);
+  }
+  if (w.queue_timeout <= 0) {
+    errors.push("subnode_workers.queue_timeout must be > 0");
+  } else if (!Number.isInteger(w.queue_timeout) && (w.queue_timeout < 0.3 || w.queue_timeout > 0.8)) {
+    // queue_timeout is only a fraction of subnode_rpc_timeout_seconds when non-integer
+    // (see resolveQueueTimeout). Outside [0.3, 0.8] it tends to misbehave either way:
+    // below 0.3, queued requests time out before a worker is likely to free up; above
+    // 0.8, a request that does get a worker has too little of the RPC budget left to
+    // finish before subnode_rpc_timeout_seconds elapses.
+    warnings.push(
+      `subnode_workers.queue_timeout (${w.queue_timeout}) is a fraction of subnode_rpc_timeout_seconds outside the recommended [0.3, 0.8] range — values below 0.3 may time out requests before a worker frees up, and values above 0.8 leave little RPC budget for processing after the wait.`
+    );
   }
 
   const { allowed_range, blocked_range } = cfg.subnode_uid;
@@ -217,6 +255,15 @@ function parseSubnodeUid(raw: Record<string, unknown>): SubnodeUidConfig {
   return cfg;
 }
 
+function parseSubnodeWorkers(raw: Record<string, unknown>): SubnodeWorkersConfig {
+  const min = typeof raw["min"] === "number" ? raw["min"] : 1;
+  const max = typeof raw["max"] === "number" ? raw["max"] : min;
+  const warm_idle_seconds = typeof raw["warm_idle_seconds"] === "number" ? raw["warm_idle_seconds"] : 300;
+  const burst_idle_seconds = typeof raw["burst_idle_seconds"] === "number" ? raw["burst_idle_seconds"] : 30;
+  const queue_timeout = typeof raw["queue_timeout"] === "number" ? raw["queue_timeout"] : 0.5;
+  return { min, max, warm_idle_seconds, burst_idle_seconds, queue_timeout };
+}
+
 function parseSubnodeGid(raw: Record<string, unknown>): SubnodeGidConfig {
   const cfg: SubnodeGidConfig = {};
 
@@ -261,4 +308,13 @@ function str(obj: Record<string, unknown>, key: string): string {
 function num(obj: Record<string, unknown>, key: string): number | undefined {
   const v = obj[key];
   return typeof v === "number" ? v : undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Derived helpers
+// ---------------------------------------------------------------------------
+
+/** Resolves the queue_timeout config value to milliseconds. See @constellation/shared resolveQueueTimeout. */
+export function resolveQueueTimeoutMs(cfg: HubConfig): number {
+  return resolveQueueTimeout(cfg.subnode_workers.queue_timeout, cfg.subnode_rpc_timeout_seconds * 1000);
 }

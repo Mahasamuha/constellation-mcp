@@ -63,6 +63,40 @@ export function checkPermission(
   return { permitted: true, access };
 }
 
+export type RpcPermissionResult =
+  | { permitted: true }
+  | { permitted: false; label: string; reason: string };
+
+/**
+ * Evaluates permissions for an RPC, including the destination label for
+ * cross-label copy/move. The source label is checked first; if it passes and
+ * the request targets a different destination label (via dst_label), that
+ * label is independently checked against the same tool. Without this second
+ * check, write access to one label could be used to copy/move into a label
+ * the user only has read (or no) access to.
+ */
+export function checkRpcPermission(
+  userOidcSub: string | null,
+  label: string,
+  dstLabel: string | null,
+  tool: string,
+  labels: LabelConfig[]
+): RpcPermissionResult {
+  const result = checkPermission(userOidcSub, label, tool, labels);
+  if (!result.permitted) {
+    return { permitted: false, label, reason: result.reason };
+  }
+
+  if (dstLabel !== null && dstLabel !== label) {
+    const dstResult = checkPermission(userOidcSub, dstLabel, tool, labels);
+    if (!dstResult.permitted) {
+      return { permitted: false, label: dstLabel, reason: dstResult.reason };
+    }
+  }
+
+  return { permitted: true };
+}
+
 /**
  * Returns the permission blob stored in the relay for a label — used by the
  * hub when syncing labels to the relay so the relay can evaluate optimistic

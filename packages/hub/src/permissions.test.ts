@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { checkPermission, buildPermissionBlob } from "./permissions.js";
+import { checkPermission, checkRpcPermission, buildPermissionBlob } from "./permissions.js";
 import type { LabelConfig } from "./config.js";
 
 function label(overrides: Partial<LabelConfig["permissions"]> = {}, name = "docs"): LabelConfig {
@@ -88,6 +88,50 @@ describe("checkPermission", () => {
     expect(checkPermission(null, "docs", "write_file", labels)).toEqual({
       permitted: false,
       reason: "Label 'docs' is read-only; write operations are not permitted",
+    });
+  });
+});
+
+describe("checkRpcPermission", () => {
+  const docs = label({ default: "read-write" }, "docs");
+  const scratch = label({
+    default: "read-only",
+    overrides: [{ oidc_sub: "user-1", access: "read-write" }],
+  }, "scratch");
+  const priv = label({ default: "none" }, "private");
+  const labels = [docs, scratch, priv];
+
+  it("permits a same-label operation when the source label allows it", () => {
+    expect(checkRpcPermission("user-1", "docs", null, "read_file", labels)).toEqual({ permitted: true });
+  });
+
+  it("rejects based on the source label, regardless of dst_label", () => {
+    expect(checkRpcPermission(null, "private", "docs", "copy", labels)).toEqual({
+      permitted: false,
+      label: "private",
+      reason: "Access to label 'private' is denied",
+    });
+  });
+
+  it("rejects cross-label copy/move when the user lacks write access to dst_label", () => {
+    // user-2 has read-write on "docs" (source, via default) but only the read-only default on "scratch" (dest).
+    expect(checkRpcPermission("user-2", "docs", "scratch", "copy", labels)).toEqual({
+      permitted: false,
+      label: "scratch",
+      reason: "Label 'scratch' is read-only; write operations are not permitted",
+    });
+  });
+
+  it("permits cross-label copy/move when the user has write access to both labels", () => {
+    // user-1 has read-write on "docs" (default) and on "scratch" (override).
+    expect(checkRpcPermission("user-1", "docs", "scratch", "copy", labels)).toEqual({ permitted: true });
+  });
+
+  it("rejects cross-label copy/move when dst_label is not in the admin label config", () => {
+    expect(checkRpcPermission("user-1", "docs", "missing", "move", labels)).toEqual({
+      permitted: false,
+      label: "missing",
+      reason: "Label 'missing' is not in the admin label config",
     });
   });
 });

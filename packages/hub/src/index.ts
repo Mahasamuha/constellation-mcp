@@ -4,7 +4,7 @@ import { userInfo } from "node:os";
 import { createLogger, MAX_LABEL_INSTRUCTIONS_LENGTH, RelaySocket, type RpcEnvelope } from "@constellation/shared";
 import { loadHubConfig, validateHubConfig, type HubConfig } from "./config.js";
 import { resolveIdentity, isIdentityError } from "./identity.js";
-import { checkPermission, buildPermissionBlob } from "./permissions.js";
+import { checkRpcPermission, buildPermissionBlob } from "./permissions.js";
 import { writeAuditEntry } from "./audit.js";
 import { SubnodePool, isDispatchError } from "./subnode.js";
 
@@ -208,22 +208,13 @@ class HubSocket extends RelaySocket {
       return { request_id, error: { message: identity.message } };
     }
 
-    // Check permissions
-    const permission = checkPermission(userOidcSub, label, tool, this.cfg.labels);
+    // Check permissions — for cross-label copy/move, dst_label is checked too.
+    const dstLabel = (tool === "copy" || tool === "move") && typeof envelope["dst_label"] === "string"
+      ? envelope["dst_label"]
+      : null;
+    const permission = checkRpcPermission(userOidcSub, label, dstLabel, tool, this.cfg.labels);
     if (!permission.permitted) {
-      this.log.info({ request_id, tool, label, username: identity.username, reason: permission.reason }, "Permission denied");
-      writeAuditEntry(this.cfg.audit_log, {
-        ts: new Date().toISOString(),
-        hub_name: this.cfg.hub_name,
-        request_id,
-        user_oidc_sub: userOidcSub,
-        local_username: identity.username,
-        label,
-        tool,
-        outcome: "permission_denied",
-        error: permission.reason,
-      });
-      return { request_id, error: { message: permission.reason } };
+      return this.permissionDenied(request_id, tool, permission.label, userOidcSub, identity.username, permission.reason);
     }
 
     // Build tool params from the envelope, excluding all relay-routing fields.
@@ -275,6 +266,30 @@ class HubSocket extends RelaySocket {
       return { request_id, error: dispatchResult.error };
     }
     return { request_id, result: dispatchResult.result };
+  }
+
+  /** Logs, audits, and builds the error response for a denied permission check on the given label. */
+  private permissionDenied(
+    request_id: string,
+    tool: string,
+    label: string,
+    userOidcSub: string | null,
+    username: string,
+    reason: string
+  ): object {
+    this.log.info({ request_id, tool, label, username, reason }, "Permission denied");
+    writeAuditEntry(this.cfg.audit_log, {
+      ts: new Date().toISOString(),
+      hub_name: this.cfg.hub_name,
+      request_id,
+      user_oidc_sub: userOidcSub,
+      local_username: username,
+      label,
+      tool,
+      outcome: "permission_denied",
+      error: reason,
+    });
+    return { request_id, error: { message: reason } };
   }
 
   /** Graceful shutdown: stop reconnecting/closes the socket, then drain in-flight RPCs. */

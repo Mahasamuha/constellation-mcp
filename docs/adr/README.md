@@ -17,3 +17,4 @@
 | [0013](0013-hub-restart-only-config.md) | Hub Config Changes Require Process Restart (No Live Reload) | Accepted |
 | [0014](0014-subnode-worker-explicit-env.md) | Subnode Workers Get an Explicit, Minimal Environment (Never `process.env`) | Accepted |
 | [0015](0015-bundle-prism-syntax-highlighting.md) | Bundle Prism.js for File Browser Syntax Highlighting | Accepted |
+| [0016](0016-shared-queue-timeout.md) | Queue Timeout Utility Lives in `@constellation/shared`, Not Hub | Accepted |

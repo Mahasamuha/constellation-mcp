@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { createLogger } from "@constellation/shared";
 import { getGroupIds, type ResolvedIdentity } from "./identity.js";
-import type { HubConfig } from "./config.js";
+import { resolveQueueTimeoutMs, type HubConfig } from "./config.js";
 
 const log = createLogger("hub:subnode-pool");
 
@@ -38,18 +38,35 @@ interface SubnodeResponse {
 }
 
 // ---------------------------------------------------------------------------
-// Pool entry
+// Data model
 // ---------------------------------------------------------------------------
 
-interface PoolEntry {
+interface Worker {
   child: ChildProcess;
-  username: string;
   ready: boolean;
-  /** Callbacks waiting for SubnodeReady */
   readyWaiters: Array<{ resolve: () => void; reject: (e: Error) => void }>;
-  /** Pending RPCs awaiting a SubnodeResponse */
   pending: Map<string, { resolve: (r: SubnodeResponse) => void; reject: (e: Error) => void }>;
   idleTimer: ReturnType<typeof setTimeout> | null;
+  /** Fixed at spawn time: "warm" if spawned within the min floor, "burst" if beyond. */
+  tier: "warm" | "burst";
+}
+
+interface QueuedRequest {
+  tool: string;
+  label: string;
+  params: unknown;
+  requestId: string;
+  resolve: (r: DispatchResult | DispatchError) => void;
+  /** Date.now() + resolveQueueTimeoutMs(cfg), set at enqueue time. */
+  deadline: number;
+}
+
+interface Subnode {
+  username: string;
+  workers: Worker[];
+  queue: QueuedRequest[];
+  /** Serializes "pick / spawn / enqueue" decisions for this user without serializing IPC round-trips. */
+  lock: Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
@@ -213,7 +230,7 @@ const workerPath = (process as { pkg?: unknown }).pkg
   : join(dirname(fileURLToPath(import.meta.url)), "subnode-worker.cjs");
 
 export class SubnodePool {
-  private pool = new Map<string, PoolEntry>();
+  private subnodes = new Map<string, Subnode>();
   private shuttingDown = false;
   private readonly cfg: HubConfig;
   private readonly labelRegistry: Record<string, string>;
@@ -234,7 +251,6 @@ export class SubnodePool {
       return { kind: "worker_error", message: "HUB_SHUTTING_DOWN — retry after 45 seconds" };
     }
 
-    // UID restriction checks before every spawn
     const restriction = checkUidRestrictions(identity.uid, this.cfg);
     if (restriction) {
       log.warn({ username: identity.username, uid: identity.uid, restriction }, "UID blocked");
@@ -247,22 +263,86 @@ export class SubnodePool {
     const gidBlock = await checkGidRestrictions(identity, this.cfg, requestId);
     if (gidBlock) return gidBlock;
 
-    let entry = this.pool.get(identity.username);
-
-    if (!entry) {
-      const spawnResult = await this.spawn(identity);
-      if ("kind" in spawnResult) return spawnResult;
-      entry = spawnResult;
+    let subnode = this.subnodes.get(identity.username);
+    if (!subnode) {
+      subnode = { username: identity.username, workers: [], queue: [], lock: Promise.resolve() };
+      this.subnodes.set(identity.username, subnode);
     }
 
-    // Send the request
-    return this.sendRequest(entry, identity.username, tool, label, params, requestId);
+    return this.assignAndSend(subnode, identity, tool, label, params, requestId);
   }
 
-  private async spawn(identity: ResolvedIdentity): Promise<PoolEntry | DispatchError> {
+  /**
+   * Serializes the "pick / spawn / enqueue" decision for this user via
+   * subnode.lock, then resolves the result independently once the IPC
+   * round-trip finishes. Awaiting the spawn inside the lock prevents two
+   * concurrent dispatches from both deciding to spawn and racing to be
+   * "worker #1".
+   */
+  private assignAndSend(
+    subnode: Subnode,
+    identity: ResolvedIdentity,
+    tool: string,
+    label: string,
+    params: unknown,
+    requestId: string
+  ): Promise<DispatchResult | DispatchError> {
+    let resultResolve!: (r: DispatchResult | DispatchError) => void;
+    const result = new Promise<DispatchResult | DispatchError>((resolve) => {
+      resultResolve = resolve;
+    });
+
+    subnode.lock = subnode.lock.then(async () => {
+      const idleWorker = subnode.workers.find((w) => w.ready && w.pending.size === 0);
+      if (idleWorker) {
+        void this.sendRequest(subnode, idleWorker, tool, label, params, requestId).then(resultResolve);
+        return;
+      }
+
+      if (subnode.workers.length < this.cfg.subnode_workers.max) {
+        const tier: "warm" | "burst" =
+          subnode.workers.length < this.cfg.subnode_workers.min ? "warm" : "burst";
+        const spawnResult = await this.spawnWorker(subnode, identity, tier);
+        if (spawnResult.ok !== true) {
+          resultResolve(spawnResult);
+          return;
+        }
+        const newWorker = spawnResult.worker;
+        subnode.workers.push(newWorker);
+        void this.sendRequest(subnode, newWorker, tool, label, params, requestId).then(resultResolve);
+        return;
+      }
+
+      // At capacity — queue, bounded by the resolved queue timeout
+      const queueTimeoutMs = resolveQueueTimeoutMs(this.cfg);
+      subnode.queue.push({
+        tool, label, params, requestId,
+        resolve: resultResolve,
+        deadline: Date.now() + queueTimeoutMs,
+      });
+    }).catch((e: unknown) => {
+      // An unexpected throw inside the lock callback would permanently poison
+      // subnode.lock — all future dispatches for this user would chain onto a
+      // rejected promise and hang forever. Reset the lock to a resolved state
+      // and surface the error to the caller.
+      // The raw exception is logged for operators; only a generic message
+      // crosses the trust boundary to the RPC caller (see SECURITY-2).
+      log.error({ err: e, username: subnode.username }, "Unexpected error in dispatch lock");
+      subnode.lock = Promise.resolve();
+      resultResolve({ kind: "worker_error", message: "Internal dispatch error. Please retry." });
+    });
+
+    return result;
+  }
+
+  private async spawnWorker(
+    subnode: Subnode,
+    identity: ResolvedIdentity,
+    tier: "warm" | "burst"
+  ): Promise<{ ok: true; worker: Worker } | ({ ok: false } & DispatchError)> {
     const { username, uid } = identity;
 
-    log.info({ username, uid }, "Spawning subnode worker");
+    log.info({ username, uid, tier }, "Spawning subnode worker");
 
     let child: ChildProcess;
     try {
@@ -273,23 +353,24 @@ export class SubnodePool {
         stdio: ["ignore", "inherit", "inherit", "ipc"],
       });
     } catch (err) {
+      // Raw fork() errors can include OS-level detail (errno text, resource
+      // limits, file paths) — log it for operators, return only a generic
+      // message to the caller (see SECURITY-2).
       log.error({ err, username }, "Failed to fork subnode worker");
-      return { kind: "spawn_failed", message: `Failed to spawn subnode for '${username}': ${(err as Error).message}` };
+      return { ok: false, kind: "spawn_failed", message: "Failed to spawn a worker process for this request." };
     }
 
-    const entry: PoolEntry = {
+    const worker: Worker = {
       child,
-      username,
       ready: false,
       readyWaiters: [],
       pending: new Map(),
       idleTimer: null,
+      tier,
     };
 
-    this.pool.set(username, entry);
-    this.wireChildHandlers(entry);
+    this.wireChildHandlers(subnode, worker);
 
-    // Send init and wait for ready
     const initMsg: SubnodeInit = {
       type: "init",
       labels: this.labelRegistry,
@@ -297,21 +378,20 @@ export class SubnodePool {
     };
     child.send(initMsg);
 
-    const readyResult = await this.waitForReady(entry);
-    if (readyResult !== null) return readyResult;
+    const readyResult = await this.waitForReady(worker);
+    if (readyResult !== null) return { ok: false, ...readyResult };
 
-    return entry;
+    return { ok: true, worker };
   }
 
-  /** Resolves null on success, or a DispatchError on failure */
-  private waitForReady(entry: PoolEntry): Promise<null | DispatchError> {
+  private waitForReady(worker: Worker): Promise<null | DispatchError> {
     const timeoutMs = this.cfg.subnode_rpc_timeout_seconds * 1000;
 
     return new Promise<null | DispatchError>((resolve) => {
       const timer = setTimeout(() => {
-        entry.readyWaiters = entry.readyWaiters.filter((w) => w.resolve !== innerResolve);
-        this.terminateEntry(entry.username, "ready timeout");
-        resolve({ kind: "spawn_failed", message: `Subnode for '${entry.username}' did not signal ready within ${timeoutMs}ms` });
+        worker.readyWaiters = worker.readyWaiters.filter((w) => w.resolve !== innerResolve);
+        try { worker.child.kill("SIGTERM"); } catch { /* already dead */ }
+        resolve({ kind: "spawn_failed", message: `Subnode worker did not signal ready within ${timeoutMs}ms` });
       }, timeoutMs);
 
       function innerResolve(): void {
@@ -319,7 +399,7 @@ export class SubnodePool {
         resolve(null);
       }
 
-      entry.readyWaiters.push({
+      worker.readyWaiters.push({
         resolve: innerResolve,
         reject: (e) => {
           clearTimeout(timer);
@@ -329,9 +409,9 @@ export class SubnodePool {
     });
   }
 
-  private async sendRequest(
-    entry: PoolEntry,
-    username: string,
+  private sendRequest(
+    subnode: Subnode,
+    worker: Worker,
     tool: string,
     label: string,
     params: unknown,
@@ -343,15 +423,15 @@ export class SubnodePool {
 
     return new Promise<DispatchResult | DispatchError>((resolve) => {
       const timer = setTimeout(() => {
-        entry.pending.delete(requestId);
-        this.terminateEntry(username, "RPC timeout");
-        resolve({ kind: "timeout", message: `Subnode for '${username}' did not respond within ${timeoutMs}ms` });
+        worker.pending.delete(requestId);
+        this.removeWorker(subnode, worker, "RPC timeout");
+        resolve({ kind: "timeout", message: `Request did not complete within ${timeoutMs}ms` });
       }, timeoutMs);
 
-      entry.pending.set(requestId, {
+      worker.pending.set(requestId, {
         resolve: (resp) => {
           clearTimeout(timer);
-          this.resetIdleTimer(username);
+          this.onRequestComplete(subnode, worker);
           resolve({ result: resp.result, error: resp.error });
         },
         reject: (e) => {
@@ -360,114 +440,134 @@ export class SubnodePool {
         },
       });
 
-      if (!entry.child.send(msg)) {
+      if (!worker.child.send(msg)) {
         clearTimeout(timer);
-        entry.pending.delete(requestId);
-        resolve({ kind: "worker_error", message: `IPC send failed for '${username}'` });
+        worker.pending.delete(requestId);
+        resolve({ kind: "worker_error", message: "Failed to send the request to a worker process." });
       }
     });
   }
 
-  private wireChildHandlers(entry: PoolEntry): void {
-    const { child, username } = entry;
+  /**
+   * Called when a worker finishes a request. Drains the subnode queue first
+   * (skipping expired entries), then resets the idle timer if nothing is waiting.
+   */
+  private onRequestComplete(subnode: Subnode, worker: Worker): void {
+    while (subnode.queue.length > 0) {
+      const entry = subnode.queue.shift()!;
+      if (Date.now() > entry.deadline) {
+        entry.resolve({ kind: "timeout", message: "Request timed out waiting for a free worker" });
+        continue;
+      }
+      void this.sendRequest(subnode, worker, entry.tool, entry.label, entry.params, entry.requestId)
+        .then(entry.resolve);
+      return;
+    }
+    this.resetIdleTimer(subnode, worker);
+  }
+
+  private resetIdleTimer(subnode: Subnode, worker: Worker): void {
+    this.clearIdleTimer(worker);
+    if (worker.pending.size > 0) return;
+    const idleSec = worker.tier === "warm"
+      ? this.cfg.subnode_workers.warm_idle_seconds
+      : this.cfg.subnode_workers.burst_idle_seconds;
+    worker.idleTimer = setTimeout(() => {
+      log.info({ username: subnode.username, tier: worker.tier }, "Worker idle timeout — removing");
+      this.removeWorker(subnode, worker, "idle timeout");
+    }, idleSec * 1000);
+  }
+
+  private clearIdleTimer(worker: Worker): void {
+    if (worker.idleTimer) {
+      clearTimeout(worker.idleTimer);
+      worker.idleTimer = null;
+    }
+  }
+
+  private wireChildHandlers(subnode: Subnode, worker: Worker): void {
+    const { child } = worker;
+    const { username } = subnode;
 
     child.on("message", (rawMsg: unknown) => {
       const msg = rawMsg as SubnodeReady | SubnodeResponse;
 
       if (msg.type === "ready") {
-        entry.ready = true;
-        for (const w of entry.readyWaiters) w.resolve();
-        entry.readyWaiters = [];
-        this.resetIdleTimer(username);
+        worker.ready = true;
+        for (const w of worker.readyWaiters) w.resolve();
+        worker.readyWaiters = [];
+        // Don't set idle timer here — the request this worker was spawned for
+        // hasn't been sent yet (sendRequest runs after spawnWorker resolves).
+        // resetIdleTimer runs once that request completes.
         return;
       }
 
       if (msg.type === "response") {
-        const waiter = entry.pending.get(msg.request_id);
+        const waiter = worker.pending.get(msg.request_id);
         if (!waiter) {
-          log.error({ username, request_id: msg.request_id }, "Received response for unknown request_id — terminating subnode");
-          this.terminateEntry(username, "unknown request_id");
+          log.error({ username, request_id: msg.request_id }, "Received response for unknown request_id — removing worker");
+          this.removeWorker(subnode, worker, "unknown request_id");
           return;
         }
-        entry.pending.delete(msg.request_id);
+        worker.pending.delete(msg.request_id);
         waiter.resolve(msg);
         return;
       }
 
-      log.error({ username, msg }, "Received unknown message from subnode — terminating");
-      this.terminateEntry(username, "unknown message type");
+      log.error({ username, msg }, "Received unknown message from subnode — removing worker");
+      this.removeWorker(subnode, worker, "unknown message type");
     });
 
     child.on("exit", (code, signal) => {
       log.info({ username, code, signal }, "Subnode worker exited");
-      this.handleWorkerExit(username, `exited with code=${code} signal=${signal}`);
+      this.removeWorker(subnode, worker, `exited with code=${code} signal=${signal}`);
     });
 
     child.on("error", (err) => {
       log.error({ err, username }, "Subnode worker process error");
-      this.handleWorkerExit(username, err.message);
+      this.removeWorker(subnode, worker, (err as Error).message);
     });
   }
 
-  private handleWorkerExit(username: string, reason: string): void {
-    const entry = this.pool.get(username);
-    if (!entry) return;
+  /**
+   * Removes a worker from its subnode, kills the process, and rejects any
+   * in-flight requests. Closures capture worker/subnode directly, so an async
+   * exit event for an already-removed worker is a harmless no-op (indexOf
+   * returns -1, splice does nothing).
+   *
+   * If the last worker is removed and the queue is non-empty, those requests
+   * are rejected — the next dispatch from this user will spawn a fresh subnode.
+   */
+  private removeWorker(subnode: Subnode, worker: Worker, reason: string): void {
+    const idx = subnode.workers.indexOf(worker);
+    if (idx !== -1) subnode.workers.splice(idx, 1);
+    this.clearIdleTimer(worker);
 
-    this.clearIdleTimer(username);
-    this.pool.delete(username);
+    // `reason` (exit codes, signals, child_process error text) is internal
+    // detail for operators only — log it in full here, but never echo it
+    // into an error that crosses the trust boundary to the RPC caller
+    // below (see SECURITY-2).
+    log.info({ username: subnode.username, reason, tier: worker.tier }, "Removing subnode worker");
+    try { worker.child.kill("SIGTERM"); } catch { /* already dead */ }
 
-    const err = new Error(`Subnode for '${username}' died: ${reason}`);
+    const err = new Error("Subnode worker terminated unexpectedly");
+    for (const w of worker.readyWaiters) w.reject(err);
+    for (const w of worker.pending.values()) w.reject(err);
 
-    for (const w of entry.readyWaiters) w.reject(err);
-    for (const w of entry.pending.values()) w.reject(err);
-  }
-
-  private resetIdleTimer(username: string): void {
-    const entry = this.pool.get(username);
-    if (!entry) return;
-
-    this.clearIdleTimer(username);
-
-    const timeoutSec = this.cfg.subnode_idle_timeout_seconds;
-
-    if (timeoutSec === 0) {
-      // No pooling — terminate immediately when all in-flight RPCs complete
-      if (entry.pending.size === 0) {
-        this.terminateEntry(username, "no-pool mode");
+    if (subnode.workers.length === 0) {
+      // Reject any stranded queued requests — the next dispatch will spawn fresh.
+      if (subnode.queue.length > 0) {
+        for (const qr of subnode.queue) {
+          qr.resolve({ kind: "worker_error", message: "All workers terminated before this request could be processed" });
+        }
+        subnode.queue = [];
       }
-      return;
-    }
-
-    entry.idleTimer = setTimeout(() => {
-      if (entry.pending.size === 0) {
-        log.info({ username }, "Subnode idle timeout — terminating");
-        this.terminateEntry(username, "idle timeout");
+      // Remove subnode from the map only if it's still the current one —
+      // a dispatch that ran concurrently may have already replaced it.
+      if (this.subnodes.get(subnode.username) === subnode) {
+        this.subnodes.delete(subnode.username);
       }
-    }, timeoutSec * 1000);
-  }
-
-  private clearIdleTimer(username: string): void {
-    const entry = this.pool.get(username);
-    if (entry?.idleTimer) {
-      clearTimeout(entry.idleTimer);
-      entry.idleTimer = null;
     }
-  }
-
-  private terminateEntry(username: string, reason: string): void {
-    const entry = this.pool.get(username);
-    if (!entry) return;
-
-    this.clearIdleTimer(username);
-    this.pool.delete(username);
-
-    log.info({ username, reason }, "Terminating subnode worker");
-    try { entry.child.kill("SIGTERM"); } catch { /* already dead */ }
-
-    // Reject any remaining pending requests
-    const err = new Error(`Subnode terminated: ${reason}`);
-    for (const w of entry.readyWaiters) w.reject(err);
-    for (const w of entry.pending.values()) w.reject(err);
   }
 
   /**
@@ -477,20 +577,32 @@ export class SubnodePool {
   async shutdown(drainTimeoutMs = 30_000): Promise<void> {
     this.shuttingDown = true;
 
-    // Immediately terminate idle workers (no in-flight RPCs).
-    // Snapshot first — terminateEntry deletes from the pool during iteration.
-    for (const [username, entry] of [...this.pool]) {
-      if (entry.pending.size === 0) {
-        this.terminateEntry(username, "shutdown");
+    // Reject all queued requests immediately.
+    for (const subnode of this.subnodes.values()) {
+      for (const qr of subnode.queue) {
+        qr.resolve({ kind: "worker_error", message: "HUB_SHUTTING_DOWN — retry after 45 seconds" });
+      }
+      subnode.queue = [];
+    }
+
+    // Immediately terminate idle workers.
+    // Snapshot first — removeWorker mutates subnode.workers during iteration.
+    for (const subnode of [...this.subnodes.values()]) {
+      for (const worker of [...subnode.workers]) {
+        if (worker.pending.size === 0) {
+          this.removeWorker(subnode, worker, "shutdown");
+        }
       }
     }
 
-    if (this.pool.size === 0) return;
+    if (this.subnodes.size === 0) return;
 
-    // For workers with in-flight RPCs, wait for their pending requests to settle
+    // For workers with in-flight RPCs, wait for their pending requests to settle.
     const drainPromise = new Promise<void>((resolve) => {
       const check = (): void => {
-        const allDone = [...this.pool.values()].every((e) => e.pending.size === 0);
+        const allDone = [...this.subnodes.values()].every((s) =>
+          s.workers.every((w) => w.pending.size === 0)
+        );
         if (allDone) resolve();
         else setTimeout(check, 50);
       };
@@ -502,9 +614,11 @@ export class SubnodePool {
       new Promise<void>((r) => setTimeout(r, drainTimeoutMs)),
     ]);
 
-    // Force-kill whatever remains
-    for (const [username] of [...this.pool]) {
-      this.terminateEntry(username, "drain timeout");
+    // Force-kill whatever remains.
+    for (const subnode of [...this.subnodes.values()]) {
+      for (const worker of [...subnode.workers]) {
+        this.removeWorker(subnode, worker, "drain timeout");
+      }
     }
   }
 }

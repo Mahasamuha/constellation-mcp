@@ -7,3 +7,4 @@ export type { RpcError, RpcResponse, PathEntry, RpcEnvelope } from "./rpc.js";
 export { MAX_LABEL_INSTRUCTIONS_LENGTH } from "./rpc.js";
 export { FileExecutor, type ToolResult } from "./executor/index.js";
 export { RelaySocket, type RelaySocketOptions } from "./relay-socket.js";
+export { resolveQueueTimeout } from "./queue-timeout.js";

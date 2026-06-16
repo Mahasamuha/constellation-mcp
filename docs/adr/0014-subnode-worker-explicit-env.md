@@ -5,8 +5,8 @@
 
 ## Context
 
-The hub forks one subnode worker per resolved OS user
-(`SubnodePool.spawn` in `packages/hub/src/subnode.ts`). Each worker
+The hub forks subnode workers per resolved OS user
+(`SubnodePool` in `packages/hub/src/subnode.ts`). Each worker
 immediately drops privileges — `initgroups` → `setgid` → `setuid` — to the
 requesting user's OS identity (`subnode-worker.ts`), which may be an arbitrary,
 low-trust local account.
