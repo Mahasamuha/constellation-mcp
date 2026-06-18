@@ -11,9 +11,9 @@ flowchart TD
     Client["MCP client\n(Claude, ChatGPT, Cursor)"]
     Auth["auth middleware\nresolves Bearer token to userId"]
     Tool["MCP tool call"]
-    Router["router\nrate check → label resolution → filter check → liveness check"]
-    Node["Node\nuser-owned label · runs as the user"]
-    Hub["Hub\nadmin-defined label · optimistic permission check\nresolves OS identity · spawns per-user subnode"]
+    Router["router\nrate check → share resolution → filter check → liveness check"]
+    Node["Node\nuser-owned share · runs as the user"]
+    Hub["Hub\nadmin-defined share · optimistic permission check\nresolves OS identity · spawns per-user subnode"]
     RouterR["router′\nsame call — awaiting dispatchRpc"]
     ClientR["MCP client′\nreceives tool response"]
 
@@ -21,7 +21,7 @@ flowchart TD
     Auth --> Tool
     Tool --> Router
     Router -->|"dispatchRpc · { tool, absolute_root, ...params }"| Node
-    Router -->|"dispatchRpc · { tool, absolute_root, label, user_oidc_sub, user_claims, ...params }"| Hub
+    Router -->|"dispatchRpc · { tool, absolute_root, share, user_oidc_sub, user_claims, ...params }"| Hub
     Node -->|"RPC response (or timeout)"| RouterR
     Hub -->|"RPC response (or timeout)"| RouterR
     RouterR -->|"MCP tool response"| ClientR
@@ -34,10 +34,10 @@ Agents connect over WebSocket to `wss://<relay>/executor/connect` using a long-l
 
 Agents come in two modalities, distinguished by `ExecutorTokenType`:
 
-- **Node** (`NODE`) — bound to one user; runs under the user's own OS identity. Labels are user-managed, synced via `config_update`, and stored as `PathLabel` rows.
-- **Hub** (`HUB`) — service-level, not bound to any user; runs on machines shared by multiple people (NAS, dev server). Labels are admin-defined in the hub's config, synced via `shared_label_sync`, and stored as `HubPathLabel` rows alongside a per-label `permission_blob`. The relay performs an *optimistic* permission check against that blob during label resolution — final enforcement (OS identity resolution, label access, sub-path permissions) happens authoritatively at the hub. See [Hub](hub.md) for the full request flow, identity resolution chain, and permission model.
+- **Node** (`NODE`) — bound to one user; runs under the user's own OS identity. Shares are user-managed, synced via `config_update`, and stored as `PathShare` rows.
+- **Hub** (`HUB`) — service-level, not bound to any user; runs on machines shared by multiple people (NAS, dev server). Shares are admin-defined in the hub's config, synced via `hub_share_sync`, and stored as `HubShare` rows alongside a per-share `permission_blob`. The relay performs an *optimistic* permission check against that blob during share resolution — final enforcement (OS identity resolution, share access, sub-path permissions) happens authoritatively at the hub. See [Hub](hub.md) for the full request flow, identity resolution chain, and permission model.
 
-Because the relay cannot resolve a hub's per-request OS identity itself, requests routed to a hub carry the requesting user's `label`, `user_oidc_sub`, and `user_claims` in the RPC envelope — see [RPC Protocol](#rpc-protocol).
+Because the relay cannot resolve a hub's per-request OS identity itself, requests routed to a hub carry the requesting user's `share`, `user_oidc_sub`, and `user_claims` in the RPC envelope — see [RPC Protocol](#rpc-protocol).
 
 ---
 
@@ -51,12 +51,12 @@ A trigger tool that launches an interactive file browser — directory tree, syn
 
 | Param | Type | Description |
 |---|---|---|
-| `label` | string? | Label to open the browser on |
-| `path` | string? | Initial path within the label |
+| `share` | string? | Share to open the browser on |
+| `path` | string? | Initial path within the share |
 
-It declares `_meta.ui.resourceUri: "ui://constellation/file-browser"`. On a supporting client, the host fetches that resource (a single bundled HTML page built from `packages/telescope` and served via `resources/read`), renders it in a sandboxed iframe, and forwards the tool's input and result to it via `ui/notifications/tool-input` / `ui/notifications/tool-result`. From there the iframe drives the session itself — calling `list_labels`, `list_directory`, `read_file`, and `write_file` directly through `app.callServerTool()`, proxied by the host back through the same authenticated MCP connection. There is no separate HTTP route, credential flow, or session for the UI; it rides entirely on the existing MCP session and the relay's normal dispatch path (see [Architecture](#architecture)).
+It declares `_meta.ui.resourceUri: "ui://constellation/file-browser"`. On a supporting client, the host fetches that resource (a single bundled HTML page built from `packages/telescope` and served via `resources/read`), renders it in a sandboxed iframe, and forwards the tool's input and result to it via `ui/notifications/tool-input` / `ui/notifications/tool-result`. From there the iframe drives the session itself — calling `list_shares`, `list_directory`, `read_file`, and `write_file` directly through `app.callServerTool()`, proxied by the host back through the same authenticated MCP connection. There is no separate HTTP route, credential flow, or session for the UI; it rides entirely on the existing MCP session and the relay's normal dispatch path (see [Architecture](#architecture)).
 
-On clients that don't support `io.modelcontextprotocol/ui`, `open_file_browser` degrades gracefully to a plain text-only tool — it returns a label or directory listing summary instead of launching the UI. The other file tools are unaffected either way.
+On clients that don't support `io.modelcontextprotocol/ui`, `open_file_browser` degrades gracefully to a plain text-only tool — it returns a share or directory listing summary instead of launching the UI. The other file tools are unaffected either way.
 
 ### Tool visibility
 
@@ -65,7 +65,7 @@ Tools declare `_meta.ui.visibility` to control where they can be called from:
 - `["model"]` — callable by the agent (model) only; hidden from the rendered app
 - `["model", "app"]` — callable by both the agent and the app's iframe
 
-This maps onto how humans and agents tend to work with files differently: a human editing through the file browser saves the whole buffer at once, while an agent makes targeted, conversational edits. Accordingly `write_file` (full overwrite) is `["model", "app"]` so the app can use it to save, while `edit_file` (exact-match substitution), along with `copy`, `move`, `delete`, `create_directory`, and `list_hosts`, are `["model"]` — agent-only operations the app has no use for. `open_file_browser` and the read/navigation tools (`list_labels`, `list_directory`, `read_file`, `find_files`, `grep_files`, `file_info`) are `["model", "app"]`, since both the agent and the app need to browse and read.
+This maps onto how humans and agents tend to work with files differently: a human editing through the file browser saves the whole buffer at once, while an agent makes targeted, conversational edits. Accordingly `write_file` (full overwrite) is `["model", "app"]` so the app can use it to save, while `edit_file` (exact-match substitution), along with `copy`, `move`, `delete`, `create_directory`, and `list_hosts`, are `["model"]` — agent-only operations the app has no use for. `open_file_browser` and the read/navigation tools (`list_shares`, `list_directory`, `read_file`, `find_files`, `grep_files`, `file_info`) are `["model", "app"]`, since both the agent and the app need to browse and read.
 
 ---
 
@@ -141,7 +141,7 @@ List all executors registered to the authenticated user. Paginated.
 | `connected` | boolean | Whether a live WebSocket is open right now |
 | `token_id` | string | Current executor token ID |
 | `token_last_used_at` | ISO 8601 \| null | Last time the token authenticated a connection |
-| `labels` | `{ label, reported_path }[]` | Path labels reported by the executor |
+| `shares` | `{ share, reported_path }[]` | Path shares reported by the executor |
 
 ---
 
@@ -161,9 +161,9 @@ Revoke an executor's token. Any active WebSocket for that executor is terminated
 
 ---
 
-### `GET /api/labels`
+### `GET /api/shares`
 
-List path labels for the authenticated user. Paginated.
+List path shares for the authenticated user. Paginated.
 
 **Query params**
 
@@ -178,7 +178,7 @@ List path labels for the authenticated user. Paginated.
 | Field | Type |
 |---|---|
 | `id` | string |
-| `label` | string |
+| `share` | string |
 | `reported_path` | string — absolute path on the executor machine |
 | `executor_id` | string |
 | `host` | string |
@@ -309,7 +309,7 @@ Activity log for the authenticated user. Returns tool calls, errors, rate limit 
       "event_type": "tool_call",
       "host": "home-server",
       "tool": "read_file",
-      "label": "projects",
+      "share": "projects",
       "request_id": "a3f9c2e1d4b85f2a...",
       "duration_ms": 84,
       "error_code": null,
@@ -327,9 +327,9 @@ Activity log for the authenticated user. Returns tool calls, errors, rate limit 
 
 | `event_type` | Populated fields | Description |
 |---|---|---|
-| `tool_call` | `host`, `tool`, `label`, `request_id`, `duration_ms`; `error_code` + `error_message` when the executor returned an error | RPC reached the executor and a response was received |
-| `tool_error` | `host`, `tool`, `label`, `request_id`, `error_code` | RPC could not be delivered: `executor_offline`, `executor_disconnected`, or `timeout` |
-| `rate_limited` | `tool`, `label`, `request_id` | Call rejected before dispatch — per-user rate limit exceeded |
+| `tool_call` | `host`, `tool`, `share`, `request_id`, `duration_ms`; `error_code` + `error_message` when the executor returned an error | RPC reached the executor and a response was received |
+| `tool_error` | `host`, `tool`, `share`, `request_id`, `error_code` | RPC could not be delivered: `executor_offline`, `executor_disconnected`, or `timeout` |
+| `rate_limited` | `tool`, `share`, `request_id` | Call rejected before dispatch — per-user rate limit exceeded |
 | `executor_connect` | `host` | Executor opened a WebSocket connection |
 | `executor_disconnect` | `host`; `error_code` (`timeout` or `error`) for non-clean disconnects | Executor connection closed |
 
@@ -396,9 +396,9 @@ Requires `RELAY_ADMIN_TOKEN` env var on the relay, passed as `Authorization: Bea
 
 ---
 
-### `GET /api/admin/shared-labels` · Admin
+### `GET /api/admin/hub-shares` · Admin
 
-List all shared path labels synced to the relay from hubs. Paginated by executor.
+List all hub shares synced to the relay from hubs. Paginated by executor.
 
 **Query params**: `executor` — filter by executor ID (optional).
 
@@ -409,7 +409,7 @@ List all shared path labels synced to the relay from hubs. Paginated by executor
     {
       "executor_id": "<id>",
       "executor_host": "nas-shared",
-      "label": "projects",
+      "share": "projects",
       "reported_path": "/srv/projects",
       "permission_blob": { ... },
       "updated_at": "<ISO 8601>"
@@ -418,7 +418,7 @@ List all shared path labels synced to the relay from hubs. Paginated by executor
 }
 ```
 
-CLI wrapper: `constellation relay shared-labels list [--executor <id>] [--json]` (requires `constellation relay elevate`).
+CLI wrapper: `constellation relay hub-shares list [--executor <id>] [--json]` (requires `constellation relay elevate`).
 
 ---
 
@@ -561,13 +561,13 @@ If the agent does not reconnect within 5 minutes, the new token is revoked and t
 
 ### Control Messages (agent → relay)
 
-**`config_update`** — push path label changes to the relay. Labels not present in the payload are removed. Duplicate labels across agents on the same account are rejected.
+**`config_update`** — push path share changes to the relay. Shares not present in the payload are removed. Duplicate shares across agents on the same account are rejected.
 ```json
 {
   "type": "config_update",
   "paths": [
-    { "label": "projects", "reported_path": "/home/user/projects", "instructions": "optional — see paths.yaml's instructions/context_file; max 500 chars, dropped with a warning if exceeded" },
-    { "label": "dotfiles", "reported_path": "/home/user/.config" }
+    { "share": "projects", "reported_path": "/home/user/projects", "instructions": "optional — see paths.yaml's instructions/context_file; max 500 chars, dropped with a warning if exceeded" },
+    { "share": "dotfiles", "reported_path": "/home/user/.config" }
   ]
 }
 ```
@@ -582,22 +582,22 @@ If the agent does not reconnect within 5 minutes, the new token is revoked and t
 { "type": "update_host", "host": "new-name" }
 ```
 
-**`shared_label_sync`** — (hub only) push the full shared label registry to the relay. Labels not present are removed.
+**`hub_share_sync`** — (hub only) push the full hub share registry to the relay. Shares not present are removed.
 ```json
 {
-  "type": "shared_label_sync",
-  "labels": [
+  "type": "hub_share_sync",
+  "shares": [
     {
       "name": "projects",
       "reported_path": "/srv/projects",
       "permission_blob": { ... },
-      "instructions": "optional — surfaced via list_labels; max 500 chars, dropped with a warning if exceeded"
+      "instructions": "optional — surfaced via list_shares; max 500 chars, dropped with a warning if exceeded"
     }
   ]
 }
 ```
 
-Relay responds with `shared_label_sync_ok` or `shared_label_sync_error`.
+Relay responds with `hub_share_sync_ok` or `hub_share_sync_error`.
 
 ### RPC Protocol
 
@@ -618,7 +618,7 @@ For hubs the envelope also includes identity fields:
   "request_id": "...",
   "tool": "...",
   "absolute_root": "...",
-  "label": "projects",
+  "share": "projects",
   "user_oidc_sub": "auth0|abc123",
   "user_claims": { "constellation_username": "alice" },
   "<param>": "<value>"
@@ -658,7 +658,7 @@ Or on error:
 | `DEST_EXISTS` | `copy` / `move` — destination already exists | `path` (the client-supplied `dst_relative_path` — never the resolved absolute path) |
 | _(absent)_ | Path rejected, unknown tool, unexpected error | — |
 
-The relay resolves the label to an `absolute_root` before dispatching, so the agent never sees label names — only absolute paths. The agent enforces its own path restrictions against that root.
+The relay resolves the share to an `absolute_root` before dispatching, so the agent never sees share names — only absolute paths. The agent enforces its own path restrictions against that root.
 
 Requests time out after `RPC_TIMEOUT_MS` milliseconds. When an agent disconnects, all outstanding RPCs for it are rejected immediately.
 
@@ -671,8 +671,8 @@ Path filters are relay-side deny rules applied before an RPC is dispatched. They
 Filters are evaluated against every path field in the tool call:
 
 - `relative_path` — used by most tools; falls back to `absolute_root` alone when absent.
-- `src_relative_path` — evaluated against the source label root for `copy` and `move`.
-- `dst_relative_path` — evaluated against the destination label root for `copy` and `move` (uses `dst_root` for cross-label operations).
+- `src_relative_path` — evaluated against the source share root for `copy` and `move`.
+- `dst_relative_path` — evaluated against the destination share root for `copy` and `move` (uses `dst_root` for cross-share operations).
 
 A call is blocked if **any** of its candidate paths matches a filter.
 

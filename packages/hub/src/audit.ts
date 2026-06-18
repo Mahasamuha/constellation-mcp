@@ -8,7 +8,7 @@ export interface AuditEntry {
   request_id: string;
   user_oidc_sub: string | null;
   local_username: string | null;
-  label: string;
+  share: string;
   tool: string;
   outcome: AuditOutcome;
   error: string | null;

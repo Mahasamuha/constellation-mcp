@@ -1,6 +1,6 @@
 # Hub
 
-A hub is a Constellation deployment for machines shared by multiple users (NAS, dev server, domain-joined host). Unlike a node — which runs under the user's own OS identity and manages its own labels — the hub runs as a dedicated service user and dispatches each tool call under the requesting user's OS identity.
+A hub is a Constellation deployment for machines shared by multiple users (NAS, dev server, domain-joined host). Unlike a node — which runs under the user's own OS identity and manages its own shares — the hub runs as a dedicated service user and dispatches each tool call under the requesting user's OS identity.
 
 ---
 
@@ -10,14 +10,14 @@ The hub model rests on two assumptions:
 
 1. **The relay is a trusted intermediary.** Identity claims forwarded in the RPC envelope arrive from the relay, which authenticated the user via OIDC. The hub trusts these claims as authoritative — the same trust model as SSSD or an LDAP client trusting a directory server.
 
-2. **The admin, not users, controls what is shared.** Labels (path mounts) are defined in the hub config by the operator. Users cannot register, modify, or remove labels. The hub connects to the relay with a service-level token that is not bound to any user.
+2. **The admin, not users, controls what is shared.** Shares (path mounts) are defined in the hub config by the operator. Users cannot register, modify, or remove shares. The hub connects to the relay with a service-level token that is not bound to any user.
 
 **Node vs. hub:**
 
 | | Node | Hub |
 |---|---|---|
 | Runs as | The user's own OS identity | A dedicated low-privilege service user |
-| Label registry | User-managed (via relay sync) | Admin-defined in config file |
+| Share registry | User-managed (via relay sync) | Admin-defined in config file |
 | Token scope | Bound to one user (`ExecutorTokenType.NODE`) | Service-level (`ExecutorTokenType.HUB`, not user-bound) |
 | Per-request identity | N/A — always the user | Resolved from OIDC claims in the RPC envelope |
 | Sub-process spawning | None | Spawns a subnode per OS user on demand |
@@ -45,7 +45,7 @@ The hub resolves the requesting user's local OS username using a priority chain.
 
 ### Sub-path access control
 
-The hub controls access at the label (share root) level only. Access to specific files and directories within a label is enforced entirely by the OS filesystem permissions of the subnode running under the user's identity. Operators who need sub-path restrictions should use standard OS permissions (`chmod`, ACLs, supplementary groups) on the underlying paths.
+The hub controls access at the share root level only. Access to specific files and directories within a share is enforced entirely by the OS filesystem permissions of the subnode running under the user's identity. Operators who need sub-path restrictions should use standard OS permissions (`chmod`, ACLs, supplementary groups) on the underlying paths.
 
 ### UID restrictions
 
@@ -65,7 +65,7 @@ depend on its **entire group membership** — primary group plus every
 supplementary group the OS resolves for that account via `initgroups()` at
 privilege-drop time (see `subnode-worker.ts`). A user with an unremarkable
 primary GID could still be a secondary member of `docker`, `sudo`, or any
-group that owns files outside the labels you've configured — none of which the
+group that owns files outside the shares you've configured — none of which the
 UID allow/block lists would ever see.
 
 Because group membership is multi-valued, there's no equivalent of
@@ -113,11 +113,11 @@ See the config reference in §5 for details.
 MCP client
   → POST /mcp (Bearer token)
     → Relay authenticates session → retrieves userId, oidcSub, lastKnownClaims
-    → Relay resolves label → checks HubPathLabel registry (optimistic permission check)
-    → Relay builds RPC envelope: { tool, label, absolute_root, user_oidc_sub, user_claims, ...params }
+    → Relay resolves share → checks HubShare registry (optimistic permission check)
+    → Relay builds RPC envelope: { tool, share, absolute_root, user_oidc_sub, user_claims, ...params }
     → Relay forwards RPC via WebSocket to hub
       → Hub resolves OS identity (3-tier chain)
-      → Hub checks permissions (label-level access against admin config)
+      → Hub checks permissions (share-level access against admin config)
       → Hub looks up or spawns subnode for resolved user
         → Subnode runs under user's OS identity (uid + full supplementary groups via initgroups)
         → Subnode executes tool via FileExecutor
@@ -128,7 +128,7 @@ MCP client
 ```
 
 Two enforcement points:
-- **Relay (optimistic):** evaluates the synced permission blob (`default` access and per-`oidc_sub` overrides) at label resolution time. May grant access that the hub subsequently denies (e.g. due to Tier 1 identity resolution failure).
+- **Relay (optimistic):** evaluates the synced permission blob (`default` access and per-`oidc_sub` overrides) at share resolution time. May grant access that the hub subsequently denies (e.g. due to Tier 1 identity resolution failure).
 - **Hub (authoritative):** full identity resolution and permission check. Result at the hub always takes precedence.
 
 ### Subnode worker pool
@@ -171,16 +171,16 @@ a fresh subnode.
 
 ## 4. Permission Model
 
-Permissions are defined per-label in the config. The evaluation order:
+Permissions are defined per-share in the config. The evaluation order:
 
-1. If the label is not in the admin config → reject.
+1. If the share is not in the admin config → reject.
 2. If `permissions.overrides` contains an entry for the user's `oidc_sub` → use that access level.
 3. Otherwise use `permissions.default`.
 
 Access levels:
 - `read-only` — permits read, search, and listing tools; blocks write tools (`write_file`, `edit_file`, `create_directory`, `delete`, `move`, `copy`).
 - `read-write` — permits all tools.
-- `none` — rejects all access; label is hidden in discovery.
+- `none` — rejects all access; share is hidden in discovery.
 
 ---
 
@@ -230,7 +230,7 @@ hub_name: nas-shared
 audit_log: /var/log/constellation/hub-audit.jsonl
 env_file: /etc/constellation/hub.env
 
-labels:
+shares:
   - name: projects
     path: /srv/projects
     instructions: "Shared engineering workspace — read-only outside business hours."
@@ -289,13 +289,13 @@ subnode_gid:
                                            # GID 0 (root) and the hub's own GID are always
                                            # blocked, regardless of this list.
 
-labels:
+shares:
   - name: projects
     path: /srv/projects
-    instructions: "Optional text surfaced to MCP clients via list_labels"
+    instructions: "Optional text surfaced to MCP clients via list_shares"
                                            # Hard cap: 500 chars (longer values are dropped with a
                                            # warning). Recommended: keep under 250 — this should give
-                                           # light context/framing for the label, not document it or
+                                           # light context/framing for the share, not document it or
                                            # serve as a heavy instruction set.
     context_file: /etc/constellation/projects-instructions.txt
                                            # Optional. Absolute path to a text/markdown file read at
@@ -365,7 +365,7 @@ constellation hub stop --unit-name constellation-hub
 constellation hub validate-config --config-file /etc/constellation/hub.yaml
 ```
 
-Checks: required fields are present; label paths exist on disk; `user_map` usernames resolve locally; UID range bounds are consistent; token is available (env or env_file).
+Checks: required fields are present; share paths exist on disk; `user_map` usernames resolve locally; UID range bounds are consistent; token is available (env or env_file).
 
 ### Show running config summary
 
@@ -414,7 +414,7 @@ Each tool call produces one JSONL entry:
   "request_id": "<uuid>",
   "user_oidc_sub": "auth0|abc123",
   "local_username": "alice",
-  "label": "projects",
+  "share": "projects",
   "tool": "read_file",
   "outcome": "ok",
   "error": null
@@ -425,14 +425,14 @@ Each tool call produces one JSONL entry:
 
 Rotate logs with `logrotate`. The hub does not rotate logs itself.
 
-### Inspect shared labels (admin)
+### Inspect hub shares (admin)
 
-View the full shared label registry including permission configs:
+View the full hub share registry including permission configs:
 
 ```sh
-constellation relay shared-labels list
-constellation relay shared-labels list --executor <executor-id>
-constellation relay shared-labels list --json
+constellation relay hub-shares list
+constellation relay hub-shares list --executor <executor-id>
+constellation relay hub-shares list --json
 ```
 
 Requires an elevated admin session (`constellation relay elevate`).

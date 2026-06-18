@@ -45,7 +45,7 @@ Start, stop, and restart the node service. `start --foreground` runs the daemon 
 
 ### `node status [--json]`
 
-Shows service state (active/inactive/unknown), relay URL, host name, and configured labels. `--json` emits a machine-readable object.
+Shows service state (active/inactive/unknown), relay URL, host name, and configured shares. `--json` emits a machine-readable object.
 
 ### `node sync`
 
@@ -83,13 +83,13 @@ Prints the resolved config directory path.
 
 ### `node paths list [--json]`
 
-Lists labels and paths from `paths.yaml`.
+Lists shares and paths from `paths.yaml`.
 
-### `node paths add <label> <path> [--instructions <text>]`
+### `node paths add <share> <path> [--instructions <text>]`
 
-Appends an entry to `paths.yaml` and syncs to the relay immediately. `--instructions` sets inline text (max 500 characters) surfaced to MCP clients via `list_labels`; see [`paths.yaml`](configuration.md#pathsyaml) for the relationship with `context_file`.
+Appends an entry to `paths.yaml` and syncs to the relay immediately. `--instructions` sets inline text (max 500 characters) surfaced to MCP clients via `list_shares`; see [`paths.yaml`](configuration.md#pathsyaml) for the relationship with `context_file`.
 
-### `node paths remove <label>`
+### `node paths remove <share>`
 
 Removes an entry from `paths.yaml` and syncs to the relay immediately.
 
@@ -121,7 +121,7 @@ Starts a device code OAuth flow that requires admin approval. Once approved, wri
 constellation hub validate-config [--config-file <path>]
 ```
 
-Dry-run validation of a hub config file. Checks schema, label path existence, `context_file` readability (when set without an inline `instructions` override), `user_map` username resolution, and token availability. Exits non-zero on error.
+Dry-run validation of a hub config file. Checks schema, share path existence, `context_file` readability (when set without an inline `instructions` override), `user_map` username resolution, and token availability. Exits non-zero on error.
 
 ### `hub start`
 
@@ -137,7 +137,7 @@ Starts the hub daemon.
 constellation hub status [--config-file <path>]
 ```
 
-Prints hub name, relay URL, and label list from the config file.
+Prints hub name, relay URL, and share list from the config file.
 
 ### `hub install`
 
@@ -240,15 +240,15 @@ Shows relay health, uptime, and version.
 
 ### `relay executors list [--json]`
 
-Lists all executors registered to your account with their online status and labels.
+Lists all executors registered to your account with their online status and shares.
 
 ### `relay executors revoke <executor-id>`
 
 Revokes the executor's token. The executor goes offline immediately and cannot reconnect until re-initialized. Prompts for confirmation.
 
-### `relay labels list [--executor <id>] [--json]`
+### `relay shares list [--executor <id>] [--json]`
 
-Lists path labels across all executors, optionally filtered to a specific executor ID.
+Lists path shares across all executors, optionally filtered to a specific executor ID.
 
 ### `relay filters list [--json]`
 
@@ -314,9 +314,9 @@ constellation relay user demote <identifier> [--admin-token <token>] [--relay <u
 
 Revokes admin role from a user. Same auth requirements as `relay user promote`.
 
-### `relay shared-labels list [--executor <id>] [--json]`
+### `relay hub-shares list [--executor <id>] [--json]`
 
-Lists all shared labels synced to the relay. Requires an elevated admin session (`relay elevate` first). `--executor` filters to a specific hub by ID.
+Lists all hub shares synced to the relay. Requires an elevated admin session (`relay elevate` first). `--executor` filters to a specific hub by ID.
 
 ### `relay token create --shared`
 
@@ -330,7 +330,7 @@ Break-glass operation: creates a hub service token without going through the dev
 
 ## MCP Tools
 
-Tools are called by MCP clients (Claude, ChatGPT, Cursor) after authenticating via OAuth. Every tool that operates on files takes a `label` (a named path root registered by a node) and optionally a `host` to disambiguate when the same label name exists on multiple machines.
+Tools are called by MCP clients (Claude, ChatGPT, Cursor) after authenticating via OAuth. Every tool that operates on files takes a `share` (a named path root registered by a node) and optionally a `host` to disambiguate when the same share name exists on multiple machines.
 
 ### Node-enforced caps
 
@@ -349,7 +349,7 @@ These limits are applied by the node regardless of relay settings.
 
 ### `list_hosts`
 
-List all registered hosts with online status and their labels.
+List all registered hosts with online status and their shares.
 
 **Input**: none
 
@@ -357,13 +357,13 @@ List all registered hosts with online status and their labels.
 
 | Field | Type |
 |---|---|
-| `hosts` | `{ host, online, last_seen, labels }[]` |
+| `hosts` | `{ host, online, last_seen, shares }[]` |
 
 ---
 
-### `list_labels`
+### `list_shares`
 
-List path labels, optionally filtered by host.
+List path shares, optionally filtered by host.
 
 **Input**:
 
@@ -371,9 +371,9 @@ List path labels, optionally filtered by host.
 |---|---|---|
 | `host` | string? | Filter to a specific host |
 
-**Output**: `{ labels: { label, host, instructions, modality, access }[] }`
+**Output**: `{ shares: { share, host, instructions, modality, access }[] }`
 
-`instructions` is the label's configured inline text or `context_file` contents (or `null` if neither is set, the cap was exceeded, or the file couldn't be read). Capped at 500 characters — see [`paths.yaml`](configuration.md#pathsyaml).
+`instructions` is the share's configured inline text or `context_file` contents (or `null` if neither is set, the cap was exceeded, or the file couldn't be read). Capped at 500 characters — see [`paths.yaml`](configuration.md#pathsyaml).
 
 ---
 
@@ -385,13 +385,13 @@ Enumerate directory contents — names and types. Use `recursive: true` with `ex
 
 | Param | Type | Description |
 |---|---|---|
-| `label` | string | Path root label |
-| `relative_path` | string? | Subdirectory within the label root (defaults to root) |
+| `share` | string | Path root share |
+| `relative_path` | string? | Subdirectory within the share root (defaults to root) |
 | `recursive` | boolean? | Recurse into subdirectories |
 | `max_depth` | integer? | Maximum recursion depth |
 | `limit` | integer? | Max nodes returned; default 2,000, hard cap 10,000 |
 | `exclude` | string[]? | Directory names to skip during recursion |
-| `host` | string? | Disambiguate when multiple hosts share a label name |
+| `host` | string? | Disambiguate when multiple hosts use the same share name |
 
 **Output**: `{ nodes: { path, type }[], total_nodes, truncated, truncated_by? }`
 
@@ -407,7 +407,7 @@ Return metadata for a single path without reading its contents.
 
 | Param | Type | Description |
 |---|---|---|
-| `label` | string | Path root label |
+| `share` | string | Path root share |
 | `relative_path` | string | Path to the file or directory |
 | `host` | string? | |
 
@@ -425,7 +425,7 @@ Find files by name using glob or regex. Matches filenames and paths only — doe
 
 | Param | Type | Description |
 |---|---|---|
-| `label` | string | Path root label |
+| `share` | string | Path root share |
 | `pattern` | string | Glob (micromatch) or regex pattern |
 | `relative_path` | string? | Subdirectory to search within |
 | `type` | `"glob"` \| `"regex"` | Default: `"glob"` |
@@ -443,7 +443,7 @@ Read a file's content, optionally restricted to a line range. Returns `total_lin
 
 | Param | Type | Description |
 |---|---|---|
-| `label` | string | Path root label |
+| `share` | string | Path root share |
 | `relative_path` | string | Path to the file |
 | `start_line` | integer? | First line to return (1-based) |
 | `end_line` | integer? | Last line to return (inclusive) |
@@ -463,7 +463,7 @@ Search file contents for a literal string or regex. Does not match filenames. Re
 
 | Param | Type | Description |
 |---|---|---|
-| `label` | string | Path root label |
+| `share` | string | Path root share |
 | `pattern` | string | Literal string or regex pattern |
 | `relative_path` | string? | File or directory to search within |
 | `file_glob` | string? | Glob to filter files when searching a directory (e.g. `"*.ts"`) |
@@ -482,7 +482,7 @@ Write content to a file. Replaces the entire file by default.
 
 | Param | Type | Description |
 |---|---|---|
-| `label` | string | Path root label |
+| `share` | string | Path root share |
 | `relative_path` | string | Path to the file |
 | `content` | string | Content to write |
 | `mode` | `"overwrite"` \| `"append"` | Default: `"overwrite"` |
@@ -500,7 +500,7 @@ Apply a list of exact-match text substitutions to an existing file. Each `old_te
 
 | Param | Type | Description |
 |---|---|---|
-| `label` | string | Path root label |
+| `share` | string | Path root share |
 | `relative_path` | string | Path to the file |
 | `edits` | `{ old_text, new_text }[]` | List of substitutions to apply |
 | `dry_run` | boolean? | Return the diff without writing |
@@ -512,16 +512,16 @@ Apply a list of exact-match text substitutions to an existing file. Each `old_te
 
 ### `copy`
 
-Copy a file or directory. Fails if the destination already exists. `dst_label` enables cross-label copy on the same host.
+Copy a file or directory. Fails if the destination already exists. `dst_share` enables cross-share copy on the same host.
 
 **Input**:
 
 | Param | Type | Description |
 |---|---|---|
-| `label` | string | Source label |
-| `src_relative_path` | string | Source path within the label |
+| `share` | string | Source share |
+| `src_relative_path` | string | Source path within the share |
 | `dst_relative_path` | string | Destination path |
-| `dst_label` | string? | Destination label for cross-label copy |
+| `dst_share` | string? | Destination share for cross-share copy |
 | `host` | string? | |
 
 **Output**: `{ ok: true }`
@@ -530,16 +530,16 @@ Copy a file or directory. Fails if the destination already exists. `dst_label` e
 
 ### `move`
 
-Move a file or directory. Removes the source after copying. Fails if the destination already exists. `dst_label` enables cross-label move on the same host.
+Move a file or directory. Removes the source after copying. Fails if the destination already exists. `dst_share` enables cross-share move on the same host.
 
 **Input**:
 
 | Param | Type | Description |
 |---|---|---|
-| `label` | string | Source label |
+| `share` | string | Source share |
 | `src_relative_path` | string | Source path |
 | `dst_relative_path` | string | Destination path |
-| `dst_label` | string? | Destination label for cross-label move |
+| `dst_share` | string? | Destination share for cross-share move |
 | `host` | string? | |
 
 **Output**: `{ ok: true }`
@@ -554,7 +554,7 @@ Create a directory and any missing parents.
 
 | Param | Type | Description |
 |---|---|---|
-| `label` | string | Path root label |
+| `share` | string | Path root share |
 | `relative_path` | string | Directory path to create |
 | `host` | string? | |
 
@@ -570,7 +570,7 @@ Delete a file or directory. If the target is a directory and `recursive` is abse
 
 | Param | Type | Description |
 |---|---|---|
-| `label` | string | Path root label |
+| `share` | string | Path root share |
 | `relative_path` | string | Path to delete |
 | `recursive` | boolean? | Required to delete a non-empty directory |
 | `host` | string? | |
@@ -647,7 +647,7 @@ List all executors registered to the authenticated user.
 | `connected` | boolean | Whether a live WebSocket is open right now |
 | `token_id` | string | Current executor token ID |
 | `token_last_used_at` | ISO 8601 \| null | Last time the token authenticated a connection |
-| `labels` | `{ label, reported_path }[]` | Path labels reported by the executor |
+| `shares` | `{ share, reported_path }[]` | Path shares reported by the executor |
 
 ---
 
@@ -663,9 +663,9 @@ Revoke an executor's token. Any active WebSocket for that executor is terminated
 
 ---
 
-### `GET /api/labels`
+### `GET /api/shares`
 
-List path labels for the authenticated user.
+List path shares for the authenticated user.
 
 **Query params**: `executor_id` — filter to a specific executor (optional).
 
@@ -674,7 +674,7 @@ List path labels for the authenticated user.
 | Field | Type |
 |---|---|
 | `id` | string |
-| `label` | string |
+| `share` | string |
 | `reported_path` | string |
 | `executor_id` | string |
 | `host` | string |
@@ -828,9 +828,9 @@ Revoke admin role from a user. Same auth requirements as promote.
 
 ---
 
-### `GET /api/admin/shared-labels`
+### `GET /api/admin/hub-shares`
 
-List all shared labels synced to the relay from hubs. Requires an elevated admin session.
+List all hub shares synced to the relay from hubs. Requires an elevated admin session.
 
 **Query params**: `executor` — filter to a specific hub by ID (optional).
 
@@ -841,7 +841,7 @@ List all shared labels synced to the relay from hubs. Requires an elevated admin
     {
       "executor_id": "...",
       "executor_host": "prod-server",
-      "label": "projects",
+      "share": "projects",
       "reported_path": "/srv/projects",
       "permission_blob": {
         "default": "read",

@@ -80,7 +80,7 @@ OS identity separation is the primary security guarantee of the hub model.
 - The hub resolves identity but does not provision local accounts. Resolved usernames
   must already exist on the host. In LDAP/AD environments, provisioning is out-of-band
   (SSSD, SCIM, Ansible, GPO, etc.).
-- Sub-path access control within a label is enforced entirely by the OS filesystem
+- Sub-path access control within a share is enforced entirely by the OS filesystem
   permissions of the subnode's OS identity — the hub does not implement
   fine-grained path-level ACLs.
 - Windows support (S4U2Self impersonation) is out of scope for the initial hub

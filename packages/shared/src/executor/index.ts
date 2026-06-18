@@ -23,37 +23,37 @@ const ALWAYS_LOG_CODES = new Set(["MOVE_INCOMPLETE"]);
 
 export class FileExecutor {
   constructor(
-    private readonly labelRegistry: Record<string, string>,
+    private readonly shareRegistry: Record<string, string>,
     private readonly maxFileSizeKb: number
   ) {}
 
-  async execute(tool: string, label: string, params: unknown): Promise<ToolResult> {
-    const root = this.labelRegistry[label];
+  async execute(tool: string, share: string, params: unknown): Promise<ToolResult> {
+    const root = this.shareRegistry[share];
     if (root === undefined) {
-      log.warn({ tool, label }, "Label not found in registry");
+      log.warn({ tool, share }, "Share not found in registry");
       return { content: { message: "Path rejected" }, isError: true };
     }
 
     const p = params as Record<string, unknown>;
 
-    // Resolve destination root for cross-label ops (copy/move).
-    // Prefer dst_label lookup from registry; fall back to relay-forwarded dst_root.
+    // Resolve destination root for cross-share ops (copy/move).
+    // Prefer dst_share lookup from registry; fall back to relay-forwarded dst_root.
     let resolvedDstRoot: string | undefined;
-    const dstLabel = s(p, "dst_label");
+    const dstShare = s(p, "dst_share");
     const dstRootRaw = s(p, "dst_root");
 
-    if (dstLabel !== undefined) {
-      const fromRegistry = this.labelRegistry[dstLabel];
+    if (dstShare !== undefined) {
+      const fromRegistry = this.shareRegistry[dstShare];
       if (fromRegistry === undefined) {
-        log.warn({ tool, dstLabel }, "dst_label not found in registry");
+        log.warn({ tool, dstShare }, "dst_share not found in registry");
         return { content: { message: "Path rejected" }, isError: true };
       }
       resolvedDstRoot = fromRegistry;
     } else if (dstRootRaw !== undefined) {
       try {
         const resolved = await fs.realpath(dstRootRaw);
-        if (!Object.values(this.labelRegistry).includes(resolved)) {
-          log.warn({ tool, dstRootRaw }, "dst_root not in label registry");
+        if (!Object.values(this.shareRegistry).includes(resolved)) {
+          log.warn({ tool, dstRootRaw }, "dst_root not in share registry");
           return { content: { message: "Path rejected" }, isError: true };
         }
         resolvedDstRoot = resolved;
@@ -96,9 +96,9 @@ export class FileExecutor {
       }
     }
 
-    // Mutation operations must not target a label root directory itself.
+    // Mutation operations must not target a share root directory itself.
     // "relative_path" / "src_relative_path" / "dst_relative_path" that resolve
-    // to the root of their respective label are rejected.
+    // to the root of their respective share are rejected.
     const MUTATION_ROOT_FIELDS: Record<string, string[]> = {
       write_file:       ["relative_path"],
       edit_file:        ["relative_path"],
@@ -114,7 +114,7 @@ export class FileExecutor {
         if (resolved === undefined) continue;
         const fieldRoot = field === "dst_relative_path" ? (resolvedDstRoot ?? root) : root;
         if (resolved === fieldRoot) {
-          log.warn({ tool, field }, "Mutation targeting label root rejected");
+          log.warn({ tool, field }, "Mutation targeting share root rejected");
           return { content: { message: "Path rejected" }, isError: true };
         }
       }

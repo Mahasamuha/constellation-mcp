@@ -7,12 +7,12 @@ const log = createLogger("node:rpc");
 export type { RpcError, RpcResponse, RpcEnvelope };
 
 /**
- * Caches the realpath-resolved label registry so we don't re-stat every path
+ * Caches the realpath-resolved share registry so we don't re-stat every path
  * on each RPC. Keyed on a JSON fingerprint of the current paths list; invalidated
  * automatically when paths change (e.g. after a config_update). One instance is
  * owned by the node's connection for its lifetime.
  */
-export class LabelRegistryCache {
+export class ShareRegistryCache {
   private key = "";
   private cache: Record<string, string> = {};
 
@@ -23,7 +23,7 @@ export class LabelRegistryCache {
     const registry: Record<string, string> = {};
     for (const p of paths) {
       try {
-        registry[p.label] = await fs.realpath(p.path);
+        registry[p.share] = await fs.realpath(p.path);
       } catch {
         // skip paths that can't be resolved at this moment
       }
@@ -35,14 +35,14 @@ export class LabelRegistryCache {
 }
 
 /**
- * Validates absolute_root against the local paths allowlist, builds the label
+ * Validates absolute_root against the local paths allowlist, builds the share
  * registry, and delegates execution to FileExecutor.
  */
 export async function handleRpc(
   envelope: RpcEnvelope,
   paths: PathEntry[],
   config: NodeConfig,
-  registryCache: LabelRegistryCache
+  registryCache: ShareRegistryCache
 ): Promise<RpcResponse> {
   const { request_id, tool, absolute_root } = envelope;
 
@@ -52,15 +52,15 @@ export async function handleRpc(
     return { request_id, error: { message: "Path rejected by node" } };
   }
 
-  const labelRegistry = await registryCache.build(paths);
+  const shareRegistry = await registryCache.build(paths);
 
-  if (labelRegistry[allowed.label] === undefined) {
+  if (shareRegistry[allowed.share] === undefined) {
     log.warn({ tool, absolute_root }, "Path rejected by node — realpath failed");
     return { request_id, error: { message: "Path rejected by node" } };
   }
 
-  const executor = new FileExecutor(labelRegistry, config.max_file_size_kb);
-  const result = await executor.execute(tool, allowed.label, envelope);
+  const executor = new FileExecutor(shareRegistry, config.max_file_size_kb);
+  const result = await executor.execute(tool, allowed.share, envelope);
 
   if (result.isError) {
     return { request_id, error: result.content as RpcError };

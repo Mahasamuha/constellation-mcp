@@ -22,7 +22,7 @@ export interface ActivityEvent {
   eventType: ActivityEventType;
   host?: string;
   tool?: string;
-  label?: string;
+  share?: string;
   requestId?: string;
   durationMs?: number;
   errorCode?: string;

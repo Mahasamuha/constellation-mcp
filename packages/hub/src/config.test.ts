@@ -18,7 +18,7 @@ const BASE_YAML = `
 relay_url: https://relay.example.com
 hub_name: test-hub
 audit_log: /var/log/constellation/audit.jsonl
-labels:
+shares:
   - name: docs
     path: /srv/docs
     permissions:
@@ -50,8 +50,8 @@ describe("loadHubConfig", () => {
       burst_idle_seconds: 30,
       queue_timeout: 0.5,
     });
-    expect(cfg.labels).toHaveLength(1);
-    expect(cfg.labels[0]).toMatchObject({ name: "docs", path: "/srv/docs", permissions: { default: "read-only", overrides: [] } });
+    expect(cfg.shares).toHaveLength(1);
+    expect(cfg.shares[0]).toMatchObject({ name: "docs", path: "/srv/docs", permissions: { default: "read-only", overrides: [] } });
     expect(cfg.identity).toEqual({ claims: [], user_map: [], allow_preferred_username: false });
   });
 
@@ -62,12 +62,12 @@ describe("loadHubConfig", () => {
     expect(() => loadHubConfig(path)).toThrow(new RegExp(`${field} is required`));
   });
 
-  it("rejects labels without a permissions block", async () => {
+  it("rejects shares without a permissions block", async () => {
     const path = await writeConfig(`
 relay_url: https://relay.example.com
 hub_name: test-hub
 audit_log: /var/log/constellation/audit.jsonl
-labels:
+shares:
   - name: docs
     path: /srv/docs
 `);
@@ -80,7 +80,7 @@ labels:
 relay_url: https://relay.example.com
 hub_name: test-hub
 audit_log: /var/log/constellation/audit.jsonl
-labels:
+shares:
   - name: docs
     path: /srv/docs
     permissions:
@@ -102,7 +102,7 @@ subnode_workers:
   warm_idle_seconds: 120
   burst_idle_seconds: 45
   queue_timeout: 5
-labels:
+shares:
   - name: docs
     path: /srv/docs
     permissions:
@@ -127,7 +127,7 @@ identity:
       burst_idle_seconds: 45,
       queue_timeout: 5,
     });
-    expect(cfg.labels[0]!.permissions.overrides).toEqual([{ oidc_sub: "user-1", access: "read-write" }]);
+    expect(cfg.shares[0]!.permissions.overrides).toEqual([{ oidc_sub: "user-1", access: "read-write" }]);
     expect(cfg.identity).toEqual({
       claims: ["uid", "sAMAccountName"],
       user_map: [{ oidc_sub: "sub-1", local_username: "alice" }],
@@ -155,7 +155,7 @@ function baseConfig(overrides: Partial<HubConfig> = {}): HubConfig {
     subnode_rpc_timeout_seconds: 30,
     subnode_uid: {},
     subnode_gid: {},
-    labels: [],
+    shares: [],
     identity: { claims: [], user_map: [], allow_preferred_username: false },
     audit_log: "/var/log/constellation/audit.jsonl",
     ...overrides,
@@ -196,11 +196,11 @@ describe("validateHubConfig", () => {
     ]);
   });
 
-  it("rejects duplicate label names", () => {
-    const label = { name: "docs", path: "/srv/docs", permissions: { default: "read-only" as const, overrides: [] } };
-    const result = validateHubConfig(baseConfig({ labels: [label, { ...label, path: "/srv/docs2" }] }));
+  it("rejects duplicate share names", () => {
+    const share = { name: "docs", path: "/srv/docs", permissions: { default: "read-only" as const, overrides: [] } };
+    const result = validateHubConfig(baseConfig({ shares: [share, { ...share, path: "/srv/docs2" }] }));
     expect(result.ok).toBe(false);
-    expect(result.errors).toContain("Duplicate label name: docs");
+    expect(result.errors).toContain("Duplicate share name: docs");
   });
 
   it("rejects subnode_workers.min < 1", () => {

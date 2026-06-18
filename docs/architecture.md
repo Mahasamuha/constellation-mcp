@@ -18,7 +18,7 @@
 
 **CLI-first.** Every action — node setup, path management, token rotation, relay administration — is accessible from the command line. The GUI and any future web UI are convenience layers on top of a complete CLI; nothing requires them.
 
-**All config is local to the node.** The node reads `node.yaml` and `paths.yaml` from disk at startup. The relay stores a copy of path labels for routing and display, but that copy is always derived from what the node pushes — it is never authoritative. If the relay's copy diverges from the node's local config, the node's config wins at enforcement time.
+**All config is local to the node.** The node reads `node.yaml` and `paths.yaml` from disk at startup. The relay stores a copy of path shares for routing and display, but that copy is always derived from what the node pushes — it is never authoritative. If the relay's copy diverges from the node's local config, the node's config wins at enforcement time.
 
 **Reconnection is stateless.** Because all persistent config lives in either the local filesystem (node) or Postgres (relay), a node reconnect requires nothing beyond token validation. No handshake, no re-registration, no re-delivery of state.
 
@@ -30,9 +30,9 @@
 flowchart TD
     Client["MCP client\n(Claude, ChatGPT, Cursor)"]
     Relay["Relay · VPS / Railway / Fly\nMCP server · OAuth AS · WebSocket hub · request router"]
-    Postgres[("Postgres\nagent registry · OAuth sessions · path labels · filters")]
+    Postgres[("Postgres\nagent registry · OAuth sessions · path shares · filters")]
     Node["Node · your machine\noutbound WebSocket only — no inbound ports\nlocal filesystem ops · path enforcement"]
-    Hub["Hub · shared machine (NAS, dev server)\noutbound WebSocket only · admin-defined labels\nper-OS-user subnode dispatch"]
+    Hub["Hub · shared machine (NAS, dev server)\noutbound WebSocket only · admin-defined shares\nper-OS-user subnode dispatch"]
 
     Client -->|"HTTPS + OAuth 2.0 Bearer"| Relay
     Relay --- Postgres
@@ -44,8 +44,8 @@ flowchart TD
 |---|---|---|
 | Relay | VPS, Railway, or Fly | MCP server, OAuth authorization server, WebSocket hub, request routing, liveness tracking |
 | Node | Any machine, under the user's own identity | WebSocket client, filesystem operations, path enforcement |
-| Hub | A machine shared by multiple users, under a dedicated service identity | WebSocket client, OS-identity resolution, per-user subnode dispatch, admin-defined label permissions |
-| Postgres | Sidecar to relay | Agent registry, OAuth sessions, path labels, path filters |
+| Hub | A machine shared by multiple users, under a dedicated service identity | WebSocket client, OS-identity resolution, per-user subnode dispatch, admin-defined share permissions |
+| Postgres | Sidecar to relay | Agent registry, OAuth sessions, path shares, path filters |
 
 **Stack:** TypeScript throughout. Relay on Node.js; node distributed as a standalone `constellation` binary. Prisma for database access and migrations. Pino for structured logging.
 
@@ -73,21 +73,21 @@ Agents connect to `/executor/connect` with their agent token in the `Authorizati
 
 The relay pings each connected agent every `HEARTBEAT_INTERVAL_SECONDS` (default 60s). The agent's WebSocket library responds with a pong automatically. Each pong updates `last_heartbeat_at` in Postgres. After `HEARTBEAT_MAX_MISSED` (default 3) consecutive missed pongs, the relay terminates the connection.
 
-On connect, the agent immediately sends a `config_update` message with its current path labels. The relay upserts those labels in Postgres — adding new ones, updating paths on existing ones, removing any not present in the payload. This keeps routing information current without requiring a restart.
+On connect, the agent immediately sends a `config_update` message with its current path shares. The relay upserts those shares in Postgres — adding new ones, updating paths on existing ones, removing any not present in the payload. This keeps routing information current without requiring a restart.
 
 ### Request router
 
 When an MCP client calls a tool, the relay:
 
 1. Resolves the Bearer token to a `user_id`
-2. Resolves the `label` (and optional `host`) to a target `executor_id` and `absolute_root` path
+2. Resolves the `share` (and optional `host`) to a target `executor_id` and `absolute_root` path
 3. Applies relay-side deny filters (glob or regex patterns)
 4. Looks up the live WebSocket for that agent
 5. Forwards an RPC envelope: `{ request_id, tool, absolute_root, ...tool_params }`
 6. Waits up to `RPC_TIMEOUT_MS` (default 30s) for a response
 7. Returns the result or a structured error to the MCP client
 
-The relay passes `absolute_root` — the resolved filesystem path — directly in the RPC envelope. The node never sees label names; it only validates paths. This means the relay cannot fabricate a root the node doesn't know about: it can only route to paths that exist in the node's local `paths.yaml`.
+The relay passes `absolute_root` — the resolved filesystem path — directly in the RPC envelope. The node never sees share names; it only validates paths. This means the relay cannot fabricate a root the node doesn't know about: it can only route to paths that exist in the node's local `paths.yaml`.
 
 If the node disconnects while an RPC is in flight, the relay immediately rejects all pending requests for that agent. Operations are not retried; any mid-flight filesystem op is left in its current state.
 
@@ -97,8 +97,8 @@ If the node disconnects while an RPC is in flight, the relay immediately rejects
 users            id, oidc_sub, email, deactivated_at
 executor_tokens  id, user_id, token_hash, last_used_at, revoked_at
 executors        id, user_id, executor_token_id, host, last_heartbeat_at
-path_labels      id, user_id, executor_id, label, reported_path  [UNIQUE (user_id, label)]
-hub_path_labels  id, executor_id, label, reported_path, permission_blob  [UNIQUE (executor_id, label)] — admin-defined, synced from a hub's config
+path_shares      id, user_id, executor_id, share, reported_path  [UNIQUE (user_id, share)]
+hub_shares       id, executor_id, share, reported_path, permission_blob  [UNIQUE (executor_id, share)] — admin-defined, synced from a hub's config
 relay_path_filters   id, user_id, scope_executor_id, pattern, pattern_type
 oauth_clients    id, client_secret_hash, redirect_uris, is_dynamic
 oauth_sessions   id, user_id, mcp_client_id, access_token_hash, expires_at, refresh_token_hash
@@ -128,7 +128,7 @@ For every incoming RPC:
 4. Execute the operation
 5. Return `{ request_id, result }` or `{ request_id, error }`
 
-For cross-label `copy` and `move`, the relay also supplies `dst_root`. The node validates `dst_root` against the allowlist and applies the same traversal check against it for `dst_relative_path`. For write targets that don't exist yet, the nearest existing parent is resolved and the suffix reconstructed — so new files can be created within the root without bypassing the check.
+For cross-share `copy` and `move`, the relay also supplies `dst_root`. The node validates `dst_root` against the allowlist and applies the same traversal check against it for `dst_relative_path`. For write targets that don't exist yet, the nearest existing parent is resolved and the suffix reconstructed — so new files can be created within the root without bypassing the check.
 
 ### Token rotation
 
@@ -147,7 +147,7 @@ The node has a 5-minute window to reconnect. If it does not, the new token is re
 ~/.config/constellation/      (Linux/macOS)
 %APPDATA%\constellation\      (Windows)
   node.yaml        — relay URL, node token, host name, max_file_size_kb
-  paths.yaml       — path label definitions
+  paths.yaml       — path share definitions
   relay-session.yaml  — relay CLI OAuth session (written by constellation relay login)
 ```
 
@@ -162,13 +162,13 @@ A hub is the deployment mode for a machine shared by multiple users — a NAS, a
 | | Node | Hub |
 |---|---|---|
 | Runs as | The user's own OS identity | A dedicated low-privilege service user |
-| Label registry | User-managed, pushed via `config_update` | Admin-defined in a config file the hub operator controls |
+| Share registry | User-managed, pushed via `config_update` | Admin-defined in a config file the hub operator controls |
 | Token type | Bound to one user (`ExecutorTokenType.NODE`) | Service-level (`ExecutorTokenType.HUB`), not bound to any user |
 | Executing a request | Always runs as the connected user | Resolves the requesting user's OS account, then dispatches to a per-user **subnode** worker process running under that identity |
 
-Because the hub's token isn't tied to a single user, the relay forwards the caller's OIDC identity (`user_oidc_sub`, `user_claims`) in the RPC envelope so the hub can resolve who's actually asking. The hub maps that identity to a local OS username via a priority chain (custom OIDC claim → explicit `oidc_sub` → username map → opt-in `preferred_username`), then forks or reuses a worker that has `setuid()`'d to that user before touching the filesystem — so OS file permissions, not the hub process's own privilege, are what ultimately gate access within a label.
+Because the hub's token isn't tied to a single user, the relay forwards the caller's OIDC identity (`user_oidc_sub`, `user_claims`) in the RPC envelope so the hub can resolve who's actually asking. The hub maps that identity to a local OS username via a priority chain (custom OIDC claim → explicit `oidc_sub` → username map → opt-in `preferred_username`), then forks or reuses a worker that has `setuid()`'d to that user before touching the filesystem — so OS file permissions, not the hub process's own privilege, are what ultimately gate access within a share.
 
-Permission evaluation happens twice: optimistically at the relay (the synced `hub_path_labels.permission_blob`, same `default` + per-`oidc_sub` `overrides` shape used for node labels) and authoritatively at the hub (full identity resolution against the admin config). The hub's decision always wins — the relay's check exists only to avoid an unnecessary round-trip for requests that are obviously going to be rejected.
+Permission evaluation happens twice: optimistically at the relay (the synced `hub_shares.permission_blob`, same `default` + per-`oidc_sub` `overrides` shape used for node shares) and authoritatively at the hub (full identity resolution against the admin config). The hub's decision always wins — the relay's check exists only to avoid an unnecessary round-trip for requests that are obviously going to be rejected.
 
 Full deployment, identity-resolution, UID/GID security model, and config reference: [docs/hub.md](hub.md). Hub-specific design decisions are in `docs/adr/0009-hub-nullable-user-id.md`, `0010-hub-three-tier-identity.md`, and `0013-hub-restart-only-config.md`.
 
@@ -209,7 +209,7 @@ Refresh tokens are rotated on use. If a refresh token expires, the client prompt
 | Relay path filters | No | Yes — deny-only overlay |
 | Node runtime check | — | Always enforced, independent of relay |
 
-The relay resolves a label to an `absolute_root` and forwards it to the node. The node independently validates that root against its own `paths.yaml`. Because the node holds the allowlist locally, a compromised relay cannot forge a root the node doesn't recognise — it can at most send a path the node will reject.
+The relay resolves a share to an `absolute_root` and forwards it to the node. The node independently validates that root against its own `paths.yaml`. Because the node holds the allowlist locally, a compromised relay cannot forge a root the node doesn't recognise — it can at most send a path the node will reject.
 
 Relay path filters are a further restrict-only layer applied before an RPC is dispatched. They cannot grant access to anything the node would otherwise allow.
 
@@ -219,9 +219,9 @@ Two checks run in sequence before every operation:
 
 **1. Root allowlist check** — the `absolute_root` in the RPC envelope must match a path in `paths.yaml` exactly. Any other value is rejected with `"Path rejected by node"` — deliberately terse; no internal path info is forwarded to the MCP client. Full detail (`tool`, `absolute_root`) is logged for operator troubleshooting only.
 
-**2. Traversal and symlink check** — every path field in the RPC (`relative_path`, `src_relative_path`, `dst_relative_path`) is resolved via `fs.realpath()`, which follows symlinks and canonicalises `..`. If the resolved path does not begin with the resolved root, the request is rejected. This prevents both `../` traversal and symlink escapes that point outside the label root.
+**2. Traversal and symlink check** — every path field in the RPC (`relative_path`, `src_relative_path`, `dst_relative_path`) is resolved via `fs.realpath()`, which follows symlinks and canonicalises `..`. If the resolved path does not begin with the resolved root, the request is rejected. This prevents both `../` traversal and symlink escapes that point outside the share root.
 
-This check only covers the path supplied in the RPC — it does not re-run on entries discovered while recursively walking a directory for `copy`/`move`. A symlink found during that walk is therefore never dereferenced or recreated at the destination; it's skipped outright, since the executor has no way to re-validate where it points against the label root.
+This check only covers the path supplied in the RPC — it does not re-run on entries discovered while recursively walking a directory for `copy`/`move`. A symlink found during that walk is therefore never dereferenced or recreated at the destination; it's skipped outright, since the executor has no way to re-validate where it points against the share root.
 
 ### Token security
 
@@ -244,4 +244,4 @@ Rate limit state is in-memory — no Redis required. State is lost on relay rest
 
 ### Account deactivation
 
-Setting `deactivated_at` on a user record immediately blocks all MCP requests and agent connections for that user. Config, agent registrations, and path labels are preserved but inert. Re-activation requires a database-level change; there is no CLI command to re-activate.
+Setting `deactivated_at` on a user record immediately blocks all MCP requests and agent connections for that user. Config, agent registrations, and path shares are preserved but inert. Re-activation requires a database-level change; there is no CLI command to re-activate.

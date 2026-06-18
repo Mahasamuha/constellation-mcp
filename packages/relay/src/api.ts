@@ -72,7 +72,7 @@ apiRouter.get("/api/executors", async (req: Request, res: Response) => {
     prisma.executor.findMany({
       where: { userId: uid },
       include: {
-        pathLabels: { select: { label: true, reportedPath: true } },
+        pathShares: { select: { share: true, reportedPath: true } },
         executorToken: { select: { id: true, lastUsedAt: true } },
       },
       orderBy: { host: "asc" },
@@ -93,7 +93,7 @@ apiRouter.get("/api/executors", async (req: Request, res: Response) => {
       connected: getConnection(e.id) !== undefined,
       token_id: e.executorToken.id,
       token_last_used_at: e.executorToken.lastUsedAt?.toISOString() ?? null,
-      labels: e.pathLabels.map((pl) => ({ label: pl.label, reported_path: pl.reportedPath })),
+      shares: e.pathShares.map((ps) => ({ share: ps.share, reported_path: ps.reportedPath })),
     })),
     total,
     limit,
@@ -138,33 +138,33 @@ apiRouter.delete("/api/executors/:id/token", async (req: Request, res: Response)
 });
 
 // ---------------------------------------------------------------------------
-// GET /api/labels
+// GET /api/shares
 // ---------------------------------------------------------------------------
 
-apiRouter.get("/api/labels", async (req: Request, res: Response) => {
+apiRouter.get("/api/shares", async (req: Request, res: Response) => {
   const uid = (req as AuthenticatedRequest).userId;
   const executorId = typeof req.query["executor_id"] === "string" ? req.query["executor_id"] : undefined;
   const { limit, offset } = parsePagination(req);
   const where = { userId: uid, ...(executorId ? { executorId } : {}) };
 
-  const [labels, total] = await Promise.all([
-    prisma.pathLabel.findMany({
+  const [shares, total] = await Promise.all([
+    prisma.pathShare.findMany({
       where,
       include: { executor: { select: { host: true } } },
-      orderBy: { label: "asc" },
+      orderBy: { share: "asc" },
       take: limit,
       skip: offset,
     }),
-    prisma.pathLabel.count({ where }),
+    prisma.pathShare.count({ where }),
   ]);
 
   res.json({
-    data: labels.map((l) => ({
-      id: l.id,
-      label: l.label,
-      reported_path: l.reportedPath,
-      executor_id: l.executorId,
-      host: l.executor.host,
+    data: shares.map((s) => ({
+      id: s.id,
+      share: s.share,
+      reported_path: s.reportedPath,
+      executor_id: s.executorId,
+      host: s.executor.host,
     })),
     total,
     limit,
@@ -574,26 +574,26 @@ async function resolveUserByIdentifier(identifier: string): Promise<{ id: string
 }
 
 // ---------------------------------------------------------------------------
-// GET /api/admin/shared-labels — full shared label registry (admin-gated)
+// GET /api/admin/hub-shares — full hub share registry (admin-gated)
 // ---------------------------------------------------------------------------
 
-apiRouter.get("/api/admin/shared-labels", requireAdmin, async (req: Request, res: Response) => {
+apiRouter.get("/api/admin/hub-shares", requireAdmin, async (req: Request, res: Response) => {
   const executorId = typeof req.query["executor"] === "string" ? req.query["executor"] : undefined;
 
-  const labels = await prisma.hubPathLabel.findMany({
+  const shares = await prisma.hubShare.findMany({
     where: executorId ? { executorId } : {},
     include: { executor: { select: { id: true, host: true } } },
-    orderBy: [{ executorId: "asc" }, { label: "asc" }],
+    orderBy: [{ executorId: "asc" }, { share: "asc" }],
   });
 
   res.json({
-    data: labels.map((l) => ({
-      executor_id: l.executorId,
-      executor_host: l.executor.host,
-      label: l.label,
-      reported_path: l.reportedPath,
-      permission_blob: l.permissionBlob,
-      updated_at: l.updatedAt.toISOString(),
+    data: shares.map((s) => ({
+      executor_id: s.executorId,
+      executor_host: s.executor.host,
+      share: s.share,
+      reported_path: s.reportedPath,
+      permission_blob: s.permissionBlob,
+      updated_at: s.updatedAt.toISOString(),
     })),
   });
 });
@@ -618,7 +618,7 @@ function serializeActivityEntry(e: {
   eventType: ActivityEventType;
   host: string | null;
   tool: string | null;
-  label: string | null;
+  share: string | null;
   requestId: string | null;
   durationMs: number | null;
   errorCode: string | null;
@@ -630,7 +630,7 @@ function serializeActivityEntry(e: {
     event_type: e.eventType,
     host: e.host,
     tool: e.tool,
-    label: e.label,
+    share: e.share,
     request_id: e.requestId,
     duration_ms: e.durationMs,
     error_code: e.errorCode,

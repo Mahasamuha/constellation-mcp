@@ -9,7 +9,7 @@ import { poll } from "@constellation/shared";
 import { loadHubConfig, validateHubConfig } from "./config.js";
 import { getpwnam } from "./identity.js";
 import { runHub, sourceEnvFile } from "./index.js";
-import { checkLabelPath } from "./paths.js";
+import { checkSharePath } from "./paths.js";
 
 // ---------------------------------------------------------------------------
 // Register all hub commands
@@ -137,9 +137,9 @@ export function registerHubCommands(program: Command): void {
       const result = validateHubConfig(cfg);
       let hasError = !result.ok;
 
-      // Check label paths exist on disk and are canonical absolute paths
-      for (const label of cfg.labels) {
-        const result = await checkLabelPath(label.name, label.path);
+      // Check share paths exist on disk and are canonical absolute paths
+      for (const share of cfg.shares) {
+        const result = await checkSharePath(share.name, share.path);
         if (!result.ok) {
           console.error(`Error: ${result.error}`);
           hasError = true;
@@ -147,12 +147,12 @@ export function registerHubCommands(program: Command): void {
       }
 
       // Check context_file is readable when set and no inline instructions override it
-      for (const label of cfg.labels) {
-        if (!label.instructions && label.context_file) {
+      for (const share of cfg.shares) {
+        if (!share.instructions && share.context_file) {
           try {
-            readFileSync(label.context_file, "utf8");
+            readFileSync(share.context_file, "utf8");
           } catch (err) {
-            console.error(`Error: label '${label.name}' context_file '${label.context_file}' could not be read: ${(err as Error).message}`);
+            console.error(`Error: share '${share.name}' context_file '${share.context_file}' could not be read: ${(err as Error).message}`);
             hasError = true;
           }
         }
@@ -182,7 +182,7 @@ export function registerHubCommands(program: Command): void {
         console.log(`Config '${opts.configFile}' is valid.`);
         console.log(`  hub_name: ${cfg.hub_name}`);
         console.log(`  relay_url: ${cfg.relay_url}`);
-        console.log(`  labels: ${cfg.labels.map((l) => l.name).join(", ")}`);
+        console.log(`  shares: ${cfg.shares.map((s) => s.name).join(", ")}`);
       } else {
         process.exit(1);
       }
@@ -206,7 +206,7 @@ export function registerHubCommands(program: Command): void {
 
   hub
     .command("status")
-    .description("Show hub config and label status")
+    .description("Show hub config and share status")
     .option("--config-file <path>", `Path to hub config file (default: ${DEFAULT_HUB_CONFIG}, or $CONSTELLATION_HUB_CONFIG)`, defaultConfigPath())
     .option("--json", "Output as JSON")
     .action((opts: { configFile: string; json?: boolean }) => {
@@ -221,7 +221,7 @@ export function registerHubCommands(program: Command): void {
       const out = {
         hub_name: cfg.hub_name,
         relay_url: cfg.relay_url,
-        labels: cfg.labels.map((l) => ({ name: l.name, path: l.path, default_access: l.permissions.default })),
+        shares: cfg.shares.map((s) => ({ name: s.name, path: s.path, default_access: s.permissions.default })),
       };
 
       if (opts.json) {
@@ -229,9 +229,9 @@ export function registerHubCommands(program: Command): void {
       } else {
         console.log(`Hub name: ${out.hub_name}`);
         console.log(`Relay:    ${out.relay_url}`);
-        console.log(`Labels:`);
-        for (const l of out.labels) {
-          console.log(`  ${l.name} → ${l.path} [${l.default_access}]`);
+        console.log(`Shares:`);
+        for (const s of out.shares) {
+          console.log(`  ${s.name} → ${s.path} [${s.default_access}]`);
         }
       }
     });

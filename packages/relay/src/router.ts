@@ -22,7 +22,7 @@ export interface RouteResult {
 }
 
 export interface RouterError {
-  code: "label_not_found" | "host_not_found" | "executor_offline" | "path_filtered" | "rate_limited" | "timeout" | "cross_host";
+  code: "share_not_found" | "host_not_found" | "executor_offline" | "path_filtered" | "rate_limited" | "timeout" | "cross_host";
   message: string;
 }
 
@@ -65,44 +65,44 @@ function checkToolRateLimit(userId: string, tool: string, params: Record<string,
 }
 
 // ---------------------------------------------------------------------------
-// Label resolution
+// Share resolution
 // ---------------------------------------------------------------------------
 
 /**
- * Resolves a label (and optional host filter) to an executor and its absolute
- * path root. Checks personal labels first; falls back to shared labels.
- * Returns a RouterError if the label or host isn't found.
+ * Resolves a share (and optional host filter) to an executor and its absolute
+ * path root. Checks personal shares first; falls back to hub shares.
+ * Returns a RouterError if the share or host isn't found.
  */
-export async function resolveLabel(
+export async function resolveShare(
   userId: string,
-  label: string,
+  share: string,
   host?: string,
   userOidcSub?: string | null
 ): Promise<RouteResult | RouterError> {
-  // Personal labels (user-scoped)
+  // Personal shares (user-scoped)
   const where = host
-    ? { userId, label, executor: { host } }
-    : { userId, label };
+    ? { userId, share, executor: { host } }
+    : { userId, share };
 
-  const pathLabel = await prisma.pathLabel.findFirst({
+  const pathShare = await prisma.pathShare.findFirst({
     where,
     include: { executor: { select: { id: true, host: true, lastHeartbeatAt: true } } },
   });
 
-  if (pathLabel) {
+  if (pathShare) {
     return {
-      executorId: pathLabel.executor.id,
-      absoluteRoot: pathLabel.reportedPath,
-      host: pathLabel.executor.host,
-      lastHeartbeatAt: pathLabel.executor.lastHeartbeatAt,
+      executorId: pathShare.executor.id,
+      absoluteRoot: pathShare.reportedPath,
+      host: pathShare.executor.host,
+      lastHeartbeatAt: pathShare.executor.lastHeartbeatAt,
     };
   }
 
-  // Shared labels — optimistic relay-side permission check using synced config
-  const sharedResult = await resolveSharedLabel(label, host, userOidcSub);
-  if (sharedResult) return sharedResult;
+  // Hub shares — optimistic relay-side permission check using synced config
+  const hubResult = await resolveHubShare(share, host, userOidcSub);
+  if (hubResult) return hubResult;
 
-  // Give a specific error if the host exists but the label doesn't.
+  // Give a specific error if the host exists but the share doesn't.
   // Check both personal nodes (userId-scoped) and hubs (userId: null).
   if (host) {
     const hostExists = await prisma.executor.findFirst({
@@ -112,37 +112,37 @@ export async function resolveLabel(
       return { code: "host_not_found", message: `No host '${host}' found` };
     }
   }
-  return { code: "label_not_found", message: `No label '${label}' found` };
+  return { code: "share_not_found", message: `No share '${share}' found` };
 }
 
 /**
- * Looks up shared labels from the relay's synced registry and evaluates
+ * Looks up hub shares from the relay's synced registry and evaluates
  * optimistic access using the permission blob. Returns the route result if
- * a visible label is found, or null if not.
+ * a visible share is found, or null if not.
  *
  * This is optimistic: actual enforcement happens at the hub.
  */
-async function resolveSharedLabel(
-  label: string,
+async function resolveHubShare(
+  share: string,
   host?: string,
   userOidcSub?: string | null
 ): Promise<RouteResult | null> {
-  const sharedLabels = await prisma.hubPathLabel.findMany({
+  const hubShares = await prisma.hubShare.findMany({
     where: {
-      label,
+      share,
       ...(host ? { executor: { host } } : {}),
     },
     include: { executor: { select: { id: true, host: true, lastHeartbeatAt: true } } },
   });
 
-  for (const sl of sharedLabels) {
-    const access = evaluatePermissionBlob(sl.permissionBlob as unknown as PermissionBlob, userOidcSub);
+  for (const hs of hubShares) {
+    const access = evaluatePermissionBlob(hs.permissionBlob as unknown as PermissionBlob, userOidcSub);
     if (access !== "none") {
       return {
-        executorId: sl.executor.id,
-        absoluteRoot: sl.reportedPath,
-        host: sl.executor.host,
-        lastHeartbeatAt: sl.executor.lastHeartbeatAt,
+        executorId: hs.executor.id,
+        absoluteRoot: hs.reportedPath,
+        host: hs.executor.host,
+        lastHeartbeatAt: hs.executor.lastHeartbeatAt,
       };
     }
   }
@@ -204,7 +204,7 @@ export interface DispatchResult {
 }
 
 /**
- * Full routing pipeline: rate check → label resolution → filter check →
+ * Full routing pipeline: rate check → share resolution → filter check →
  * liveness check → RPC forward → result.
  */
 /** Removes expired sliding-window entries. Called periodically from index.ts. */
@@ -226,7 +226,7 @@ export function pruneRateLimits(): void {
 export async function routeToolCall(
   userId: string,
   tool: string,
-  label: string,
+  share: string,
   params: ToolParams,
   host?: string,
   userOidcSub?: string | null,
@@ -236,25 +236,25 @@ export async function routeToolCall(
   const requestId = randomBytes(16).toString("hex");
 
   if (!checkToolRateLimit(userId, tool, params)) {
-    logEvent({ userId, eventType: "rate_limited", tool, label, requestId });
+    logEvent({ userId, eventType: "rate_limited", tool, share, requestId });
     return { code: "rate_limited", message: "Rate limit exceeded. Please slow down." };
   }
 
-  const resolved = await resolveLabel(userId, label, host, userOidcSub);
+  const resolved = await resolveShare(userId, share, host, userOidcSub);
   if ("code" in resolved) return resolved;
 
   const { executorId, absoluteRoot, host: executorHost, lastHeartbeatAt } = resolved;
 
-  // For copy/move with dst_label: resolve the destination label and inject dst_root.
+  // For copy/move with dst_share: resolve the destination share and inject dst_root.
   let effectiveParams = params;
-  if ((tool === "copy" || tool === "move") && typeof params["dst_label"] === "string") {
-    const dstLabel = params["dst_label"];
-    const dstResolved = await resolveLabel(userId, dstLabel, undefined, userOidcSub);
+  if ((tool === "copy" || tool === "move") && typeof params["dst_share"] === "string") {
+    const dstShare = params["dst_share"];
+    const dstResolved = await resolveShare(userId, dstShare, undefined, userOidcSub);
     if ("code" in dstResolved) return dstResolved;
     if (dstResolved.executorId !== executorId) {
       return {
         code: "cross_host",
-        message: `'${label}' is on '${executorHost}' and '${dstLabel}' is on '${dstResolved.host}' — cross-host move/copy is not supported`,
+        message: `'${share}' is on '${executorHost}' and '${dstShare}' is on '${dstResolved.host}' — cross-host move/copy is not supported`,
       };
     }
     effectiveParams = { ...params, dst_root: dstResolved.absoluteRoot };
@@ -283,10 +283,10 @@ export async function routeToolCall(
 
   if (!getConnection(executorId)) {
     const lastSeen = lastHeartbeatAt ? formatRelativeTime(lastHeartbeatAt) : "never";
-    logEvent({ userId, eventType: "tool_error", host: executorHost, tool, label, requestId, errorCode: "executor_offline" });
+    logEvent({ userId, eventType: "tool_error", host: executorHost, tool, share, requestId, errorCode: "executor_offline" });
     return {
       code: "executor_offline",
-      message: `'${label}' is on '${executorHost}', which was last seen ${lastSeen}`,
+      message: `'${share}' is on '${executorHost}', which was last seen ${lastSeen}`,
     };
   }
 
@@ -301,14 +301,14 @@ export async function routeToolCall(
   const envelope: RpcEnvelope = {
     request_id: requestId,
     tool,
-    label,
+    share,
     absolute_root: absoluteRoot,
     user_oidc_sub: userOidcSub ?? null,
     user_claims: filteredClaims,
     ...effectiveParams,
   };
 
-  log.info({ userId, executorId, tool, label, requestId }, "Dispatching RPC");
+  log.info({ userId, executorId, tool, share, requestId }, "Dispatching RPC");
 
   try {
     const response = await dispatchRpc(executorId, envelope);
@@ -321,7 +321,7 @@ export async function routeToolCall(
         eventType: "tool_call",
         host: executorHost,
         tool,
-        label,
+        share,
         requestId,
         durationMs,
         errorCode: response.error.code ?? "rpc_error",
@@ -329,19 +329,19 @@ export async function routeToolCall(
       });
     } else {
       log.info({ userId, executorId, tool, requestId }, "RPC completed");
-      logEvent({ userId, eventType: "tool_call", host: executorHost, tool, label, requestId, durationMs });
+      logEvent({ userId, eventType: "tool_call", host: executorHost, tool, share, requestId, durationMs });
     }
 
     return { result: response.result, error: response.error };
   } catch (err) {
     if (err instanceof Error && err.message === "executor_disconnected") {
       log.warn({ userId, executorId, tool, requestId }, "RPC failed — executor disconnected");
-      logEvent({ userId, eventType: "tool_error", host: executorHost, tool, label, requestId, errorCode: "executor_disconnected" });
+      logEvent({ userId, eventType: "tool_error", host: executorHost, tool, share, requestId, errorCode: "executor_disconnected" });
       return { code: "executor_offline", message: `'${executorHost}' disconnected before responding` };
     }
     if (err instanceof Error && err.message === "timeout") {
       log.warn({ userId, executorId, tool, requestId }, "RPC timed out");
-      logEvent({ userId, eventType: "tool_error", host: executorHost, tool, label, requestId, errorCode: "timeout" });
+      logEvent({ userId, eventType: "tool_error", host: executorHost, tool, share, requestId, errorCode: "timeout" });
       return { code: "timeout", message: `No response from '${executorHost}' within ${timeoutMs / 1000}s` };
     }
     throw err;

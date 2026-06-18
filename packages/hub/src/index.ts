@@ -1,7 +1,7 @@
-import { checkLabelPath } from "./paths.js";
+import { checkSharePath } from "./paths.js";
 import { readFileSync, writeFileSync, statSync } from "node:fs";
 import { userInfo } from "node:os";
-import { createLogger, MAX_LABEL_INSTRUCTIONS_LENGTH, RelaySocket, type RpcEnvelope } from "@constellation/shared";
+import { createLogger, MAX_SHARE_INSTRUCTIONS_LENGTH, RelaySocket, type RpcEnvelope } from "@constellation/shared";
 import { loadHubConfig, validateHubConfig, type HubConfig } from "./config.js";
 import { resolveIdentity, isIdentityError } from "./identity.js";
 import { checkRpcPermission, buildPermissionBlob } from "./permissions.js";
@@ -47,36 +47,36 @@ export function sourceEnvFile(path: string): void {
 }
 
 // ---------------------------------------------------------------------------
-// Label sync payload
+// Hub share sync payload
 // ---------------------------------------------------------------------------
 
-function buildLabelSyncPayload(cfg: HubConfig, labelRegistry: Record<string, string>): object {
+function buildHubShareSyncPayload(cfg: HubConfig, shareRegistry: Record<string, string>): object {
   return {
-    type: "shared_label_sync",
-    labels: cfg.labels
-      .filter((l) => labelRegistry[l.name] !== undefined)
-      .map((l) => {
+    type: "hub_share_sync",
+    shares: cfg.shares
+      .filter((s) => shareRegistry[s.name] !== undefined)
+      .map((s) => {
         const entry: { name: string; reported_path: string; permission_blob: object; instructions?: string } = {
-          name: l.name,
-          reported_path: labelRegistry[l.name]!,
-          permission_blob: buildPermissionBlob(l),
+          name: s.name,
+          reported_path: shareRegistry[s.name]!,
+          permission_blob: buildPermissionBlob(s),
         };
 
         let instructions: string | undefined;
-        if (l.instructions) {
-          instructions = l.instructions;
-        } else if (l.context_file) {
+        if (s.instructions) {
+          instructions = s.instructions;
+        } else if (s.context_file) {
           try {
-            instructions = readFileSync(l.context_file, "utf8");
+            instructions = readFileSync(s.context_file, "utf8");
           } catch {
-            log.info({ label: l.name, context_file: l.context_file }, "context_file is set but could not be read — omitting instructions");
+            log.info({ share: s.name, context_file: s.context_file }, "context_file is set but could not be read — omitting instructions");
           }
         }
 
         if (instructions !== undefined) {
-          if (instructions.length > MAX_LABEL_INSTRUCTIONS_LENGTH) {
+          if (instructions.length > MAX_SHARE_INSTRUCTIONS_LENGTH) {
             log.warn(
-              { label: l.name, length: instructions.length, max: MAX_LABEL_INSTRUCTIONS_LENGTH },
+              { share: s.name, length: instructions.length, max: MAX_SHARE_INSTRUCTIONS_LENGTH },
               "instructions exceeds maximum length — dropping"
             );
           } else {
@@ -96,7 +96,7 @@ function buildLabelSyncPayload(cfg: HubConfig, labelRegistry: Record<string, str
  * Relay connection for the hub. Extends RelaySocket — see that module for the
  * connection lifecycle (reconnect/backoff, ping/pong, ws:// guard) shared
  * with the personal node's connection. This class adds what's specific to
- * the hub modality: label sync on connect, resolving each RPC to an OS
+ * the hub modality: share sync on connect, resolving each RPC to an OS
  * identity, permission checks, subnode dispatch, audit logging, and
  * graceful drain-on-shutdown.
  */
@@ -106,7 +106,7 @@ class HubSocket extends RelaySocket {
   constructor(
     private readonly cfg: HubConfig,
     private readonly hubToken: string,
-    private readonly labelRegistry: Record<string, string>,
+    private readonly shareRegistry: Record<string, string>,
     private readonly pool: SubnodePool
   ) {
     super({ logModule: "hub", path: "/executor/connect" });
@@ -122,7 +122,7 @@ class HubSocket extends RelaySocket {
 
   protected onOpen(): void {
     this.log.info({ hubName: this.cfg.hub_name }, "Connected to relay");
-    this.send(buildLabelSyncPayload(this.cfg, this.labelRegistry));
+    this.send(buildHubShareSyncPayload(this.cfg, this.shareRegistry));
   }
 
   protected onMessage(msg: Record<string, unknown>): void {
@@ -163,13 +163,13 @@ class HubSocket extends RelaySocket {
       return;
     }
 
-    if (type === "shared_label_sync_ok") {
-      this.log.info("Relay acknowledged label sync");
+    if (type === "hub_share_sync_ok") {
+      this.log.info("Relay acknowledged share sync");
       return;
     }
 
-    if (type === "shared_label_sync_error") {
-      this.log.warn({ error: msg["error"] }, "Relay returned error for label sync");
+    if (type === "hub_share_sync_error") {
+      this.log.warn({ error: msg["error"] }, "Relay returned error for share sync");
       return;
     }
 
@@ -187,20 +187,20 @@ class HubSocket extends RelaySocket {
     const userClaims = (envelope["user_claims"] !== null && typeof envelope["user_claims"] === "object"
       ? envelope["user_claims"]
       : {}) as Record<string, unknown>;
-    const label = typeof envelope["label"] === "string" ? envelope["label"] : guessLabel(envelope.absolute_root, this.labelRegistry);
+    const share = typeof envelope["share"] === "string" ? envelope["share"] : guessShare(envelope.absolute_root, this.shareRegistry);
 
     // Resolve OS identity
     const identity = await resolveIdentity(userClaims, userOidcSub, this.cfg.identity);
 
     if (isIdentityError(identity)) {
-      this.log.warn({ request_id, tool, label, error: identity.message }, "Identity resolution failed");
+      this.log.warn({ request_id, tool, share, error: identity.message }, "Identity resolution failed");
       writeAuditEntry(this.cfg.audit_log, {
         ts: new Date().toISOString(),
         hub_name: this.cfg.hub_name,
         request_id,
         user_oidc_sub: userOidcSub,
         local_username: null,
-        label,
+        share,
         tool,
         outcome: "identity_error",
         error: identity.message,
@@ -208,34 +208,34 @@ class HubSocket extends RelaySocket {
       return { request_id, error: { message: identity.message } };
     }
 
-    // Check permissions — for cross-label copy/move, dst_label is checked too.
-    const dstLabel = (tool === "copy" || tool === "move") && typeof envelope["dst_label"] === "string"
-      ? envelope["dst_label"]
+    // Check permissions — for cross-share copy/move, dst_share is checked too.
+    const dstShare = (tool === "copy" || tool === "move") && typeof envelope["dst_share"] === "string"
+      ? envelope["dst_share"]
       : null;
-    const permission = checkRpcPermission(userOidcSub, label, dstLabel, tool, this.cfg.labels);
+    const permission = checkRpcPermission(userOidcSub, share, dstShare, tool, this.cfg.shares);
     if (!permission.permitted) {
-      return this.permissionDenied(request_id, tool, permission.label, userOidcSub, identity.username, permission.reason);
+      return this.permissionDenied(request_id, tool, permission.share, userOidcSub, identity.username, permission.reason);
     }
 
     // Build tool params from the envelope, excluding all relay-routing fields.
     // Named exclusion keeps this explicit — new routing fields must be listed here.
-    const ROUTING_FIELDS = new Set(["request_id", "tool", "absolute_root", "user_oidc_sub", "user_claims", "label"]);
+    const ROUTING_FIELDS = new Set(["request_id", "tool", "absolute_root", "user_oidc_sub", "user_claims", "share"]);
     const params: Record<string, unknown> = Object.fromEntries(
       Object.entries(envelope).filter(([k]) => !ROUTING_FIELDS.has(k))
     );
 
     // Dispatch to subnode
-    const dispatchResult = await this.pool.dispatch(identity, tool, label, params, request_id);
+    const dispatchResult = await this.pool.dispatch(identity, tool, share, params, request_id);
 
     if (isDispatchError(dispatchResult)) {
-      this.log.warn({ request_id, tool, label, username: identity.username, error: dispatchResult.message }, "Subnode dispatch failed");
+      this.log.warn({ request_id, tool, share, username: identity.username, error: dispatchResult.message }, "Subnode dispatch failed");
       writeAuditEntry(this.cfg.audit_log, {
         ts: new Date().toISOString(),
         hub_name: this.cfg.hub_name,
         request_id,
         user_oidc_sub: userOidcSub,
         local_username: identity.username,
-        label,
+        share,
         tool,
         outcome: "exec_error",
         error: dispatchResult.message,
@@ -256,7 +256,7 @@ class HubSocket extends RelaySocket {
       request_id,
       user_oidc_sub: userOidcSub,
       local_username: identity.username,
-      label,
+      share,
       tool,
       outcome,
       error: errorMsg,
@@ -268,23 +268,23 @@ class HubSocket extends RelaySocket {
     return { request_id, result: dispatchResult.result };
   }
 
-  /** Logs, audits, and builds the error response for a denied permission check on the given label. */
+  /** Logs, audits, and builds the error response for a denied permission check on the given share. */
   private permissionDenied(
     request_id: string,
     tool: string,
-    label: string,
+    share: string,
     userOidcSub: string | null,
     username: string,
     reason: string
   ): object {
-    this.log.info({ request_id, tool, label, username, reason }, "Permission denied");
+    this.log.info({ request_id, tool, share, username, reason }, "Permission denied");
     writeAuditEntry(this.cfg.audit_log, {
       ts: new Date().toISOString(),
       hub_name: this.cfg.hub_name,
       request_id,
       user_oidc_sub: userOidcSub,
       local_username: username,
-      label,
+      share,
       tool,
       outcome: "permission_denied",
       error: reason,
@@ -353,23 +353,23 @@ export async function runHub(configPath: string): Promise<void> {
     process.exit(1);
   }
 
-  // Resolve label paths via realpath (config load-time)
-  const labelRegistry: Record<string, string> = {};
-  for (const label of cfg.labels) {
-    const result = await checkLabelPath(label.name, label.path);
+  // Resolve share paths via realpath (config load-time)
+  const shareRegistry: Record<string, string> = {};
+  for (const share of cfg.shares) {
+    const result = await checkSharePath(share.name, share.path);
     if (!result.ok) {
-      log.error({ label: label.name, path: label.path }, result.error + " — skipping");
+      log.error({ share: share.name, path: share.path }, result.error + " — skipping");
       continue;
     }
-    labelRegistry[label.name] = result.resolved;
+    shareRegistry[share.name] = result.resolved;
   }
 
-  if (Object.keys(labelRegistry).length === 0) {
-    log.warn("No label paths could be resolved — hub will start but cannot serve any labels");
+  if (Object.keys(shareRegistry).length === 0) {
+    log.warn("No share paths could be resolved — hub will start but cannot serve any shares");
   }
 
-  const pool = new SubnodePool(cfg, labelRegistry);
-  const socket = new HubSocket(cfg, hubToken, labelRegistry, pool);
+  const pool = new SubnodePool(cfg, shareRegistry);
+  const socket = new HubSocket(cfg, hubToken, shareRegistry, pool);
 
   process.on("SIGTERM", () => {
     socket.shutdown().then(() => process.exit(0)).catch(() => process.exit(1));
@@ -379,15 +379,15 @@ export async function runHub(configPath: string): Promise<void> {
   });
 
   socket.start();
-  log.info({ hubName: cfg.hub_name, labels: Object.keys(labelRegistry) }, "Hub started");
+  log.info({ hubName: cfg.hub_name, shares: Object.keys(shareRegistry) }, "Hub started");
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Reverse-map absolute_root to label name when label field not in envelope */
-function guessLabel(absoluteRoot: string, registry: Record<string, string>): string {
+/** Reverse-map absolute_root to share name when share field not in envelope */
+function guessShare(absoluteRoot: string, registry: Record<string, string>): string {
   for (const [name, path] of Object.entries(registry)) {
     if (path === absoluteRoot) return name;
   }

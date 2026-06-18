@@ -180,22 +180,22 @@ Managed by `constellation node paths add/remove`, or edited manually followed by
 
 ```yaml
 paths:
-  - label: projects
+  - share: projects
     path: /home/user/projects
     instructions: "Active client work — prefer the latest dated subfolder."
-  - label: dotfiles
+  - share: dotfiles
     path: /home/user/.config
     context_file: /home/user/.config/README.md
 ```
 
 | Field | Description |
 |---|---|
-| `label` | Unique name for this path across all agents on your account. Used as the routing key in MCP tool calls. |
+| `share` | Unique name for this path across all agents on your account. Used as the routing key in MCP tool calls. |
 | `path` | Absolute path that exists on this machine. |
-| `instructions` | Optional. Inline text surfaced to MCP clients as `instructions` on the label (via `list_labels`) — useful for describing the label's purpose or conventions. Takes precedence over `context_file` when both are set. Hard-capped at 500 characters; longer values are dropped (logged as a warning on the node) rather than truncated. **Recommended to stay under 250 characters** — this is meant to give a model light context or framing for the label, not to document it or serve as a heavy instruction set. Can also be set from the node GUI's Paths screen, or via `constellation node paths add --instructions <text>`. |
+| `instructions` | Optional. Inline text surfaced to MCP clients as `instructions` on the share (via `list_shares`) — useful for describing the share's purpose or conventions. Takes precedence over `context_file` when both are set. Hard-capped at 500 characters; longer values are dropped (logged as a warning on the node) rather than truncated. **Recommended to stay under 250 characters** — this is meant to give a model light context or framing for the share, not to document it or serve as a heavy instruction set. Can also be set from the node GUI's Paths screen, or via `constellation node paths add --instructions <text>`. |
 | `context_file` | Optional. Absolute path to a text/markdown file whose contents are read at sync time and used as `instructions` (subject to the same 500-character hard cap and 250-character recommendation) when no inline `instructions` is set. Not required to live within `path`. If missing or unreadable at sync time, `instructions` is omitted for that sync (logged at info level on the node) rather than causing an error. |
 
-Labels must be unique per account — two agents on the same account cannot share a label name.
+Shares must be unique per account — two agents on the same account cannot use the same share name.
 
 ### `relay-session.yaml`
 
@@ -245,6 +245,6 @@ The CLI silently refreshes the access token on expiry if a refresh token is pres
 | Flag | Commands | Description |
 |---|---|---|
 | `--relay <url>` | `login` | Relay URL to authenticate against. Defaults to `relay_url` from `node.yaml`. |
-| `--json` | `executors list`, `labels list`, `filters list`, `sessions list`, `users list` | Emit machine-readable JSON output. |
-| `--executor <id>` | `labels list`, `filters add` | Filter results or scope a filter to a specific executor ID. |
+| `--json` | `executors list`, `shares list`, `filters list`, `sessions list`, `users list` | Emit machine-readable JSON output. |
+| `--executor <id>` | `shares list`, `filters add` | Filter results or scope a filter to a specific executor ID. |
 | `--type glob\|regex` | `filters add` | Pattern type for a new deny filter. Default: `glob`. |

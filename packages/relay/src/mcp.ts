@@ -28,14 +28,14 @@ const HostEntry = {
   host: z.string(),
   online: z.boolean(),
   last_seen: z.string().nullable(),
-  labels: z.array(z.string()),
+  shares: z.array(z.string()),
 };
 
-const LabelEntry = {
-  label: z.string(),
+const ShareEntry = {
+  share: z.string(),
   host: z.string(),
   instructions: z.string().nullable(),
-  modality: z.enum(["personal", "shared"]),
+  modality: z.enum(["personal", "hub"]),
   access: z.string(),
 };
 
@@ -79,7 +79,7 @@ const OkOutput = { ok: z.literal(true) };
 const EditFileOutput = { diff: z.string() };
 
 const OpenFileBrowserOutput = {
-  label: z.string().nullable(),
+  share: z.string().nullable(),
   path: z.string().nullable(),
 };
 
@@ -152,7 +152,7 @@ export function buildMcpServer(): McpServer {
   const server = new McpServer({ name: "constellation", version, icons: [CONSTELLATION_ICON] });
 
   registerListHosts(server);
-  registerListLabels(server);
+  registerListShares(server);
   registerOpenFileBrowser(server);
   registerFileBrowserResource(server);
   registerListDirectory(server);
@@ -214,11 +214,11 @@ function toolError(message: string): never {
 async function dispatch(
   id: UserIdentity,
   tool: string,
-  label: string,
+  share: string,
   params: Record<string, unknown>,
   host?: string
 ): Promise<ToolResult<Record<string, unknown>>> {
-  const result = await routeToolCall(id.userId, tool, label, params, host, id.userOidcSub, id.userClaims);
+  const result = await routeToolCall(id.userId, tool, share, params, host, id.userOidcSub, id.userClaims);
   if (isRouterError(result)) toolError(result.message);
   if (result.error) toolError(result.error.message);
   return ok(result.result as Record<string, unknown>);
@@ -233,7 +233,7 @@ function registerListHosts(server: McpServer): void {
     "list_hosts",
     {
       title: "List Hosts",
-      description: "List all registered hosts with liveness status and their labels",
+      description: "List all registered hosts with liveness status and their shares",
       outputSchema: { hosts: z.array(z.object(HostEntry)) },
       annotations: { readOnlyHint: true },
       _meta: VISIBLE_TO_MODEL_ONLY,
@@ -241,29 +241,29 @@ function registerListHosts(server: McpServer): void {
     async (extra) => {
       const { userId, userOidcSub } = identity(extra);
 
-      const [nodeExecutors, sharedLabels] = await Promise.all([
+      const [nodeExecutors, hubShares] = await Promise.all([
         prisma.executor.findMany({
           where: { userId },
-          include: { pathLabels: { select: { label: true } } },
+          include: { pathShares: { select: { share: true } } },
         }),
-        prisma.hubPathLabel.findMany({
+        prisma.hubShare.findMany({
           include: { executor: { select: { id: true, host: true, lastHeartbeatAt: true } } },
         }),
       ]);
 
-      // Group accessible shared labels by executor
-      const hubExecutorMap = new Map<string, { host: string; lastHeartbeatAt: Date | null; labels: string[] }>();
-      for (const sl of sharedLabels) {
-        const blob = sl.permissionBlob as { default: string; overrides?: Array<{ oidc_sub: string; access: string }> };
+      // Group accessible hub shares by executor
+      const hubExecutorMap = new Map<string, { host: string; lastHeartbeatAt: Date | null; shares: string[] }>();
+      for (const hs of hubShares) {
+        const blob = hs.permissionBlob as { default: string; overrides?: Array<{ oidc_sub: string; access: string }> };
         if (evaluatePermissionBlob(blob, userOidcSub) === "none") continue;
-        const entry = hubExecutorMap.get(sl.executorId);
+        const entry = hubExecutorMap.get(hs.executorId);
         if (entry) {
-          entry.labels.push(sl.label);
+          entry.shares.push(hs.share);
         } else {
-          hubExecutorMap.set(sl.executorId, {
-            host: sl.executor.host,
-            lastHeartbeatAt: sl.executor.lastHeartbeatAt,
-            labels: [sl.label],
+          hubExecutorMap.set(hs.executorId, {
+            host: hs.executor.host,
+            lastHeartbeatAt: hs.executor.lastHeartbeatAt,
+            shares: [hs.share],
           });
         }
       }
@@ -274,13 +274,13 @@ function registerListHosts(server: McpServer): void {
             host: a.host,
             online: isOnline(a.lastHeartbeatAt),
             last_seen: a.lastHeartbeatAt?.toISOString() ?? null,
-            labels: a.pathLabels.map((pl) => pl.label),
+            shares: a.pathShares.map((ps) => ps.share),
           })),
           ...[...hubExecutorMap.values()].map((a) => ({
             host: a.host,
             online: isOnline(a.lastHeartbeatAt),
             last_seen: a.lastHeartbeatAt?.toISOString() ?? null,
-            labels: a.labels,
+            shares: a.shares,
           })),
         ],
       });
@@ -289,64 +289,64 @@ function registerListHosts(server: McpServer): void {
 }
 
 // ---------------------------------------------------------------------------
-// list_labels
+// list_shares
 // ---------------------------------------------------------------------------
 
-function registerListLabels(server: McpServer): void {
+function registerListShares(server: McpServer): void {
   server.registerTool(
-    "list_labels",
+    "list_shares",
     {
-      title: "List Labels",
-      description: "List path labels — personal labels you own and shared labels you have access to. Shared label access is evaluated optimistically and may be further restricted by the executor.",
+      title: "List Shares",
+      description: "List path shares — personal shares you own and hub shares you have access to. Hub share access is evaluated optimistically and may be further restricted by the executor.",
       inputSchema: { host: z.string().optional() },
-      outputSchema: { labels: z.array(z.object(LabelEntry)) },
+      outputSchema: { shares: z.array(z.object(ShareEntry)) },
       annotations: { readOnlyHint: true },
       _meta: VISIBLE_TO_MODEL_AND_APP,
     },
     async ({ host }, extra) => {
       const { userId, userOidcSub } = identity(extra);
 
-      const [personalLabels, sharedLabels] = await Promise.all([
-        prisma.pathLabel.findMany({
+      const [personalShares, hubShares] = await Promise.all([
+        prisma.pathShare.findMany({
           where: { userId, ...(host ? { executor: { host } } : {}) },
           include: { executor: { select: { host: true } } },
         }),
-        prisma.hubPathLabel.findMany({
+        prisma.hubShare.findMany({
           where: host ? { executor: { host } } : {},
           include: { executor: { select: { host: true } } },
         }),
       ]);
 
-      const labels: Array<{
-        label: string;
+      const shares: Array<{
+        share: string;
         host: string;
         instructions: string | null;
-        modality: "personal" | "shared";
+        modality: "personal" | "hub";
         access: string;
-      }> = personalLabels.map((l) => ({
-        label: l.label,
-        host: l.executor.host,
-        instructions: l.instructions,
+      }> = personalShares.map((s) => ({
+        share: s.share,
+        host: s.executor.host,
+        instructions: s.instructions,
         modality: "personal",
         access: "read-write",
       }));
 
-      for (const l of sharedLabels) {
-        const blob = l.permissionBlob as { default: string; overrides?: Array<{ oidc_sub: string; access: string }> };
+      for (const s of hubShares) {
+        const blob = s.permissionBlob as { default: string; overrides?: Array<{ oidc_sub: string; access: string }> };
         const access = evaluatePermissionBlob(blob, userOidcSub);
         if (access === "none") continue;
-        labels.push({
-          label: l.label,
-          host: l.executor.host,
-          instructions: l.instructions,
-          modality: "shared",
+        shares.push({
+          share: s.share,
+          host: s.executor.host,
+          instructions: s.instructions,
+          modality: "hub",
           access,
         });
       }
 
-      labels.sort((a, b) => a.label.localeCompare(b.label));
+      shares.sort((a, b) => a.share.localeCompare(b.share));
 
-      return ok({ labels });
+      return ok({ shares });
     }
   );
 }
@@ -360,9 +360,9 @@ function registerOpenFileBrowser(server: McpServer): void {
     "open_file_browser",
     {
       title: "Open File Browser",
-      description: "Opens an interactive file browser for the given label. Use to let the user navigate, view, and edit files inline.",
+      description: "Opens an interactive file browser for the given share. Use to let the user navigate, view, and edit files inline.",
       inputSchema: {
-        label: z.string().optional(),
+        share: z.string().optional(),
         path: z.string().optional(),
       },
       outputSchema: OpenFileBrowserOutput,
@@ -374,16 +374,16 @@ function registerOpenFileBrowser(server: McpServer): void {
         },
       },
     },
-    async ({ label, path }, extra) => {
-      if (!label) return ok({ label: null, path: null });
+    async ({ share, path }, extra) => {
+      if (!share) return ok({ share: null, path: null });
 
-      const listing = await dispatch(identity(extra), "list_directory", label, path ? { relative_path: path } : {});
+      const listing = await dispatch(identity(extra), "list_directory", share, path ? { relative_path: path } : {});
       return {
         content: [
-          { type: "text", text: `Opened file browser for label "${label}"${path ? ` at ${path}` : ""}.` },
+          { type: "text", text: `Opened file browser for share "${share}"${path ? ` at ${path}` : ""}.` },
           ...listing.content,
         ],
-        structuredContent: { label, path: path ?? null },
+        structuredContent: { share, path: path ?? null },
       };
     }
   );
@@ -409,7 +409,7 @@ function registerFileBrowserResource(server: McpServer): void {
     "ui://constellation/file-browser",
     {
       title: "Constellation File Browser",
-      description: "Interactive file browser UI for browsing and editing files within Constellation labels",
+      description: "Interactive file browser UI for browsing and editing files within Constellation shares",
       mimeType: "text/html;profile=mcp-app",
       icons: [CONSTELLATION_ICON],
       _meta: {
@@ -441,7 +441,7 @@ function registerListDirectory(server: McpServer): void {
       title: "List Directory",
       description: "Enumerate directory contents — names, types, and sizes. Use to understand folder structure or browse what files exist in a directory. Returns entries for all items in the directory, not a single path's metadata. Use recursive:true with exclude:[\"node_modules\",\".git\"] for repo trees.",
       inputSchema: {
-        label: z.string(),
+        share: z.string(),
         relative_path: z.string().optional(),
         recursive: z.boolean().optional(),
         max_depth: z.number().int().optional(),
@@ -453,7 +453,7 @@ function registerListDirectory(server: McpServer): void {
       annotations: { readOnlyHint: true, openWorldHint: true },
       _meta: VISIBLE_TO_MODEL_AND_APP,
     },
-    async ({ label, host, ...params }, extra) => dispatch(identity(extra), "list_directory", label, params, host)
+    async ({ share, host, ...params }, extra) => dispatch(identity(extra), "list_directory", share, params, host)
   );
 }
 
@@ -468,7 +468,7 @@ function registerFileInfo(server: McpServer): void {
       title: "File Info",
       description: "Returns metadata (size, mtime, type) for a single path. Use when you need to check if a path exists, its size, or whether it is a file vs directory — without reading its contents. Single path only — does not enumerate directory contents.",
       inputSchema: {
-        label: z.string(),
+        share: z.string(),
         relative_path: z.string(),
         host: z.string().optional(),
       },
@@ -476,7 +476,7 @@ function registerFileInfo(server: McpServer): void {
       annotations: { readOnlyHint: true, openWorldHint: true },
       _meta: VISIBLE_TO_MODEL_AND_APP,
     },
-    async ({ label, host, ...params }, extra) => dispatch(identity(extra), "file_info", label, params, host)
+    async ({ share, host, ...params }, extra) => dispatch(identity(extra), "file_info", share, params, host)
   );
 }
 
@@ -491,7 +491,7 @@ function registerFindFiles(server: McpServer): void {
       title: "Find Files",
       description: "Find files by name using glob or regex. Use when you know part of a filename or extension. Matches filenames and paths only — does not read or search file contents. type:\"glob\" (default, micromatch syntax) or \"regex\". Capped at 200 results.",
       inputSchema: {
-        label: z.string(),
+        share: z.string(),
         pattern: z.string(),
         relative_path: z.string().optional(),
         type: z.enum(["glob", "regex"]).optional(),
@@ -501,7 +501,7 @@ function registerFindFiles(server: McpServer): void {
       annotations: { readOnlyHint: true, openWorldHint: true },
       _meta: VISIBLE_TO_MODEL_AND_APP,
     },
-    async ({ label, host, ...params }, extra) => dispatch(identity(extra), "find_files", label, params, host)
+    async ({ share, host, ...params }, extra) => dispatch(identity(extra), "find_files", share, params, host)
   );
 }
 
@@ -516,7 +516,7 @@ function registerReadFile(server: McpServer): void {
       title: "Read File",
       description: "Read the full content of a file, or a specific line range. Includes total_lines. Files that exceed the size cap return an error with total_lines — retry with start_line/end_line to page through the content. Does not search for text within files.",
       inputSchema: {
-        label: z.string(),
+        share: z.string(),
         relative_path: z.string(),
         start_line: z.number().int().optional(),
         end_line: z.number().int().optional(),
@@ -526,7 +526,7 @@ function registerReadFile(server: McpServer): void {
       annotations: { readOnlyHint: true, openWorldHint: true },
       _meta: VISIBLE_TO_MODEL_AND_APP,
     },
-    async ({ label, host, ...params }, extra) => dispatch(identity(extra), "read_file", label, params, host)
+    async ({ share, host, ...params }, extra) => dispatch(identity(extra), "read_file", share, params, host)
   );
 }
 
@@ -541,7 +541,7 @@ function registerGrepFiles(server: McpServer): void {
       title: "Search File Contents",
       description: "Search file contents for a literal string or regex pattern. Use to find which files contain specific text. Does not match on filenames or paths — only file contents. relative_path can be a file or directory; file_glob (e.g. \"*.ts\") scopes recursive search. Results grouped by file, capped at 50 matches and 100KB.",
       inputSchema: {
-        label: z.string(),
+        share: z.string(),
         pattern: z.string(),
         relative_path: z.string().optional(),
         file_glob: z.string().optional(),
@@ -552,7 +552,7 @@ function registerGrepFiles(server: McpServer): void {
       annotations: { readOnlyHint: true, openWorldHint: true },
       _meta: VISIBLE_TO_MODEL_AND_APP,
     },
-    async ({ label, host, ...params }, extra) => dispatch(identity(extra), "grep_files", label, params, host)
+    async ({ share, host, ...params }, extra) => dispatch(identity(extra), "grep_files", share, params, host)
   );
 }
 
@@ -567,7 +567,7 @@ function registerWriteFile(server: McpServer): void {
       title: "Write File",
       description: "Write content to a file. Replaces the entire file by default — does not support partial edits or targeted text substitutions. mode:\"overwrite\" (default) replaces the file; \"append\" adds to it.",
       inputSchema: {
-        label: z.string(),
+        share: z.string(),
         relative_path: z.string(),
         content: z.string(),
         mode: z.enum(["overwrite", "append"]).optional(),
@@ -577,7 +577,7 @@ function registerWriteFile(server: McpServer): void {
       annotations: { idempotentHint: true, destructiveHint: true, openWorldHint: true },
       _meta: VISIBLE_TO_MODEL_AND_APP,
     },
-    async ({ label, host, ...params }, extra) => dispatch(identity(extra), "write_file", label, params, host)
+    async ({ share, host, ...params }, extra) => dispatch(identity(extra), "write_file", share, params, host)
   );
 }
 
@@ -592,7 +592,7 @@ function registerEditFile(server: McpServer): void {
       title: "Edit File",
       description: "Apply a list of exact-match text substitutions to an existing file. Modifies specific text in place — does not replace the entire file. Each old_text must match exactly once — zero or multiple matches abort with edit_index and match_count. All edits validated before any write. dry_run:true returns the diff without writing.",
       inputSchema: {
-        label: z.string(),
+        share: z.string(),
         relative_path: z.string(),
         edits: z.array(z.object({ old_text: z.string(), new_text: z.string() })),
         dry_run: z.boolean().optional(),
@@ -602,7 +602,7 @@ function registerEditFile(server: McpServer): void {
       annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: true },
       _meta: VISIBLE_TO_MODEL_ONLY,
     },
-    async ({ label, host, ...params }, extra) => dispatch(identity(extra), "edit_file", label, params, host)
+    async ({ share, host, ...params }, extra) => dispatch(identity(extra), "edit_file", share, params, host)
   );
 }
 
@@ -615,19 +615,19 @@ function registerCopy(server: McpServer): void {
     "copy",
     {
       title: "Copy",
-      description: "Copy a file or directory within a label root. Leaves the source intact — does not remove or rename it. dst_label enables cross-label copy on the same host. Fails if the destination already exists.",
+      description: "Copy a file or directory within a share root. Leaves the source intact — does not remove or rename it. dst_share enables cross-share copy on the same host. Fails if the destination already exists.",
       inputSchema: {
-        label: z.string(),
+        share: z.string(),
         src_relative_path: z.string(),
         dst_relative_path: z.string(),
-        dst_label: z.string().optional(),
+        dst_share: z.string().optional(),
         host: z.string().optional(),
       },
       outputSchema: OkOutput,
       annotations: { openWorldHint: true },
       _meta: VISIBLE_TO_MODEL_ONLY,
     },
-    async ({ label, host, ...params }, extra) => dispatch(identity(extra), "copy", label, params, host)
+    async ({ share, host, ...params }, extra) => dispatch(identity(extra), "copy", share, params, host)
   );
 }
 
@@ -642,7 +642,7 @@ function registerCreateDirectory(server: McpServer): void {
       title: "Create Directory",
       description: "Create a directory and any missing parents.",
       inputSchema: {
-        label: z.string(),
+        share: z.string(),
         relative_path: z.string(),
         host: z.string().optional(),
       },
@@ -650,7 +650,7 @@ function registerCreateDirectory(server: McpServer): void {
       annotations: { idempotentHint: true, openWorldHint: true },
       _meta: VISIBLE_TO_MODEL_ONLY,
     },
-    async ({ label, host, ...params }, extra) => dispatch(identity(extra), "create_directory", label, params, host)
+    async ({ share, host, ...params }, extra) => dispatch(identity(extra), "create_directory", share, params, host)
   );
 }
 
@@ -665,7 +665,7 @@ function registerDelete(server: McpServer): void {
       title: "Delete",
       description: "Delete a file or directory. If relative_path is a directory and recursive is absent or false, returns a summary (size, file count) asking you to confirm by re-calling with recursive:true. Always surface this confirmation to the user before proceeding.",
       inputSchema: {
-        label: z.string(),
+        share: z.string(),
         relative_path: z.string(),
         recursive: z.boolean().optional(),
         host: z.string().optional(),
@@ -674,7 +674,7 @@ function registerDelete(server: McpServer): void {
       annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: true },
       _meta: VISIBLE_TO_MODEL_ONLY,
     },
-    async ({ label, host, ...params }, extra) => dispatch(identity(extra), "delete", label, params, host)
+    async ({ share, host, ...params }, extra) => dispatch(identity(extra), "delete", share, params, host)
   );
 }
 
@@ -687,18 +687,18 @@ function registerMove(server: McpServer): void {
     "move",
     {
       title: "Move",
-      description: "Move a file or directory. Removes the source after copying — does not leave the original in place. dst_label enables cross-label move on the same host.",
+      description: "Move a file or directory. Removes the source after copying — does not leave the original in place. dst_share enables cross-share move on the same host.",
       inputSchema: {
-        label: z.string(),
+        share: z.string(),
         src_relative_path: z.string(),
         dst_relative_path: z.string(),
-        dst_label: z.string().optional(),
+        dst_share: z.string().optional(),
         host: z.string().optional(),
       },
       outputSchema: OkOutput,
       annotations: { openWorldHint: true },
       _meta: VISIBLE_TO_MODEL_ONLY,
     },
-    async ({ label, host, ...params }, extra) => dispatch(identity(extra), "move", label, params, host)
+    async ({ share, host, ...params }, extra) => dispatch(identity(extra), "move", share, params, host)
   );
 }

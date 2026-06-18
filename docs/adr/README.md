@@ -12,7 +12,7 @@
 | [0008](0008-admin-elevation-admin-until.md) | Admin Elevation via adminUntil on OauthSession (Not a Separate Token) | Accepted |
 | [0009](0009-hub-nullable-user-id.md) | Hub Uses Nullable userId on ExecutorToken (Service-Level Token) | Accepted |
 | [0010](0010-hub-three-tier-identity.md) | Three-Tier OS Identity Resolution for Hub | Accepted |
-| [0011](0011-shared-label-discovery-optimistic.md) | Shared Label Discovery Is Optimistic (Not Authoritative) | Accepted |
+| [0011](0011-shared-label-discovery-optimistic.md) | Hub Share Discovery Is Optimistic (Not Authoritative) | Accepted |
 | [0012](0012-in-memory-rate-limiting.md) | In-Memory Rate Limiting (No Redis for v1) | Accepted |
 | [0013](0013-hub-restart-only-config.md) | Hub Config Changes Require Process Restart (No Live Reload) | Accepted |
 | [0014](0014-subnode-worker-explicit-env.md) | Subnode Workers Get an Explicit, Minimal Environment (Never `process.env`) | Accepted |

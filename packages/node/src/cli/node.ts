@@ -15,7 +15,7 @@ import {
   pathsYamlPath,
   type NodeConfig,
 } from "../config.js";
-import { MAX_LABEL_INSTRUCTIONS_LENGTH, poll, type PathEntry } from "@constellation/shared";
+import { MAX_SHARE_INSTRUCTIONS_LENGTH, poll, type PathEntry } from "@constellation/shared";
 import {
   install,
   startService,
@@ -130,7 +130,7 @@ export function registerNodeCommands(program: Command): void {
 
       console.log(`\nNode registered as '${result.host}'.`);
       console.log(`Config written to: ${dir}`);
-      console.log(`Add paths with: constellation node paths add <label> <path>`);
+      console.log(`Add paths with: constellation node paths add <share> <path>`);
     });
 
   // -------------------------------------------------------------------------
@@ -167,7 +167,7 @@ export function registerNodeCommands(program: Command): void {
 
   node
     .command("status")
-    .description("Show service state, relay connection, and path labels")
+    .description("Show service state, relay connection, and path shares")
     .option("--json", "Output as JSON")
     .action((opts: { json?: boolean }) => {
       const dir = getConfigDir();
@@ -181,7 +181,7 @@ export function registerNodeCommands(program: Command): void {
         service: svcState,
         relay_url: nodeCfg?.relay_url ?? null,
         host: nodeCfg?.host ?? null,
-        labels: paths.map((p) => ({ label: p.label, path: p.path })),
+        shares: paths.map((p) => ({ share: p.share, path: p.path })),
       };
 
       if (opts.json) {
@@ -190,8 +190,8 @@ export function registerNodeCommands(program: Command): void {
         console.log(`Service:    ${out.service}`);
         console.log(`Relay:      ${out.relay_url ?? "(not configured)"}`);
         console.log(`Host:       ${out.host ?? "(not configured)"}`);
-        console.log(`Labels:     ${out.labels.length === 0 ? "(none)" : ""}`);
-        for (const l of out.labels) console.log(`  ${l.label} → ${l.path}`);
+        console.log(`Shares:     ${out.shares.length === 0 ? "(none)" : ""}`);
+        for (const l of out.shares) console.log(`  ${l.share} → ${l.path}`);
       }
     });
 
@@ -201,10 +201,10 @@ export function registerNodeCommands(program: Command): void {
 
   node
     .command("sync")
-    .description("Push path labels to the relay (use after manually editing paths.yaml)")
+    .description("Push path shares to the relay (use after manually editing paths.yaml)")
     .action(async () => {
       await syncPaths(getConfigDir());
-      console.log("Labels synced.");
+      console.log("Shares synced.");
     });
 
   node
@@ -278,7 +278,7 @@ export function registerNodeCommands(program: Command): void {
       if (paths.length === 0) {
         console.log("(no paths configured)");
       } else {
-        for (const p of paths) console.log(`- label: ${p.label}\n  path: ${p.path}`);
+        for (const p of paths) console.log(`- share: ${p.share}\n  path: ${p.path}`);
       }
     });
 
@@ -300,11 +300,11 @@ export function registerNodeCommands(program: Command): void {
   // paths subcommands
   // -------------------------------------------------------------------------
 
-  const paths = node.command("paths").description("Manage path labels");
+  const paths = node.command("paths").description("Manage path shares");
 
   paths
     .command("list")
-    .description("List configured path labels")
+    .description("List configured path shares")
     .option("--json", "Output as JSON")
     .action((opts: { json?: boolean }) => {
       const entries = loadPathsConfig(getConfigDir()).paths;
@@ -312,21 +312,21 @@ export function registerNodeCommands(program: Command): void {
         console.log(JSON.stringify(entries));
       } else {
         if (entries.length === 0) { console.log("(no paths configured)"); return; }
-        for (const e of entries) console.log(`${e.label} → ${e.path}`);
+        for (const e of entries) console.log(`${e.share} → ${e.path}`);
       }
     });
 
   paths
     .command("add")
-    .argument("<label>", "Label name")
+    .argument("<share>", "Share name")
     .argument("<path>", "Absolute path on this machine")
-    .option("--instructions <text>", `Inline instructions surfaced to MCP clients (max ${MAX_LABEL_INSTRUCTIONS_LENGTH} characters)`)
-    .description("Add a path label and sync to the relay")
-    .action(async (label: string, pathArg: string, opts: { instructions?: string }) => {
+    .option("--instructions <text>", `Inline instructions surfaced to MCP clients (max ${MAX_SHARE_INSTRUCTIONS_LENGTH} characters)`)
+    .description("Add a path share and sync to the relay")
+    .action(async (share: string, pathArg: string, opts: { instructions?: string }) => {
       const dir = getConfigDir();
       const cfg = loadPathsConfig(dir);
-      if (cfg.paths.some((p) => p.label === label)) {
-        console.error(`Label '${label}' already exists. Remove it first.`);
+      if (cfg.paths.some((p) => p.share === share)) {
+        console.error(`Share '${share}' already exists. Remove it first.`);
         process.exit(1);
       }
       let resolvedPath: string;
@@ -340,7 +340,7 @@ export function registerNodeCommands(program: Command): void {
         console.error(`Error: '${pathArg}' is not a directory.`);
         process.exit(1);
       }
-      const entry: PathEntry = { label, path: resolvedPath };
+      const entry: PathEntry = { share, path: resolvedPath };
       if (opts.instructions) entry.instructions = opts.instructions;
       const updatedPaths = [...cfg.paths, entry];
       // Sync to the relay before persisting locally — if the sync fails, nodeControlCommand
@@ -348,25 +348,25 @@ export function registerNodeCommands(program: Command): void {
       // ahead of what the relay knows about.
       await syncPaths(dir, updatedPaths);
       writePathsConfig(dir, { ...cfg, paths: updatedPaths });
-      console.log(`Label '${label}' added and synced.`);
+      console.log(`Share '${share}' added and synced.`);
     });
 
   paths
     .command("remove")
-    .argument("<label>", "Label to remove")
-    .description("Remove a path label and sync to the relay")
-    .action(async (label: string) => {
+    .argument("<share>", "Share to remove")
+    .description("Remove a path share and sync to the relay")
+    .action(async (share: string) => {
       const dir = getConfigDir();
       const cfg = loadPathsConfig(dir);
-      const updatedPaths = cfg.paths.filter((p) => p.label !== label);
+      const updatedPaths = cfg.paths.filter((p) => p.share !== share);
       if (updatedPaths.length === cfg.paths.length) {
-        console.error(`Label '${label}' not found.`);
+        console.error(`Share '${share}' not found.`);
         process.exit(1);
       }
       // Sync to the relay before persisting locally — see comment in `paths add`.
       await syncPaths(dir, updatedPaths);
       writePathsConfig(dir, { ...cfg, paths: updatedPaths });
-      console.log(`Label '${label}' removed and synced.`);
+      console.log(`Share '${share}' removed and synced.`);
     });
 }
 

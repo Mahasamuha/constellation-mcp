@@ -16,7 +16,7 @@ The node is the sole authority over which local filesystem paths are accessible.
 relay can only restrict what reaches the node — it cannot expand it.
 
 Path access is controlled by the node's local `paths.yaml`. The relay resolves a
-label name to an `absolute_root` and forwards that root to the node in the RPC
+share name to an `absolute_root` and forwards that root to the node in the RPC
 envelope. The node independently validates that root against its own allowlist. A
 relay that has been compromised, misconfigured, or acting maliciously cannot instruct
 the node to access a path it has not explicitly registered.
@@ -38,7 +38,7 @@ is no trust path from relay to node config.
 
 ## Alternatives Considered
 
-**Relay-authoritative path registry:** the relay stores the canonical label→path
+**Relay-authoritative path registry:** the relay stores the canonical share→path
 map and sends the full resolved path to the node, which trusts it blindly. Rejected
 because a compromised relay has full filesystem access on any connected node.
 
@@ -50,9 +50,9 @@ given the node check is already terminal.
 ## Consequences
 
 - The node's local config (`paths.yaml`) is the ground truth for path enforcement.
-  The relay's copy of labels (in Postgres) is used for routing and display only and
+  The relay's copy of shares (in Postgres) is used for routing and display only and
   is always derived from what the node pushes on connect.
-- Any discrepancy between the relay's label copy and the node's config resolves in
+- Any discrepancy between the relay's share copy and the node's config resolves in
   favor of the node at enforcement time.
 - Path-related errors returned to MCP clients are deliberately terse ("Path rejected
   by node") — internal detail (agentId, resolvedPath) is logged for the operator

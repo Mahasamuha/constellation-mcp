@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync, mkdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { homedir, platform } from "node:os";
 import yaml from "js-yaml";
-import { createLogger, MAX_LABEL_INSTRUCTIONS_LENGTH, str, type PathEntry } from "@constellation/shared";
+import { createLogger, MAX_SHARE_INSTRUCTIONS_LENGTH, str, type PathEntry } from "@constellation/shared";
 
 const log = createLogger("node:config");
 
@@ -86,13 +86,13 @@ export function loadPathsConfig(dir: string): PathsConfig {
     const raw = readFileSync(pathsYamlPath(dir), "utf8");
     const parsed = yaml.load(raw) as { paths?: Record<string, unknown>[] };
     const paths = (parsed?.paths ?? []).map((p) => {
-      const entry: PathEntry = { label: str(p, "label") ?? "", path: str(p, "path") ?? "" };
+      const entry: PathEntry = { share: str(p, "share") ?? "", path: str(p, "path") ?? "" };
       const contextFile = str(p, "context_file");
       if (contextFile) entry.context_file = contextFile;
       const instructions = str(p, "instructions");
       if (instructions) entry.instructions = instructions;
       return entry;
-    }).filter((e) => e.label && e.path);
+    }).filter((e) => e.share && e.path);
     return { paths };
   } catch {
     return { paths: [] };
@@ -109,15 +109,15 @@ export function writePathsConfig(dir: string, config: PathsConfig): void {
  * entry's `instructions`: an inline `instructions` string takes precedence
  * over `context_file`, which is read at sync time. A missing/unreadable
  * context_file is logged at info level and the field is silently omitted —
- * not an error. Either source exceeding MAX_LABEL_INSTRUCTIONS_LENGTH is
+ * not an error. Either source exceeding MAX_SHARE_INSTRUCTIONS_LENGTH is
  * logged as a warning and dropped.
  */
 export function buildConfigUpdatePaths(
   paths: PathEntry[]
-): Array<{ label: string; reported_path: string; instructions?: string }> {
+): Array<{ share: string; reported_path: string; instructions?: string }> {
   return paths.map((p) => {
-    const entry: { label: string; reported_path: string; instructions?: string } = {
-      label: p.label,
+    const entry: { share: string; reported_path: string; instructions?: string } = {
+      share: p.share,
       reported_path: p.path,
     };
 
@@ -128,14 +128,14 @@ export function buildConfigUpdatePaths(
       try {
         instructions = readFileSync(p.context_file, "utf8");
       } catch {
-        log.info({ label: p.label, context_file: p.context_file }, "context_file is set but could not be read — omitting instructions");
+        log.info({ share: p.share, context_file: p.context_file }, "context_file is set but could not be read — omitting instructions");
       }
     }
 
     if (instructions !== undefined) {
-      if (instructions.length > MAX_LABEL_INSTRUCTIONS_LENGTH) {
+      if (instructions.length > MAX_SHARE_INSTRUCTIONS_LENGTH) {
         log.warn(
-          { label: p.label, length: instructions.length, max: MAX_LABEL_INSTRUCTIONS_LENGTH },
+          { share: p.share, length: instructions.length, max: MAX_SHARE_INSTRUCTIONS_LENGTH },
           "instructions exceeds maximum length — dropping"
         );
       } else {

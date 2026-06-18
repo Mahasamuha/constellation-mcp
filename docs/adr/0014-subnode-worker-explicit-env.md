@@ -19,7 +19,7 @@ other secrets sourced from `env_file`. Once the worker setuid()s to the target
 user, that user can read their own process's environment via
 `/proc/<pid>/environ` — recovering the hub's relay token and anything else
 that was inherited. This would let a malicious local user impersonate the
-hub to the relay (re-sync labels with forged permission blobs, etc.).
+hub to the relay (re-sync shares with forged permission blobs, etc.).
 
 ## Decision
 

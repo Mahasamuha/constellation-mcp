@@ -1,4 +1,4 @@
-import type { AccessLevel, LabelConfig } from "./config.js";
+import type { AccessLevel, ShareConfig } from "./config.js";
 import { evaluatePermissionBlob, type PermissionBlob } from "@constellation/shared";
 
 // ---------------------------------------------------------------------------
@@ -25,33 +25,33 @@ const WRITE_TOOLS = new Set([
 
 /**
  * Evaluates whether a user (identified by oidcSub) may invoke a tool on a
- * given label. Resolution order:
- *   1. Label must exist in admin config — users cannot access unlisted labels.
+ * given share. Resolution order:
+ *   1. Share must exist in admin config — users cannot access unlisted shares.
  *   2. Per-oidcSub override wins over default if present.
  *   3. Default access level applies otherwise.
  *   4. "none" always rejects; "read-only" blocks write tools; "read-write" allows all.
  */
 export function checkPermission(
   userOidcSub: string | null,
-  label: string,
+  share: string,
   tool: string,
-  labels: LabelConfig[]
+  shares: ShareConfig[]
 ): PermissionResult {
-  const labelConfig = labels.find((l) => l.name === label);
-  if (!labelConfig) {
-    return { permitted: false, reason: `Label '${label}' is not in the admin label config` };
+  const shareConfig = shares.find((s) => s.name === share);
+  if (!shareConfig) {
+    return { permitted: false, reason: `Share '${share}' is not in the admin share config` };
   }
 
-  const access = evaluatePermissionBlob(labelConfig.permissions, userOidcSub) as AccessLevel;
+  const access = evaluatePermissionBlob(shareConfig.permissions, userOidcSub) as AccessLevel;
 
   if (access === "none") {
-    return { permitted: false, reason: `Access to label '${label}' is denied` };
+    return { permitted: false, reason: `Access to share '${share}' is denied` };
   }
 
   if (WRITE_TOOLS.has(tool) && access === "read-only") {
     return {
       permitted: false,
-      reason: `Label '${label}' is read-only; write operations are not permitted`,
+      reason: `Share '${share}' is read-only; write operations are not permitted`,
     };
   }
 
@@ -60,32 +60,32 @@ export function checkPermission(
 
 export type RpcPermissionResult =
   | { permitted: true }
-  | { permitted: false; label: string; reason: string };
+  | { permitted: false; share: string; reason: string };
 
 /**
- * Evaluates permissions for an RPC, including the destination label for
- * cross-label copy/move. The source label is checked first; if it passes and
- * the request targets a different destination label (via dst_label), that
- * label is independently checked against the same tool. Without this second
- * check, write access to one label could be used to copy/move into a label
+ * Evaluates permissions for an RPC, including the destination share for
+ * cross-share copy/move. The source share is checked first; if it passes and
+ * the request targets a different destination share (via dst_share), that
+ * share is independently checked against the same tool. Without this second
+ * check, write access to one share could be used to copy/move into a share
  * the user only has read (or no) access to.
  */
 export function checkRpcPermission(
   userOidcSub: string | null,
-  label: string,
-  dstLabel: string | null,
+  share: string,
+  dstShare: string | null,
   tool: string,
-  labels: LabelConfig[]
+  shares: ShareConfig[]
 ): RpcPermissionResult {
-  const result = checkPermission(userOidcSub, label, tool, labels);
+  const result = checkPermission(userOidcSub, share, tool, shares);
   if (!result.permitted) {
-    return { permitted: false, label, reason: result.reason };
+    return { permitted: false, share, reason: result.reason };
   }
 
-  if (dstLabel !== null && dstLabel !== label) {
-    const dstResult = checkPermission(userOidcSub, dstLabel, tool, labels);
+  if (dstShare !== null && dstShare !== share) {
+    const dstResult = checkPermission(userOidcSub, dstShare, tool, shares);
     if (!dstResult.permitted) {
-      return { permitted: false, label: dstLabel, reason: dstResult.reason };
+      return { permitted: false, share: dstShare, reason: dstResult.reason };
     }
   }
 
@@ -93,13 +93,13 @@ export function checkRpcPermission(
 }
 
 /**
- * Returns the permission blob stored in the relay for a label — used by the
- * hub when syncing labels to the relay so the relay can evaluate optimistic
+ * Returns the permission blob stored in the relay for a share — used by the
+ * hub when syncing shares to the relay so the relay can evaluate optimistic
  * discovery without a round-trip to the hub.
  */
-export function buildPermissionBlob(label: LabelConfig): PermissionBlob {
+export function buildPermissionBlob(share: ShareConfig): PermissionBlob {
   return {
-    default: label.permissions.default,
-    overrides: label.permissions.overrides,
+    default: share.permissions.default,
+    overrides: share.permissions.overrides,
   };
 }

@@ -59,7 +59,7 @@ const event: ActivityEvent = {
   eventType: "tool_call",
   host: "home-server",
   tool: "read_file",
-  label: "projects",
+  share: "projects",
   requestId: "req-abc123",
   durationMs: 42,
 };

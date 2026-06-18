@@ -151,10 +151,10 @@ export async function copyPath(srcAbsolutePath: string, dstAbsolutePath: string,
 /**
  * `src`/`dst` at the top level are already realpath-resolved and boundary-checked by the
  * executor dispatcher, so they can never be symlinks themselves. Entries discovered via
- * `readdir` during the walk are not re-validated against the label root, so a symlink
+ * `readdir` during the walk are not re-validated against the share root, so a symlink
  * encountered here is skipped outright rather than dereferenced (which would copy whatever
- * it points to, including paths outside the label root) or recreated as a symlink at the
- * destination (which would let the destination point outside the label root too).
+ * it points to, including paths outside the share root) or recreated as a symlink at the
+ * destination (which would let the destination point outside the share root too).
  */
 async function copyRecursive(src: string, dst: string): Promise<void> {
   const stat = await fs.lstat(src);

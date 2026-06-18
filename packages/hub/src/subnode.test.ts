@@ -95,7 +95,7 @@ function configWith(subnode_uid: SubnodeUidConfig, workers?: Partial<SubnodeWork
     subnode_rpc_timeout_seconds: 30,
     subnode_uid,
     subnode_gid: {},
-    labels: [],
+    shares: [],
     identity: { claims: [], user_map: [], allow_preferred_username: false },
     audit_log: "/var/log/constellation/audit.jsonl",
   };

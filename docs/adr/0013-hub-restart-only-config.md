@@ -6,7 +6,7 @@
 ## Context
 
 The hub's config file contains security-sensitive settings: identity
-resolution tiers, label permission configs, and UID restriction ranges. The question
+resolution tiers, share permission configs, and UID restriction ranges. The question
 was whether to support live config reload (e.g. via SIGHUP) or require a process
 restart for config changes to take effect.
 
@@ -31,7 +31,7 @@ On shutdown (SIGTERM):
 ## Rationale
 
 The hub's config includes identity resolution (which OS user executes a
-request), label permission rules (who can access what), and UID restriction ranges
+request), share permission rules (who can access what), and UID restriction ranges
 (which OS users can be impersonated). These settings have direct security implications.
 
 A live reload that applies mid-flight — between identity resolution and subnode spawn,

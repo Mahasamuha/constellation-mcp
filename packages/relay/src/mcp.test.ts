@@ -16,14 +16,14 @@ vi.mock("./db.js", () => ({
   prisma: {
     oauthSession: { findUnique: vi.fn() },
     executor: { findMany: vi.fn() },
-    pathLabel: { findMany: vi.fn() },
-    hubPathLabel: { findMany: vi.fn() },
+    pathShare: { findMany: vi.fn() },
+    hubShare: { findMany: vi.fn() },
   },
 }));
 
 vi.mock("./router.js", () => ({
   routeToolCall: vi.fn(),
-  resolveLabel: vi.fn(),
+  resolveShare: vi.fn(),
   pruneRateLimits: vi.fn(),
 }));
 
@@ -48,7 +48,7 @@ function getTools(server: McpServer): Record<string, RegisteredTool> {
 
 const EXPECTED_TOOLS = [
   "list_hosts",
-  "list_labels",
+  "list_shares",
   "open_file_browser",
   "list_directory",
   "file_info",
@@ -65,7 +65,7 @@ const EXPECTED_TOOLS = [
 
 const READ_ONLY_TOOLS = [
   "list_hosts",
-  "list_labels",
+  "list_shares",
   "list_directory",
   "file_info",
   "find_files",

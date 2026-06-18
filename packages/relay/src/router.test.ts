@@ -29,8 +29,8 @@ vi.mock("./config.js", () => ({
 
 vi.mock("./db.js", () => ({
   prisma: {
-    pathLabel: { findFirst: vi.fn() },
-    hubPathLabel: { findMany: vi.fn().mockResolvedValue([]) },
+    pathShare: { findFirst: vi.fn() },
+    hubShare: { findMany: vi.fn().mockResolvedValue([]) },
     relayPathFilter: { findMany: vi.fn().mockResolvedValue([]) },
     executor: { findFirst: vi.fn() },
   },
@@ -49,16 +49,16 @@ import { config } from "./config.js";
 
 // Typed access to mocked functions
 const db = prisma as unknown as {
-  pathLabel: { findFirst: ReturnType<typeof vi.fn> };
+  pathShare: { findFirst: ReturnType<typeof vi.fn> };
   relayPathFilter: { findMany: ReturnType<typeof vi.fn> };
   executor: { findFirst: ReturnType<typeof vi.fn> };
 };
 const mockGetConnection = vi.mocked(getConnection);
 const mockDispatchRpc = vi.mocked(dispatchRpc);
 
-// Stable label stub — executor online with no path filters
-function stubLabel(executorId = "executor-1", executorHost = "home-server") {
-  db.pathLabel.findFirst.mockResolvedValue({
+// Stable share stub — executor online with no path filters
+function stubShare(executorId = "executor-1", executorHost = "home-server") {
+  db.pathShare.findFirst.mockResolvedValue({
     reportedPath: "/home/user/projects",
     executor: { id: executorId, host: executorHost, lastHeartbeatAt: new Date() },
   });
@@ -84,7 +84,7 @@ beforeEach(() => {
 describe("rate limiting", () => {
   it("allows calls within the standard limit", async () => {
     config.rateLimits.toolCallsPerMin = 3;
-    stubLabel();
+    stubShare();
     const u = uid();
 
     const results = await Promise.all([
@@ -97,7 +97,7 @@ describe("rate limiting", () => {
 
   it("returns rate_limited after exceeding standard limit", async () => {
     config.rateLimits.toolCallsPerMin = 2;
-    stubLabel();
+    stubShare();
     const u = uid();
 
     await routeToolCall(u, "read_file", "projects", {});
@@ -110,7 +110,7 @@ describe("rate limiting", () => {
   it("returns rate_limited for expensive tool after exceeding expensive limit", async () => {
     config.rateLimits.toolCallsPerMin = 100;
     config.rateLimits.expensiveToolsPerMin = 1;
-    stubLabel();
+    stubShare();
     const u = uid();
 
     await routeToolCall(u, "grep_files", "projects", {});
@@ -122,7 +122,7 @@ describe("rate limiting", () => {
   it("treats recursive list_directory as expensive", async () => {
     config.rateLimits.toolCallsPerMin = 100;
     config.rateLimits.expensiveToolsPerMin = 1;
-    stubLabel();
+    stubShare();
     const u = uid();
 
     await routeToolCall(u, "list_directory", "projects", { recursive: true });
@@ -133,7 +133,7 @@ describe("rate limiting", () => {
 
   it("does not rate-limit non-recursive list_directory as expensive", async () => {
     config.rateLimits.expensiveToolsPerMin = 1;
-    stubLabel();
+    stubShare();
     const u = uid();
 
     // Two non-recursive calls should both pass the expensive check
@@ -146,20 +146,20 @@ describe("rate limiting", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Label and host resolution
+// Share and host resolution
 // ---------------------------------------------------------------------------
 
-describe("label resolution", () => {
-  it("returns label_not_found for unknown label", async () => {
-    db.pathLabel.findFirst.mockResolvedValue(null);
+describe("share resolution", () => {
+  it("returns share_not_found for unknown share", async () => {
+    db.pathShare.findFirst.mockResolvedValue(null);
     db.executor.findFirst.mockResolvedValue(null);
 
     const result = await routeToolCall(uid(), "read_file", "missing", {});
-    expect(result).toMatchObject({ code: "label_not_found" });
+    expect(result).toMatchObject({ code: "share_not_found" });
   });
 
   it("returns host_not_found when host filter matches no host", async () => {
-    db.pathLabel.findFirst.mockResolvedValue(null);
+    db.pathShare.findFirst.mockResolvedValue(null);
     db.executor.findFirst.mockResolvedValue(null); // host does not exist
 
     const result = await routeToolCall(uid(), "read_file", "projects", {}, "nonexistent-host");
@@ -167,7 +167,7 @@ describe("label resolution", () => {
   });
 
   it("returns executor_offline when executor has no active connection", async () => {
-    db.pathLabel.findFirst.mockResolvedValue({
+    db.pathShare.findFirst.mockResolvedValue({
       reportedPath: "/path",
       executor: { id: "executor-offline", host: "home-server", lastHeartbeatAt: new Date(Date.now() - 10_000) },
     });
@@ -179,7 +179,7 @@ describe("label resolution", () => {
   });
 
   it("dispatches and returns result when executor is online", async () => {
-    stubLabel();
+    stubShare();
     const result = await routeToolCall(uid(), "read_file", "projects", {});
     expect(result).toMatchObject({ result: { ok: true } });
   });
@@ -191,7 +191,7 @@ describe("label resolution", () => {
 
 describe("path filtering", () => {
   it("returns path_filtered when a glob filter blocks the path", async () => {
-    db.pathLabel.findFirst.mockResolvedValue({
+    db.pathShare.findFirst.mockResolvedValue({
       reportedPath: "/home/user/projects",
       executor: { id: "executor-1", host: "home-server", lastHeartbeatAt: new Date() },
     });
@@ -208,7 +208,7 @@ describe("path filtering", () => {
   });
 
   it("returns path_filtered when a regex filter blocks the path", async () => {
-    db.pathLabel.findFirst.mockResolvedValue({
+    db.pathShare.findFirst.mockResolvedValue({
       reportedPath: "/home/user/projects",
       executor: { id: "executor-1", host: "home-server", lastHeartbeatAt: new Date() },
     });
@@ -230,8 +230,8 @@ describe("path filtering", () => {
 // ---------------------------------------------------------------------------
 
 describe("cross-host routing", () => {
-  it("returns cross_host when dst_label is on a different executor", async () => {
-    db.pathLabel.findFirst
+  it("returns cross_host when dst_share is on a different executor", async () => {
+    db.pathShare.findFirst
       .mockResolvedValueOnce({
         reportedPath: "/src",
         executor: { id: "executor-1", host: "server-a", lastHeartbeatAt: new Date() },
@@ -243,17 +243,17 @@ describe("cross-host routing", () => {
     db.relayPathFilter.findMany.mockResolvedValue([]);
     mockGetConnection.mockReturnValue({ ws: {}, executorId: "executor-1" } as ReturnType<typeof getConnection>);
 
-    const result = await routeToolCall(uid(), "copy", "src-label", {
+    const result = await routeToolCall(uid(), "copy", "src-share", {
       src_relative_path: "file.txt",
       dst_relative_path: "file.txt",
-      dst_label: "dst-label",
+      dst_share: "dst-share",
     });
 
     expect(result).toMatchObject({ code: "cross_host" });
   });
 
   it("allows copy within the same executor", async () => {
-    db.pathLabel.findFirst.mockResolvedValue({
+    db.pathShare.findFirst.mockResolvedValue({
       reportedPath: "/data",
       executor: { id: "executor-1", host: "server-a", lastHeartbeatAt: new Date() },
     });
@@ -261,10 +261,10 @@ describe("cross-host routing", () => {
     mockGetConnection.mockReturnValue({ ws: {}, executorId: "executor-1" } as ReturnType<typeof getConnection>);
     mockDispatchRpc.mockResolvedValue({ request_id: "", result: { ok: true } });
 
-    const result = await routeToolCall(uid(), "copy", "src-label", {
+    const result = await routeToolCall(uid(), "copy", "src-share", {
       src_relative_path: "a.txt",
       dst_relative_path: "b.txt",
-      dst_label: "dst-label",
+      dst_share: "dst-share",
     });
 
     expect((result as { code?: string }).code).not.toBe("cross_host");
@@ -277,7 +277,7 @@ describe("cross-host routing", () => {
 
 describe("timeout", () => {
   it("returns timeout when dispatchRpc throws a timeout error", async () => {
-    stubLabel();
+    stubShare();
     mockDispatchRpc.mockRejectedValue(new Error("timeout"));
 
     const result = await routeToolCall(uid(), "read_file", "projects", {});
@@ -285,7 +285,7 @@ describe("timeout", () => {
   });
 
   it("rethrows non-timeout errors", async () => {
-    stubLabel();
+    stubShare();
     mockDispatchRpc.mockRejectedValue(new Error("unexpected failure"));
 
     await expect(routeToolCall(uid(), "read_file", "projects", {})).rejects.toThrow(

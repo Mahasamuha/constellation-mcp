@@ -8,19 +8,19 @@ import { resolveQueueTimeout, str, num } from "@constellation/shared";
 
 export type AccessLevel = "read-only" | "read-write" | "none";
 
-export interface LabelOverride {
+export interface ShareOverride {
   oidc_sub: string;
   access: AccessLevel;
 }
 
-export interface LabelConfig {
+export interface ShareConfig {
   name: string;
   path: string;
   instructions?: string;
   context_file?: string;
   permissions: {
     default: AccessLevel;
-    overrides: LabelOverride[];
+    overrides: ShareOverride[];
   };
 }
 
@@ -64,7 +64,7 @@ export interface HubConfig {
   subnode_rpc_timeout_seconds: number;
   subnode_uid: SubnodeUidConfig;
   subnode_gid: SubnodeGidConfig;
-  labels: LabelConfig[];
+  shares: ShareConfig[];
   identity: IdentityConfig;
   audit_log: string;
 }
@@ -88,7 +88,7 @@ export function loadHubConfig(path: string): HubConfig {
   const env_file = str(parsed, "env_file") || undefined;
   const subnode_rpc_timeout_seconds = num(parsed, "subnode_rpc_timeout_seconds") ?? 30;
 
-  const labels = parseLabels(parsed);
+  const shares = parseShares(parsed);
   const subnode_uid = parseSubnodeUid((parsed["subnode_uid"] ?? {}) as Record<string, unknown>);
   const subnode_gid = parseSubnodeGid((parsed["subnode_gid"] ?? {}) as Record<string, unknown>);
   const subnode_workers = parseSubnodeWorkers((parsed["subnode_workers"] ?? {}) as Record<string, unknown>);
@@ -102,7 +102,7 @@ export function loadHubConfig(path: string): HubConfig {
     subnode_rpc_timeout_seconds,
     subnode_uid,
     subnode_gid,
-    labels,
+    shares,
     identity,
     audit_log,
   };
@@ -168,12 +168,12 @@ export function validateHubConfig(cfg: HubConfig): ValidationResult {
     );
   }
 
-  const labelNames = new Set<string>();
-  for (const label of cfg.labels) {
-    if (labelNames.has(label.name)) {
-      errors.push(`Duplicate label name: ${label.name}`);
+  const shareNames = new Set<string>();
+  for (const share of cfg.shares) {
+    if (shareNames.has(share.name)) {
+      errors.push(`Duplicate share name: ${share.name}`);
     }
-    labelNames.add(label.name);
+    shareNames.add(share.name);
   }
 
   return { ok: errors.length === 0, errors, warnings };
@@ -183,51 +183,51 @@ export function validateHubConfig(cfg: HubConfig): ValidationResult {
 // Parsers
 // ---------------------------------------------------------------------------
 
-function parseLabels(parsed: Record<string, unknown>): LabelConfig[] {
-  const rawLabels = parsed["labels"];
-  if (!Array.isArray(rawLabels)) throw new Error("hub config: labels must be an array");
+function parseShares(parsed: Record<string, unknown>): ShareConfig[] {
+  const rawShares = parsed["shares"];
+  if (!Array.isArray(rawShares)) throw new Error("hub config: shares must be an array");
 
-  return rawLabels.map((l: unknown, i: number) => {
-    const le = l as Record<string, unknown>;
-    const name = str(le, "name");
-    const path = str(le, "path");
-    const instructions = str(le, "instructions");
-    const contextFile = str(le, "context_file");
-    const perms = le["permissions"] as Record<string, unknown> | undefined;
+  return rawShares.map((s: unknown, i: number) => {
+    const se = s as Record<string, unknown>;
+    const name = str(se, "name");
+    const path = str(se, "path");
+    const instructions = str(se, "instructions");
+    const contextFile = str(se, "context_file");
+    const perms = se["permissions"] as Record<string, unknown> | undefined;
 
-    if (!name) throw new Error(`hub config: labels[${i}].name is required`);
-    if (!path) throw new Error(`hub config: labels[${i}].path is required`);
-    if (!perms) throw new Error(`hub config: labels[${i}].permissions is required`);
+    if (!name) throw new Error(`hub config: shares[${i}].name is required`);
+    if (!path) throw new Error(`hub config: shares[${i}].path is required`);
+    if (!perms) throw new Error(`hub config: shares[${i}].permissions is required`);
 
     const defaultAccess = str(perms, "default") as AccessLevel;
     if (!["read-only", "read-write", "none"].includes(defaultAccess)) {
       throw new Error(
-        `hub config: labels[${i}].permissions.default must be read-only, read-write, or none`
+        `hub config: shares[${i}].permissions.default must be read-only, read-write, or none`
       );
     }
 
-    const overrides: LabelOverride[] = [];
+    const overrides: ShareOverride[] = [];
     if (Array.isArray(perms["overrides"])) {
       for (let j = 0; j < perms["overrides"].length; j++) {
         const ov = perms["overrides"][j] as Record<string, unknown>;
         const oidc_sub = str(ov, "oidc_sub");
         const access = str(ov, "access") as AccessLevel;
         if (!oidc_sub) {
-          throw new Error(`hub config: labels[${i}].permissions.overrides[${j}] missing oidc_sub`);
+          throw new Error(`hub config: shares[${i}].permissions.overrides[${j}] missing oidc_sub`);
         }
         if (!["read-only", "read-write", "none"].includes(access)) {
           throw new Error(
-            `hub config: labels[${i}].permissions.overrides[${j}] has invalid access level`
+            `hub config: shares[${i}].permissions.overrides[${j}] has invalid access level`
           );
         }
         overrides.push({ oidc_sub, access });
       }
     }
 
-    const label: LabelConfig = { name, path, permissions: { default: defaultAccess, overrides } };
-    if (instructions) label.instructions = instructions;
-    if (contextFile) label.context_file = contextFile;
-    return label;
+    const share: ShareConfig = { name, path, permissions: { default: defaultAccess, overrides } };
+    if (instructions) share.instructions = instructions;
+    if (contextFile) share.context_file = contextFile;
+    return share;
   });
 }
 

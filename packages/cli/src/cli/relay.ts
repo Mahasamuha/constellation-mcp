@@ -19,11 +19,11 @@ interface ExecutorEntry {
   host: string;
   online: boolean;
   last_heartbeat_at: string | null;
-  labels: Array<{ label: string; reported_path: string }>;
+  shares: Array<{ share: string; reported_path: string }>;
 }
 
-interface LabelEntry {
-  label: string;
+interface ShareEntry {
+  share: string;
   host: string;
   reported_path: string;
 }
@@ -44,10 +44,10 @@ interface SessionEntry {
   has_refresh_token: boolean;
 }
 
-interface SharedLabelEntry {
+interface HubShareEntry {
   executor_id: string;
   executor_host: string;
-  label: string;
+  share: string;
   reported_path: string;
   permission_blob: {
     default: string;
@@ -340,7 +340,7 @@ export function registerRelayCommands(program: Command): void {
       for (const a of res.data) {
         console.log(`${a.host} (${a.id})`);
         console.log(`  Status: ${a.online ? "online" : "offline"}${a.last_heartbeat_at ? `  last seen ${a.last_heartbeat_at}` : ""}`);
-        for (const l of a.labels) console.log(`  ${l.label} → ${l.reported_path}`);
+        for (const s of a.shares) console.log(`  ${s.share} → ${s.reported_path}`);
       }
     });
 
@@ -357,23 +357,23 @@ export function registerRelayCommands(program: Command): void {
     });
 
   // -------------------------------------------------------------------------
-  // labels
+  // shares
   // -------------------------------------------------------------------------
 
-  const labels = relay.command("labels").description("View path labels");
+  const shares = relay.command("shares").description("View path shares");
 
-  labels
+  shares
     .command("list")
-    .description("List path labels")
+    .description("List path shares")
     .option("--executor <id>", "Filter by executor ID")
     .option("--json", "Output as JSON")
     .action(async (opts: { executor?: string; json?: boolean }) => {
       const session = await getValidSession(cfgDir);
       const qs = opts.executor ? `?executor_id=${encodeURIComponent(opts.executor)}` : "";
-      const res = await apiGet<{ data: LabelEntry[] }>(session, `/api/labels${qs}`);
+      const res = await apiGet<{ data: ShareEntry[] }>(session, `/api/shares${qs}`);
       if (opts.json) { console.log(JSON.stringify(res.data, null, 2)); return; }
-      for (const l of res.data) {
-        console.log(`${l.label}  (${l.host})  →  ${l.reported_path}`);
+      for (const s of res.data) {
+        console.log(`${s.share}  (${s.host})  →  ${s.reported_path}`);
       }
     });
 
@@ -677,38 +677,38 @@ export function registerRelayCommands(program: Command): void {
     });
 
   // -------------------------------------------------------------------------
-  // shared-labels — admin view of the shared label registry
+  // hub-shares — admin view of the hub share registry
   // -------------------------------------------------------------------------
 
-  const sharedLabels = relay.command("shared-labels").description("View hub labels (requires admin session)");
+  const hubShares = relay.command("hub-shares").description("View hub shares (requires admin session)");
 
-  sharedLabels
+  hubShares
     .command("list")
-    .description("List all shared labels synced to the relay")
+    .description("List all hub shares synced to the relay")
     .option("--executor <id>", "Filter to a specific hub by ID")
     .option("--json", "Output as JSON")
     .action(async (opts: { executor?: string; json?: boolean }) => {
       const session = await getValidSession(cfgDir);
       const qs = opts.executor ? `?executor=${encodeURIComponent(opts.executor)}` : "";
-      const data = await apiGet<{ data: SharedLabelEntry[] }>(session, `/api/admin/shared-labels${qs}`);
+      const data = await apiGet<{ data: HubShareEntry[] }>(session, `/api/admin/hub-shares${qs}`);
       if (opts.json) { console.log(JSON.stringify(data.data, null, 2)); return; }
 
       if (data.data.length === 0) {
-        console.log("No shared labels found.");
+        console.log("No hub shares found.");
         return;
       }
 
       let lastExecutorId = "";
-      for (const l of data.data) {
-        if (l.executor_id !== lastExecutorId) {
-          console.log(`\nExecutor: ${l.executor_host} (${l.executor_id})`);
-          lastExecutorId = l.executor_id;
+      for (const s of data.data) {
+        if (s.executor_id !== lastExecutorId) {
+          console.log(`\nExecutor: ${s.executor_host} (${s.executor_id})`);
+          lastExecutorId = s.executor_id;
         }
-        const overrides = l.permission_blob.overrides ?? [];
+        const overrides = s.permission_blob.overrides ?? [];
         const overrideStr = overrides.length > 0
           ? `  overrides: ${overrides.map((o) => `${o.oidc_sub}=${o.access}`).join(", ")}`
           : "";
-        console.log(`  ${l.label}  →  ${l.reported_path}  [default: ${l.permission_blob.default}]${overrideStr}`);
+        console.log(`  ${s.share}  →  ${s.reported_path}  [default: ${s.permission_blob.default}]${overrideStr}`);
       }
     });
 

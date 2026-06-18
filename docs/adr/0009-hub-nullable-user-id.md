@@ -12,7 +12,7 @@
 
 The personal node model ties each `ExecutorToken` to a specific `userId`. The relay
 connection for a personal node is implicitly scoped to that user — all RPCs dispatched
-on the connection operate on that user's labels. A hub serves multiple users from a
+on the connection operate on that user's shares. A hub serves multiple users from a
 single connection, so a user-bound token does not fit.
 
 ## Decision
@@ -66,5 +66,5 @@ user table with synthetic service accounts and requires ongoing management.
   machine ID (stable across token rotations and process restarts).
 - Existing personal node behavior is unchanged. `NODE` tokens retain a non-null
   `userId` and behave exactly as before.
-- `HubPathLabel` is a separate table (see ADR 0011) for syncing hub label
+- `HubShare` is a separate table (see ADR 0011) for syncing hub share
   registries to the relay for optimistic discovery.

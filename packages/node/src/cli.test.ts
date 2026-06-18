@@ -141,14 +141,14 @@ describe("node config show", () => {
     expect(out).not.toContain("tok_abcdefghijklmnop");
   });
 
-  it("shows configured path labels", async () => {
+  it("shows configured path shares", async () => {
     writeNodeConfig(dir, {
       relay_url: "https://relay.example.com",
       node_token: "tok_abcdefghijklmnop",
       host: "sirius",
       max_file_size_kb: 100,
     });
-    writePathsConfig(dir, { paths: [{ label: "home", path: "/home/user" }] });
+    writePathsConfig(dir, { paths: [{ share: "home", path: "/home/user" }] });
     const { exitCode, out } = await runCli(["node", "config", "show"], dir);
     expect(exitCode).toBe(0);
     expect(out).toContain("home");
@@ -165,7 +165,7 @@ describe("node status --json", () => {
     const { exitCode, out } = await runCli(["node", "status", "--json"], dir);
     expect(exitCode).toBe(0);
     const parsed = JSON.parse(out);
-    expect(parsed).toMatchObject({ relay_url: null, host: null, labels: [] });
+    expect(parsed).toMatchObject({ relay_url: null, host: null, shares: [] });
     expect(typeof parsed.service).toBe("string");
   });
 
@@ -183,19 +183,19 @@ describe("node status --json", () => {
     expect(parsed.host).toBe("sirius");
   });
 
-  it("includes path labels in output", async () => {
+  it("includes path shares in output", async () => {
     writeNodeConfig(dir, {
       relay_url: "https://relay.example.com",
       node_token: "tok_abcdefgh",
       host: "sirius",
       max_file_size_kb: 100,
     });
-    writePathsConfig(dir, { paths: [{ label: "src", path: "/home/user/src" }] });
+    writePathsConfig(dir, { paths: [{ share: "src", path: "/home/user/src" }] });
     const { exitCode, out } = await runCli(["node", "status", "--json"], dir);
     expect(exitCode).toBe(0);
     const parsed = JSON.parse(out);
-    expect(parsed.labels).toHaveLength(1);
-    expect(parsed.labels[0]).toMatchObject({ label: "src", path: "/home/user/src" });
+    expect(parsed.shares).toHaveLength(1);
+    expect(parsed.shares[0]).toMatchObject({ share: "src", path: "/home/user/src" });
   });
 });
 
@@ -219,20 +219,20 @@ describe("node paths list", () => {
   it("lists configured paths with --json", async () => {
     writePathsConfig(dir, {
       paths: [
-        { label: "src", path: "/home/user/src" },
-        { label: "docs", path: "/home/user/docs" },
+        { share: "src", path: "/home/user/src" },
+        { share: "docs", path: "/home/user/docs" },
       ],
     });
     const { exitCode, out } = await runCli(["node", "paths", "list", "--json"], dir);
     expect(exitCode).toBe(0);
-    const parsed = JSON.parse(out) as Array<{ label: string; path: string }>;
+    const parsed = JSON.parse(out) as Array<{ share: string; path: string }>;
     expect(parsed).toHaveLength(2);
-    expect(parsed[0]).toMatchObject({ label: "src", path: "/home/user/src" });
-    expect(parsed[1]).toMatchObject({ label: "docs", path: "/home/user/docs" });
+    expect(parsed[0]).toMatchObject({ share: "src", path: "/home/user/src" });
+    expect(parsed[1]).toMatchObject({ share: "docs", path: "/home/user/docs" });
   });
 
   it("lists paths in human-readable format", async () => {
-    writePathsConfig(dir, { paths: [{ label: "myrepo", path: "/home/user/myrepo" }] });
+    writePathsConfig(dir, { paths: [{ share: "myrepo", path: "/home/user/myrepo" }] });
     const { exitCode, out } = await runCli(["node", "paths", "list"], dir);
     expect(exitCode).toBe(0);
     expect(out).toContain("myrepo");
@@ -265,8 +265,8 @@ describe("node paths add — errors", () => {
     expect(err).toContain("not a directory");
   });
 
-  it("exits 1 when label already exists", async () => {
-    writePathsConfig(dir, { paths: [{ label: "existing", path: "/some/path" }] });
+  it("exits 1 when share already exists", async () => {
+    writePathsConfig(dir, { paths: [{ share: "existing", path: "/some/path" }] });
     const { exitCode, err } = await runCli(
       ["node", "paths", "add", "existing", dir],
       dir,
@@ -281,7 +281,7 @@ describe("node paths add — errors", () => {
 // ---------------------------------------------------------------------------
 
 describe("node paths remove — errors", () => {
-  it("exits 1 when label does not exist", async () => {
+  it("exits 1 when share does not exist", async () => {
     const { exitCode, err } = await runCli(
       ["node", "paths", "remove", "nonexistent"],
       dir,
@@ -321,7 +321,7 @@ describe("node paths add/remove — relay sync ordering", () => {
     writeNodeConfig(dir, { relay_url: `http://localhost:${port}`, node_token: "tok", host: "test-host" });
   }
 
-  it("persists the new label locally once the relay confirms the sync", async () => {
+  it("persists the new share locally once the relay confirms the sync", async () => {
     configureNode();
     writePathsConfig(dir, { paths: [] });
     respondOnce("config_update_ok");
@@ -329,10 +329,10 @@ describe("node paths add/remove — relay sync ordering", () => {
     const { exitCode } = await runCli(["node", "paths", "add", "myrepo", dir], dir);
 
     expect(exitCode).toBe(0);
-    expect(loadPathsConfig(dir).paths.map((p) => p.label)).toEqual(["myrepo"]);
+    expect(loadPathsConfig(dir).paths.map((p) => p.share)).toEqual(["myrepo"]);
   });
 
-  it("does not persist the new label locally when the relay rejects the sync", async () => {
+  it("does not persist the new share locally when the relay rejects the sync", async () => {
     configureNode();
     writePathsConfig(dir, { paths: [] });
     respondOnce("config_update_error");
@@ -343,14 +343,14 @@ describe("node paths add/remove — relay sync ordering", () => {
     expect(loadPathsConfig(dir).paths).toEqual([]);
   });
 
-  it("does not remove the local label when the relay rejects the sync", async () => {
+  it("does not remove the local share when the relay rejects the sync", async () => {
     configureNode();
-    writePathsConfig(dir, { paths: [{ label: "existing", path: "/some/path" }] });
+    writePathsConfig(dir, { paths: [{ share: "existing", path: "/some/path" }] });
     respondOnce("config_update_error");
 
     const { exitCode } = await runCli(["node", "paths", "remove", "existing"], dir);
 
     expect(exitCode).toBe(1);
-    expect(loadPathsConfig(dir).paths.map((p) => p.label)).toEqual(["existing"]);
+    expect(loadPathsConfig(dir).paths.map((p) => p.share)).toEqual(["existing"]);
   });
 });

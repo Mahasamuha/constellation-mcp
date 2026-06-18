@@ -27,11 +27,11 @@ export interface RpcEnvelope {
 }
 
 export interface PathEntry {
-  label: string;
+  share: string;
   path: string;
   context_file?: string;
   instructions?: string;
 }
 
-/** Maximum length for a label's `instructions` text, regardless of source (inline or context_file). Longer values are dropped (logged as a warning) rather than truncated. */
-export const MAX_LABEL_INSTRUCTIONS_LENGTH = 500;
+/** Maximum length for a share's `instructions` text, regardless of source (inline or context_file). Longer values are dropped (logged as a warning) rather than truncated. */
+export const MAX_SHARE_INSTRUCTIONS_LENGTH = 500;

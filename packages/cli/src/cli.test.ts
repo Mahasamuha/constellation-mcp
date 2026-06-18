@@ -123,7 +123,7 @@ describe("relay --help", () => {
   it("lists relay subcommands", async () => {
     const { exitCode, out } = await runCli(["relay", "--help"], dir);
     expect(exitCode).toBe(0);
-    for (const sub of ["login", "logout", "executors", "labels", "filters", "sessions"]) {
+    for (const sub of ["login", "logout", "executors", "shares", "filters", "sessions"]) {
       expect(out).toContain(sub);
     }
   });
@@ -173,7 +173,7 @@ describe("relay commands without a session", () => {
   it.each([
     { cmd: ["relay", "status"] },
     { cmd: ["relay", "executors", "list"] },
-    { cmd: ["relay", "labels", "list"] },
+    { cmd: ["relay", "shares", "list"] },
     { cmd: ["relay", "filters", "list"] },
     { cmd: ["relay", "sessions", "list"] },
   ])("$cmd exits 1 with 'Not logged in'", async ({ cmd }) => {
@@ -200,7 +200,7 @@ describe("relay commands with expired session", () => {
   it.each([
     { cmd: ["relay", "status"] },
     { cmd: ["relay", "executors", "list"] },
-    { cmd: ["relay", "labels", "list"] },
+    { cmd: ["relay", "shares", "list"] },
   ])("$cmd exits 1 with 'Session expired'", async ({ cmd }) => {
     const { exitCode, err } = await runCli(cmd, dir);
     expect(exitCode).toBe(1);

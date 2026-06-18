@@ -117,7 +117,7 @@ process.on("message", (rawMsg: unknown) => {
 
   if (msg.type === "init") {
     if (initialized) fatal("Received duplicate init message");
-    executor = new FileExecutor(msg.labels, msg.max_file_size_kb);
+    executor = new FileExecutor(msg.shares, msg.max_file_size_kb);
     initialized = true;
     send({ type: "ready" });
     return;

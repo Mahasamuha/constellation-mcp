@@ -9,23 +9,23 @@ import {
 
 describe("isValidMessage", () => {
   it("accepts a well-formed init message", () => {
-    expect(isValidMessage({ type: "init", labels: { docs: "/srv/docs" }, max_file_size_kb: 100 })).toBe(true);
+    expect(isValidMessage({ type: "init", shares: { docs: "/srv/docs" }, max_file_size_kb: 100 })).toBe(true);
   });
 
   it("accepts a well-formed request message", () => {
-    expect(isValidMessage({ type: "request", request_id: "r1", tool: "read_file", label: "docs", params: {} })).toBe(true);
+    expect(isValidMessage({ type: "request", request_id: "r1", tool: "read_file", share: "docs", params: {} })).toBe(true);
   });
 
   it.each([
-    ["missing type", { request_id: "r1", tool: "read_file", label: "docs" }],
+    ["missing type", { request_id: "r1", tool: "read_file", share: "docs" }],
     ["unknown type", { type: "bogus" }],
     ["null", null],
     ["a string", "request"],
-    ["init missing labels", { type: "init", max_file_size_kb: 100 }],
-    ["init with non-numeric max_file_size_kb", { type: "init", labels: {}, max_file_size_kb: "100" }],
-    ["request missing request_id", { type: "request", tool: "read_file", label: "docs" }],
-    ["request missing tool", { type: "request", request_id: "r1", label: "docs" }],
-    ["request missing label", { type: "request", request_id: "r1", tool: "read_file" }],
+    ["init missing shares", { type: "init", max_file_size_kb: 100 }],
+    ["init with non-numeric max_file_size_kb", { type: "init", shares: {}, max_file_size_kb: "100" }],
+    ["request missing request_id", { type: "request", tool: "read_file", share: "docs" }],
+    ["request missing tool", { type: "request", request_id: "r1", share: "docs" }],
+    ["request missing share", { type: "request", request_id: "r1", tool: "read_file" }],
   ])("rejects %s", (_name, msg) => {
     expect(isValidMessage(msg)).toBe(false);
   });
@@ -33,7 +33,7 @@ describe("isValidMessage", () => {
 
 describe("handleRequest", () => {
   function makeRequest(overrides: Partial<SubnodeRequest> = {}): SubnodeRequest {
-    return { type: "request", request_id: "r1", tool: "read_file", label: "docs", params: {}, ...overrides };
+    return { type: "request", request_id: "r1", tool: "read_file", share: "docs", params: {}, ...overrides };
   }
 
   it("sends a result response when the executor succeeds", async () => {

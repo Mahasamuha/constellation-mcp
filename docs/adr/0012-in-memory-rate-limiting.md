@@ -71,5 +71,5 @@ personal deployments.
   kept in separate functions. The reconnect and tool-call surfaces have different
   eviction triggers, granularity expectations, and config knobs; a shared utility would
   couple two mechanisms that are likely to diverge independently as rate-limiting
-  strategy evolves (e.g. adding per-label or per-tool granularity to tool calls without
+  strategy evolves (e.g. adding per-share or per-tool granularity to tool calls without
   affecting reconnect tracking).

@@ -16,7 +16,7 @@ const log = createLogger("hub:subnode-worker");
 
 export interface SubnodeInit {
   type: "init";
-  labels: Record<string, string>;
+  shares: Record<string, string>;
   max_file_size_kb: number;
 }
 
@@ -24,7 +24,7 @@ export interface SubnodeRequest {
   type: "request";
   request_id: string;
   tool: string;
-  label: string;
+  share: string;
   params: unknown;
 }
 
@@ -47,13 +47,13 @@ export function isValidMessage(msg: unknown): msg is SubnodeInit | SubnodeReques
   if (typeof msg !== "object" || msg === null) return false;
   const m = msg as Record<string, unknown>;
   if (m["type"] === "init") {
-    return typeof m["labels"] === "object" && m["labels"] !== null
+    return typeof m["shares"] === "object" && m["shares"] !== null
       && typeof m["max_file_size_kb"] === "number";
   }
   if (m["type"] === "request") {
     return typeof m["request_id"] === "string"
       && typeof m["tool"] === "string"
-      && typeof m["label"] === "string";
+      && typeof m["share"] === "string";
   }
   return false;
 }
@@ -63,7 +63,7 @@ export function isValidMessage(msg: unknown): msg is SubnodeInit | SubnodeReques
 // ---------------------------------------------------------------------------
 
 export interface MinimalExecutor {
-  execute(tool: string, label: string, params: unknown): Promise<ToolResult>;
+  execute(tool: string, share: string, params: unknown): Promise<ToolResult>;
 }
 
 export async function handleRequest(
@@ -71,10 +71,10 @@ export async function handleRequest(
   msg: SubnodeRequest,
   send: (msg: SubnodeResponse) => void
 ): Promise<void> {
-  const { request_id, tool, label, params } = msg;
+  const { request_id, tool, share, params } = msg;
 
   try {
-    const result = await executor.execute(tool, label, params);
+    const result = await executor.execute(tool, share, params);
     if (result.isError) {
       send({ type: "response", request_id, error: result.content });
     } else {

@@ -14,7 +14,7 @@ const log = createLogger("hub:subnode-pool");
 
 interface SubnodeInit {
   type: "init";
-  labels: Record<string, string>;
+  shares: Record<string, string>;
   max_file_size_kb: number;
 }
 
@@ -22,7 +22,7 @@ interface SubnodeRequest {
   type: "request";
   request_id: string;
   tool: string;
-  label: string;
+  share: string;
   params: unknown;
 }
 
@@ -59,7 +59,7 @@ interface Worker {
 
 interface QueuedRequest {
   tool: string;
-  label: string;
+  share: string;
   params: unknown;
   requestId: string;
   resolve: (r: DispatchResult | DispatchError) => void;
@@ -121,7 +121,7 @@ export function checkUidRestrictions(uid: number, cfg: HubConfig): string | null
  * checkUidRestrictions can reject a single bad UID outright; group membership
  * doesn't have an equivalent single value to gate on; a user can be a member of
  * many groups, any one of which (e.g. `docker`, `sudo`, a group that owns
- * sensitive files outside any label) could grant the subnode privileges the
+ * sensitive files outside any share) could grant the subnode privileges the
  * admin never intended. So instead of trying to run with a *trimmed* group
  * list (which would mean replacing initgroups() with a hand-rolled setgroups()
  * call — see ADR 0014), we resolve the full set up front and refuse to spawn at
@@ -239,17 +239,17 @@ export class SubnodePool {
   private subnodes = new Map<string, Subnode>();
   private shuttingDown = false;
   private readonly cfg: HubConfig;
-  private readonly labelRegistry: Record<string, string>;
+  private readonly shareRegistry: Record<string, string>;
 
-  constructor(cfg: HubConfig, labelRegistry: Record<string, string>) {
+  constructor(cfg: HubConfig, shareRegistry: Record<string, string>) {
     this.cfg = cfg;
-    this.labelRegistry = labelRegistry;
+    this.shareRegistry = shareRegistry;
   }
 
   async dispatch(
     identity: ResolvedIdentity,
     tool: string,
-    label: string,
+    share: string,
     params: unknown,
     requestId: string
   ): Promise<DispatchResult | DispatchError> {
@@ -289,7 +289,7 @@ export class SubnodePool {
       this.subnodes.set(identity.username, subnode);
     }
 
-    return this.assignAndSend(subnode, identity, tool, label, params, requestId);
+    return this.assignAndSend(subnode, identity, tool, share, params, requestId);
   }
 
   /**
@@ -303,7 +303,7 @@ export class SubnodePool {
     subnode: Subnode,
     identity: ResolvedIdentity,
     tool: string,
-    label: string,
+    share: string,
     params: unknown,
     requestId: string
   ): Promise<DispatchResult | DispatchError> {
@@ -328,7 +328,7 @@ export class SubnodePool {
 
       const idleWorker = subnode.workers.find((w) => w.ready && w.pending.size === 0);
       if (idleWorker) {
-        void this.sendRequest(subnode, idleWorker, tool, label, params, requestId).then(resultResolve);
+        void this.sendRequest(subnode, idleWorker, tool, share, params, requestId).then(resultResolve);
         return;
       }
 
@@ -342,14 +342,14 @@ export class SubnodePool {
         }
         const newWorker = spawnResult.worker;
         subnode.workers.push(newWorker);
-        void this.sendRequest(subnode, newWorker, tool, label, params, requestId).then(resultResolve);
+        void this.sendRequest(subnode, newWorker, tool, share, params, requestId).then(resultResolve);
         return;
       }
 
       // At capacity — queue, bounded by the resolved queue timeout
       const queueTimeoutMs = resolveQueueTimeoutMs(this.cfg);
       subnode.queue.push({
-        tool, label, params, requestId,
+        tool, share, params, requestId,
         resolve: resultResolve,
         deadline: Date.now() + queueTimeoutMs,
       });
@@ -408,7 +408,7 @@ export class SubnodePool {
 
     const initMsg: SubnodeInit = {
       type: "init",
-      labels: this.labelRegistry,
+      shares: this.shareRegistry,
       max_file_size_kb: 100,
     };
     child.send(initMsg);
@@ -448,13 +448,13 @@ export class SubnodePool {
     subnode: Subnode,
     worker: Worker,
     tool: string,
-    label: string,
+    share: string,
     params: unknown,
     requestId: string
   ): Promise<DispatchResult | DispatchError> {
     const timeoutMs = this.cfg.subnode_rpc_timeout_seconds * 1000;
 
-    const msg: SubnodeRequest = { type: "request", request_id: requestId, tool, label, params };
+    const msg: SubnodeRequest = { type: "request", request_id: requestId, tool, share, params };
 
     return new Promise<DispatchResult | DispatchError>((resolve) => {
       const timer = setTimeout(() => {
@@ -494,7 +494,7 @@ export class SubnodePool {
         entry.resolve({ kind: "timeout", message: "Request timed out waiting for a free worker" });
         continue;
       }
-      void this.sendRequest(subnode, worker, entry.tool, entry.label, entry.params, entry.requestId)
+      void this.sendRequest(subnode, worker, entry.tool, entry.share, entry.params, entry.requestId)
         .then(entry.resolve);
       return;
     }

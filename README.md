@@ -16,8 +16,8 @@ Access any machine's filesystem from any MCP client (Claude, ChatGPT, Cursor) th
 
 1. **Stand up the relay** — a small self-hosted server that relays between your MCP client and your machines.
 2. **Install the node** on each machine you want to expose. The node connects outbound to the relay, so no inbound ports are needed on the machine itself.
-3. **Add paths** on the node — each path scopes what the MCP client can see (e.g. `/home/user/notes`). Paths get a short label (e.g. `notes`) that makes them easy to reference in conversation.
-4. **Connect your MCP client** (Claude, Cursor, etc.) to the relay URL — it sees one unified tool surface across all your nodes and labeled paths.
+3. **Add paths** on the node — each path scopes what the MCP client can see (e.g. `/home/user/notes`). Paths get a short share name (e.g. `notes`) that makes them easy to reference in conversation.
+4. **Connect your MCP client** (Claude, Cursor, etc.) to the relay URL — it sees one unified tool surface across all your nodes and their registered shares.
 
 That's it. Ask your AI assistant to read, search, or edit anything under a registered path, on any connected machine.
 

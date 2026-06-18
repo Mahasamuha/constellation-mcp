@@ -134,12 +134,12 @@ Shows live node state. Polls the same data sources as the tray.
 
 ### Paths Window (`720 × 420`)
 
-Manages path labels from `paths.yaml`. Changes sync to the relay immediately via `constellation node paths add/remove`.
+Manages path shares from `paths.yaml`. Changes sync to the relay immediately via `constellation node paths add/remove`.
 
-- Table: Label | Path | Instructions (truncated, full text on hover) | Remove button
-- **Add path** form: label text field, path text field with Browse… button (native folder picker), instructions textarea with a live character counter (500 max), Add button
+- Table: Share | Path | Instructions (truncated, full text on hover) | Remove button
+- **Add path** form: share text field, path text field with Browse… button (native folder picker), instructions textarea with a live character counter (500 max), Add button
 - Remove prompts for confirmation before calling `remove_path`
-- Path must be an existing directory; labels must be unique; instructions over 500 characters disable the Add button
+- Path must be an existing directory; shares must be unique; instructions over 500 characters disable the Add button
 
 ### Settings Window (`480 × 380`)
 
@@ -236,10 +236,10 @@ All commands are invoked from the frontend via `invoke('<name>', args)`.
 | Command | Args | Returns | Notes |
 |---|---|---|---|
 | `get_paths` | — | `PathEntry[]` | Reads `paths.yaml` |
-| `add_path` | `label`, `path`, `instructions?` | `PathEntry[]` | Validates directory exists; calls `node paths add [--instructions <text>]` |
-| `remove_path` | `label` | `PathEntry[]` | Calls `node paths remove` |
+| `add_path` | `share`, `path`, `instructions?` | `PathEntry[]` | Validates directory exists; calls `node paths add [--instructions <text>]` |
+| `remove_path` | `share` | `PathEntry[]` | Calls `node paths remove` |
 
-`PathEntry`: `{ label: string, path: string }`
+`PathEntry`: `{ share: string, path: string }`
 
 ### Auto-launch
 

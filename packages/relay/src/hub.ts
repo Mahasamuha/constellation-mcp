@@ -354,22 +354,22 @@ async function handleExecutorMessage(
     await handleUpdateHost(conn, msg as unknown as UpdateHostMessage);
   } else if (type === "rotate_token") {
     await handleRotateToken(conn);
-  } else if (type === "shared_label_sync") {
-    await handleSharedLabelSync(conn, msg as unknown as SharedLabelSyncMessage);
+  } else if (type === "hub_share_sync") {
+    await handleHubShareSync(conn, msg as unknown as HubShareSyncMessage);
   } else {
     log.warn({ executorId: conn.executorId, type }, "Unknown control message from executor — dropping");
   }
 }
 
 interface ConfigUpdateEntry {
-  label: string;
+  share: string;
   reported_path: string;
   instructions?: string;
 }
 
 async function handleConfigUpdate(conn: ConnectedExecutor, msg: ConfigUpdateMessage): Promise<void> {
   if (conn.tokenType === ExecutorTokenType.HUB) {
-    send(conn.ws, { type: "config_update_error", error: "Hubs use admin-defined labels; config_update is not supported" });
+    send(conn.ws, { type: "config_update_error", error: "Hubs use admin-defined shares; config_update is not supported" });
     return;
   }
   // After HUB guard: userId is guaranteed non-null for NODE connections.
@@ -382,49 +382,49 @@ async function handleConfigUpdate(conn: ConnectedExecutor, msg: ConfigUpdateMess
 
   const entries = paths as ConfigUpdateEntry[];
 
-  // Validate all labels before writing anything.
+  // Validate all shares before writing anything.
   const seen = new Set<string>();
   for (const entry of entries) {
-    if (typeof entry !== "object" || entry === null || !entry.label || !entry.reported_path) {
-      send(conn.ws, { type: "config_update_error", error: "Each path entry must have label and reported_path" });
+    if (typeof entry !== "object" || entry === null || !entry.share || !entry.reported_path) {
+      send(conn.ws, { type: "config_update_error", error: "Each path entry must have share and reported_path" });
       return;
     }
-    if (seen.has(entry.label)) {
-      send(conn.ws, { type: "config_update_error", error: `Duplicate label in payload: ${entry.label}` });
+    if (seen.has(entry.share)) {
+      send(conn.ws, { type: "config_update_error", error: `Duplicate share in payload: ${entry.share}` });
       return;
     }
-    seen.add(entry.label);
+    seen.add(entry.share);
   }
 
-  // Upsert all provided labels and remove any that are no longer present.
+  // Upsert all provided shares and remove any that are no longer present.
   // Conflict check is inside the transaction to avoid a TOCTOU race where two
-  // executors register the same label concurrently and both pass a pre-transaction check.
+  // executors register the same share concurrently and both pass a pre-transaction check.
   // Throwing inside the transaction rolls it back cleanly.
-  class LabelConflictError extends Error {
-    constructor(public readonly label: string) { super(); }
+  class ShareConflictError extends Error {
+    constructor(public readonly share: string) { super(); }
   }
 
   try {
     await prisma.$transaction(async (tx) => {
       for (const entry of entries) {
-        const conflict = await tx.pathLabel.findFirst({
+        const conflict = await tx.pathShare.findFirst({
           where: {
             userId,
-            label: entry.label,
+            share: entry.share,
             NOT: { executorId: conn.executorId },
           },
         });
-        if (conflict) throw new LabelConflictError(entry.label);
+        if (conflict) throw new ShareConflictError(entry.share);
       }
 
       for (const entry of entries) {
         const instructions = typeof entry.instructions === "string" ? entry.instructions : null;
-        await tx.pathLabel.upsert({
-          where: { userId_label: { userId, label: entry.label } },
+        await tx.pathShare.upsert({
+          where: { userId_share: { userId, share: entry.share } },
           create: {
             userId,
             executorId: conn.executorId,
-            label: entry.label,
+            share: entry.share,
             reportedPath: entry.reported_path,
             instructions,
           },
@@ -432,20 +432,20 @@ async function handleConfigUpdate(conn: ConnectedExecutor, msg: ConfigUpdateMess
         });
       }
 
-      // Remove labels belonging to this executor that are no longer in the payload.
-      const activeLabels = entries.map((e) => e.label);
-      await tx.pathLabel.deleteMany({
+      // Remove shares belonging to this executor that are no longer in the payload.
+      const activeShares = entries.map((e) => e.share);
+      await tx.pathShare.deleteMany({
         where: {
           executorId: conn.executorId,
-          label: { notIn: activeLabels },
+          share: { notIn: activeShares },
         },
       });
     });
   } catch (err) {
-    if (err instanceof LabelConflictError) {
+    if (err instanceof ShareConflictError) {
       send(conn.ws, {
         type: "config_update_error",
-        error: `Label "${err.label}" is already registered by another executor`,
+        error: `Share "${err.share}" is already registered by another executor`,
       });
       return;
     }
@@ -536,69 +536,69 @@ async function handleRotateToken(conn: ConnectedExecutor): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Shared label sync
+// Hub share sync
 // ---------------------------------------------------------------------------
 
-interface SharedLabelEntry {
+interface HubShareEntry {
   name: string;
   reported_path: string;
   permission_blob: object;
   instructions?: string;
 }
 
-interface SharedLabelSyncMessage {
-  type: "shared_label_sync";
-  labels: unknown;
+interface HubShareSyncMessage {
+  type: "hub_share_sync";
+  shares: unknown;
 }
 
-async function handleSharedLabelSync(conn: ConnectedExecutor, msg: SharedLabelSyncMessage): Promise<void> {
+async function handleHubShareSync(conn: ConnectedExecutor, msg: HubShareSyncMessage): Promise<void> {
   if (conn.tokenType !== ExecutorTokenType.HUB) {
-    send(conn.ws, { type: "shared_label_sync_error", error: "shared_label_sync is only valid for HUB tokens (ExecutorTokenType.HUB)" });
+    send(conn.ws, { type: "hub_share_sync_error", error: "hub_share_sync is only valid for HUB tokens (ExecutorTokenType.HUB)" });
     return;
   }
 
-  const rawLabels = msg.labels;
-  if (!Array.isArray(rawLabels)) {
-    send(conn.ws, { type: "shared_label_sync_error", error: "labels must be an array" });
+  const rawShares = msg.shares;
+  if (!Array.isArray(rawShares)) {
+    send(conn.ws, { type: "hub_share_sync_error", error: "shares must be an array" });
     return;
   }
 
-  const labels = rawLabels as SharedLabelEntry[];
+  const shares = rawShares as HubShareEntry[];
 
   // Validate shape
-  for (const entry of labels) {
+  for (const entry of shares) {
     if (typeof entry !== "object" || entry === null) {
-      send(conn.ws, { type: "shared_label_sync_error", error: "Each label entry must be an object" });
+      send(conn.ws, { type: "hub_share_sync_error", error: "Each share entry must be an object" });
       return;
     }
     if (typeof entry.name !== "string" || !entry.name) {
-      send(conn.ws, { type: "shared_label_sync_error", error: "Each label entry must have a name string" });
+      send(conn.ws, { type: "hub_share_sync_error", error: "Each share entry must have a name string" });
       return;
     }
     if (typeof entry.reported_path !== "string" || !entry.reported_path) {
-      send(conn.ws, { type: "shared_label_sync_error", error: `Label '${entry.name}': reported_path must be a non-empty string` });
+      send(conn.ws, { type: "hub_share_sync_error", error: `Share '${entry.name}': reported_path must be a non-empty string` });
       return;
     }
     if (typeof entry.permission_blob !== "object" || entry.permission_blob === null) {
-      send(conn.ws, { type: "shared_label_sync_error", error: `Label '${entry.name}': permission_blob must be an object` });
+      send(conn.ws, { type: "hub_share_sync_error", error: `Share '${entry.name}': permission_blob must be an object` });
       return;
     }
     if (entry.instructions !== undefined && typeof entry.instructions !== "string") {
-      send(conn.ws, { type: "shared_label_sync_error", error: `Label '${entry.name}': instructions must be a string` });
+      send(conn.ws, { type: "hub_share_sync_error", error: `Share '${entry.name}': instructions must be a string` });
       return;
     }
   }
 
-  // Upsert labels and remove stale entries in a transaction
+  // Upsert shares and remove stale entries in a transaction
   try {
     await prisma.$transaction(async (tx) => {
-      for (const entry of labels) {
+      for (const entry of shares) {
         const instructions = typeof entry.instructions === "string" ? entry.instructions : null;
-        await tx.hubPathLabel.upsert({
-          where: { executorId_label: { executorId: conn.executorId, label: entry.name } },
+        await tx.hubShare.upsert({
+          where: { executorId_share: { executorId: conn.executorId, share: entry.name } },
           create: {
             executorId: conn.executorId,
-            label: entry.name,
+            share: entry.name,
             reportedPath: entry.reported_path,
             permissionBlob: entry.permission_blob,
             instructions,
@@ -611,22 +611,22 @@ async function handleSharedLabelSync(conn: ConnectedExecutor, msg: SharedLabelSy
         });
       }
 
-      const activeLabels = labels.map((e) => e.name);
-      await tx.hubPathLabel.deleteMany({
+      const activeShares = shares.map((e) => e.name);
+      await tx.hubShare.deleteMany({
         where: {
           executorId: conn.executorId,
-          label: { notIn: activeLabels },
+          share: { notIn: activeShares },
         },
       });
     });
   } catch (err) {
-    log.error({ err, executorId: conn.executorId }, "Failed to sync shared labels");
-    send(conn.ws, { type: "shared_label_sync_error", error: "Internal error during label sync" });
+    log.error({ err, executorId: conn.executorId }, "Failed to sync hub shares");
+    send(conn.ws, { type: "hub_share_sync_error", error: "Internal error during share sync" });
     return;
   }
 
-  log.info({ executorId: conn.executorId, count: labels.length }, "Shared labels synced");
-  send(conn.ws, { type: "shared_label_sync_ok" });
+  log.info({ executorId: conn.executorId, count: shares.length }, "Hub shares synced");
+  send(conn.ws, { type: "hub_share_sync_ok" });
 }
 
 // ---------------------------------------------------------------------------

@@ -1,7 +1,7 @@
 import { RelaySocket, type PathEntry, type RpcEnvelope } from "@constellation/shared";
 import type { NodeConfig } from "./config.js";
 import { writeNodeToken, buildConfigUpdatePaths } from "./config.js";
-import { handleRpc, LabelRegistryCache } from "./rpc.js";
+import { handleRpc, ShareRegistryCache } from "./rpc.js";
 
 export interface ConnectionOptions {
   configDir: string;
@@ -10,7 +10,7 @@ export interface ConnectionOptions {
 }
 
 export class NodeConnection extends RelaySocket {
-  private readonly registryCache = new LabelRegistryCache();
+  private readonly registryCache = new ShareRegistryCache();
 
   constructor(private readonly opts: ConnectionOptions) {
     super({ logModule: "node:connection", path: "/executor/connect" });
