@@ -1,7 +1,7 @@
 import { RelaySocket, type PathEntry, type RpcEnvelope } from "@constellation/shared";
 import type { NodeConfig } from "./config.js";
 import { writeNodeToken, buildConfigUpdatePaths } from "./config.js";
-import { handleRpc } from "./rpc.js";
+import { handleRpc, LabelRegistryCache } from "./rpc.js";
 
 export interface ConnectionOptions {
   configDir: string;
@@ -9,9 +9,11 @@ export interface ConnectionOptions {
   getPaths: () => PathEntry[];
 }
 
-export class AgentConnection extends RelaySocket {
+export class NodeConnection extends RelaySocket {
+  private readonly registryCache = new LabelRegistryCache();
+
   constructor(private readonly opts: ConnectionOptions) {
-    super({ logModule: "node:connection", path: "/agent/connect" });
+    super({ logModule: "node:connection", path: "/executor/connect" });
   }
 
   /** Sends a config_update message with the current paths. */
@@ -50,7 +52,7 @@ export class AgentConnection extends RelaySocket {
     if (typeof msg["request_id"] === "string" && typeof msg["tool"] === "string") {
       const config = this.opts.getConfig();
       const paths = this.opts.getPaths();
-      handleRpc(msg as RpcEnvelope, paths, config)
+      handleRpc(msg as RpcEnvelope, paths, config, this.registryCache)
         .then((response) => this.send(response))
         .catch((err) => {
           this.log.error({ err }, "Unhandled error in RPC handler");

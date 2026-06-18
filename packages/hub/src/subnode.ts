@@ -49,6 +49,12 @@ interface Worker {
   idleTimer: ReturnType<typeof setTimeout> | null;
   /** Fixed at spawn time: "warm" if spawned within the min floor, "burst" if beyond. */
   tier: "warm" | "burst";
+  /** OS identity this worker was spawned (and privilege-dropped) for — fixed for the
+   *  process's entire life since setuid/setgid can't be re-applied. Used to detect uid/gid
+   *  drift (e.g. account deletion + uid reuse) so a stale worker is never reused for a
+   *  freshly-resolved identity it no longer matches. */
+  uid: number;
+  gid: number;
 }
 
 interface QueuedRequest {
@@ -253,15 +259,29 @@ export class SubnodePool {
 
     const restriction = checkUidRestrictions(identity.uid, this.cfg);
     if (restriction) {
-      log.warn({ username: identity.username, uid: identity.uid, restriction }, "UID blocked");
-      return { kind: "uid_blocked", message: restriction };
+      // `restriction` (the specific rule that matched) is internal detail for
+      // operators only — it discloses configured UID range bounds and the hub's
+      // own service-account UID. Log it in full here, but never echo it into
+      // the message that crosses the trust boundary to the RPC caller below
+      // (same pattern as removeWorker's `reason` — see SECURITY-2).
+      log.warn({ username: identity.username, uid: identity.uid, restriction, request_id: requestId }, "UID blocked");
+      this.evictSubnodeWorkers(identity.username, "uid newly blocked by policy");
+      return {
+        kind: "uid_blocked",
+        message: `Access denied: your account is not permitted to use this hub. Contact your administrator with reference ID: ${requestId}`,
+      };
     }
 
     // GID restriction checks — group membership is resolved fresh on every
-    // dispatch (not just at spawn) so changes to a user's groups take effect
-    // without waiting for their pooled worker to be torn down.
+    // dispatch (not just at spawn), and a block now also evicts any already-warm
+    // workers for this user (see evictSubnodeWorkers) instead of only gating new
+    // spawns — so revocation takes effect immediately, not just once the pooled
+    // worker happens to idle out.
     const gidBlock = await checkGidRestrictions(identity, this.cfg, requestId);
-    if (gidBlock) return gidBlock;
+    if (gidBlock) {
+      this.evictSubnodeWorkers(identity.username, "gid newly blocked by policy");
+      return gidBlock;
+    }
 
     let subnode = this.subnodes.get(identity.username);
     if (!subnode) {
@@ -293,6 +313,19 @@ export class SubnodePool {
     });
 
     subnode.lock = subnode.lock.then(async () => {
+      // A worker's OS credentials are fixed forever at spawn time (setuid/setgid can't be
+      // re-applied later). If this username has since re-resolved to a different uid/gid
+      // (e.g. the account was deleted and recreated with a recycled uid), any existing idle
+      // worker is running under the WRONG identity and must never be handed this request.
+      for (const stale of subnode.workers.filter(
+        (w) => w.pending.size === 0 && (w.uid !== identity.uid || w.gid !== identity.gid)
+      )) {
+        this.removeWorker(subnode, stale, "identity uid/gid changed since this worker was spawned");
+      }
+      // removeWorker deletes the subnode from the pool map once its last worker is gone —
+      // re-register it so a worker spawned below isn't orphaned from the pool.
+      this.subnodes.set(identity.username, subnode);
+
       const idleWorker = subnode.workers.find((w) => w.ready && w.pending.size === 0);
       if (idleWorker) {
         void this.sendRequest(subnode, idleWorker, tool, label, params, requestId).then(resultResolve);
@@ -340,7 +373,7 @@ export class SubnodePool {
     identity: ResolvedIdentity,
     tier: "warm" | "burst"
   ): Promise<{ ok: true; worker: Worker } | ({ ok: false } & DispatchError)> {
-    const { username, uid } = identity;
+    const { username, uid, gid } = identity;
 
     log.info({ username, uid, tier }, "Spawning subnode worker");
 
@@ -367,6 +400,8 @@ export class SubnodePool {
       pending: new Map(),
       idleTimer: null,
       tier,
+      uid,
+      gid,
     };
 
     this.wireChildHandlers(subnode, worker);
@@ -567,6 +602,21 @@ export class SubnodePool {
       if (this.subnodes.get(subnode.username) === subnode) {
         this.subnodes.delete(subnode.username);
       }
+    }
+  }
+
+  /**
+   * Tears down every already-warm worker for a user whose UID/GID was just
+   * rejected by policy. Without this, a worker spawned before the restriction
+   * took effect would keep serving that user's requests (including any
+   * in-flight one, via removeWorker's pending-rejection) until it idled out —
+   * dispatch()'s checks otherwise only gate *new* spawns, not already-running ones.
+   */
+  private evictSubnodeWorkers(username: string, reason: string): void {
+    const subnode = this.subnodes.get(username);
+    if (!subnode) return;
+    for (const worker of [...subnode.workers]) {
+      this.removeWorker(subnode, worker, reason);
     }
   }
 

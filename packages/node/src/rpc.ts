@@ -6,27 +6,32 @@ const log = createLogger("node:rpc");
 
 export type { RpcError, RpcResponse, RpcEnvelope };
 
-// Cache the realpath-resolved label registry so we don't re-stat every path
-// on each RPC. Keyed on a JSON fingerprint of the current paths list; invalidated
-// automatically when paths change (e.g. after a config_update).
-let _registryKey = "";
-let _registryCache: Record<string, string> = {};
+/**
+ * Caches the realpath-resolved label registry so we don't re-stat every path
+ * on each RPC. Keyed on a JSON fingerprint of the current paths list; invalidated
+ * automatically when paths change (e.g. after a config_update). One instance is
+ * owned by the node's connection for its lifetime.
+ */
+export class LabelRegistryCache {
+  private key = "";
+  private cache: Record<string, string> = {};
 
-async function buildLabelRegistry(paths: PathEntry[]): Promise<Record<string, string>> {
-  const key = JSON.stringify(paths);
-  if (key === _registryKey) return _registryCache;
+  async build(paths: PathEntry[]): Promise<Record<string, string>> {
+    const key = JSON.stringify(paths);
+    if (key === this.key) return this.cache;
 
-  const registry: Record<string, string> = {};
-  for (const p of paths) {
-    try {
-      registry[p.label] = await fs.realpath(p.path);
-    } catch {
-      // skip paths that can't be resolved at this moment
+    const registry: Record<string, string> = {};
+    for (const p of paths) {
+      try {
+        registry[p.label] = await fs.realpath(p.path);
+      } catch {
+        // skip paths that can't be resolved at this moment
+      }
     }
+    this.key = key;
+    this.cache = registry;
+    return registry;
   }
-  _registryKey = key;
-  _registryCache = registry;
-  return registry;
 }
 
 /**
@@ -36,7 +41,8 @@ async function buildLabelRegistry(paths: PathEntry[]): Promise<Record<string, st
 export async function handleRpc(
   envelope: RpcEnvelope,
   paths: PathEntry[],
-  config: NodeConfig
+  config: NodeConfig,
+  registryCache: LabelRegistryCache
 ): Promise<RpcResponse> {
   const { request_id, tool, absolute_root } = envelope;
 
@@ -46,7 +52,7 @@ export async function handleRpc(
     return { request_id, error: { message: "Path rejected by node" } };
   }
 
-  const labelRegistry = await buildLabelRegistry(paths);
+  const labelRegistry = await registryCache.build(paths);
 
   if (labelRegistry[allowed.label] === undefined) {
     log.warn({ tool, absolute_root }, "Path rejected by node — realpath failed");

@@ -6,8 +6,14 @@ import { existsSync } from "node:fs";
 import { registerNodeCommands } from "@constellation/node/cli";
 import { registerRelayCommands } from "./cli/relay.js";
 import { registerHubCommands } from "@constellation/hub/cli";
-import { writeRelaySession, relaySessionPath } from "@constellation/node/config";
+import { writeRelaySession, relaySessionPath, loadRelaySession } from "@constellation/node/config";
 import { makeTempDir, cleanTempDir } from "./test/fixtures.js";
+
+vi.mock("@constellation/shared", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@constellation/shared")>();
+  return { ...actual, confirm: vi.fn() };
+});
+import { confirm as mockedConfirm } from "@constellation/shared";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -199,5 +205,149 @@ describe("relay commands with expired session", () => {
     const { exitCode, err } = await runCli(cmd, dir);
     expect(exitCode).toBe(1);
     expect(err).toContain("Session expired");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// relay status — authenticated API calls, session refresh, and error mapping
+// ---------------------------------------------------------------------------
+
+describe("relay status — valid session", () => {
+  beforeEach(() => {
+    writeRelaySession(dir, {
+      relay_url: "https://relay.example.com",
+      access_token: "tok_valid",
+      access_token_expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("calls the status API and formats a multi-day uptime", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      expect(url).toBe("https://relay.example.com/api/status");
+      return new Response(JSON.stringify({ status: "ok", uptime_seconds: 90061, version: "1.2.3" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { exitCode, out } = await runCli(["relay", "status"], dir);
+
+    expect(exitCode).toBe(0);
+    expect(out).toContain("Status:  ok");
+    expect(out).toContain("Version: 1.2.3");
+    expect(out).toContain("Uptime:  1d 1h 1m");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("maps an ESCALATION_REQUIRED API error to an admin-privileges message", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () =>
+      new Response(JSON.stringify({ error: "ESCALATION_REQUIRED" }), { status: 403 })
+    ));
+
+    const { exitCode, err } = await runCli(["relay", "status"], dir);
+
+    expect(exitCode).toBe(1);
+    expect(err).toContain("requires admin privileges");
+    expect(err).toContain("constellation relay elevate");
+  });
+});
+
+describe("relay status — expired session with a refresh token", () => {
+  beforeEach(() => {
+    writeRelaySession(dir, {
+      relay_url: "https://relay.example.com",
+      access_token: "tok_old",
+      access_token_expires_at: new Date(Date.now() - 3_600_000).toISOString(),
+      refresh_token: "refresh_abc",
+      refresh_token_expires_at: new Date(Date.now() + 30 * 86_400_000).toISOString(),
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("silently refreshes, persists the new session, and retries the call", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url === "https://relay.example.com/oauth/token") {
+        return new Response(JSON.stringify({ access_token: "tok_new", expires_in: 3600 }), { status: 200 });
+      }
+      if (url === "https://relay.example.com/api/status") {
+        return new Response(JSON.stringify({ status: "ok", uptime_seconds: 5, version: "9.9.9" }), { status: 200 });
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { exitCode, out } = await runCli(["relay", "status"], dir);
+
+    expect(exitCode).toBe(0);
+    expect(out).toContain("Uptime:  5s");
+    expect(loadRelaySession(dir).access_token).toBe("tok_new");
+    // refresh_token wasn't rotated by the relay in this response, so the old one is kept.
+    expect(loadRelaySession(dir).refresh_token).toBe("refresh_abc");
+  });
+
+  it("falls through to 'Session expired' if the refresh request fails", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (url === "https://relay.example.com/oauth/token") {
+        return new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400 });
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    }));
+
+    const { exitCode, err } = await runCli(["relay", "status"], dir);
+
+    expect(exitCode).toBe(1);
+    expect(err).toContain("Session expired");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// relay executors revoke — confirmation prompt gating a destructive action
+// ---------------------------------------------------------------------------
+
+describe("relay executors revoke", () => {
+  beforeEach(() => {
+    writeRelaySession(dir, {
+      relay_url: "https://relay.example.com",
+      access_token: "tok_valid",
+      access_token_expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.mocked(mockedConfirm).mockReset();
+  });
+
+  it("does not call the API when the user declines the confirmation", async () => {
+    vi.mocked(mockedConfirm).mockResolvedValue(false);
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { exitCode, out } = await runCli(["relay", "executors", "revoke", "exec-1"], dir);
+
+    expect(exitCode).toBe(0);
+    expect(out).toContain("Cancelled.");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("revokes the token when the user confirms", async () => {
+    vi.mocked(mockedConfirm).mockResolvedValue(true);
+    const fetchMock = vi.fn(async (url: string, opts?: RequestInit) => {
+      expect(url).toBe("https://relay.example.com/api/executors/exec-1/token");
+      expect(opts?.method).toBe("DELETE");
+      return new Response(null, { status: 204 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { exitCode, out } = await runCli(["relay", "executors", "revoke", "exec-1"], dir);
+
+    expect(exitCode).toBe(0);
+    expect(out).toContain("Token revoked.");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

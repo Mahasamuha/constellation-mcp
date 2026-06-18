@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync, mkdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { homedir, platform } from "node:os";
 import yaml from "js-yaml";
-import { createLogger, MAX_LABEL_INSTRUCTIONS_LENGTH, type PathEntry } from "@constellation/shared";
+import { createLogger, MAX_LABEL_INSTRUCTIONS_LENGTH, str, type PathEntry } from "@constellation/shared";
 
 const log = createLogger("node:config");
 
@@ -84,7 +84,7 @@ export interface PathsConfig {
 export function loadPathsConfig(dir: string): PathsConfig {
   try {
     const raw = readFileSync(pathsYamlPath(dir), "utf8");
-    const parsed = yaml.load(raw) as { paths?: object[] };
+    const parsed = yaml.load(raw) as { paths?: Record<string, unknown>[] };
     const paths = (parsed?.paths ?? []).map((p) => {
       const entry: PathEntry = { label: str(p, "label") ?? "", path: str(p, "path") ?? "" };
       const contextFile = str(p, "context_file");
@@ -192,13 +192,4 @@ export function deleteRelaySession(dir: string): void {
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
   }
-}
-
-// ---------------------------------------------------------------------------
-// helpers
-// ---------------------------------------------------------------------------
-
-function str(obj: object, key: string): string {
-  const v = (obj as Record<string, unknown>)[key];
-  return typeof v === "string" ? v : "";
 }

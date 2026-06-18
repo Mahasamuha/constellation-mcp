@@ -8,7 +8,7 @@ import {
   deleteRelaySession,
   type RelaySession,
 } from "@constellation/node/config";
-import { poll, confirm } from "./util.js";
+import { poll, confirm } from "@constellation/shared";
 
 // ---------------------------------------------------------------------------
 // API response types
@@ -335,9 +335,9 @@ export function registerRelayCommands(program: Command): void {
     .option("--json", "Output as JSON")
     .action(async (opts: { json?: boolean }) => {
       const session = await getValidSession(cfgDir);
-      const data = await apiGet<ExecutorEntry[]>(session, "/api/executors");
-      if (opts.json) { console.log(JSON.stringify(data, null, 2)); return; }
-      for (const a of data) {
+      const res = await apiGet<{ data: ExecutorEntry[] }>(session, "/api/executors");
+      if (opts.json) { console.log(JSON.stringify(res.data, null, 2)); return; }
+      for (const a of res.data) {
         console.log(`${a.host} (${a.id})`);
         console.log(`  Status: ${a.online ? "online" : "offline"}${a.last_heartbeat_at ? `  last seen ${a.last_heartbeat_at}` : ""}`);
         for (const l of a.labels) console.log(`  ${l.label} → ${l.reported_path}`);
@@ -370,9 +370,9 @@ export function registerRelayCommands(program: Command): void {
     .action(async (opts: { executor?: string; json?: boolean }) => {
       const session = await getValidSession(cfgDir);
       const qs = opts.executor ? `?executor_id=${encodeURIComponent(opts.executor)}` : "";
-      const data = await apiGet<LabelEntry[]>(session, `/api/labels${qs}`);
-      if (opts.json) { console.log(JSON.stringify(data, null, 2)); return; }
-      for (const l of data) {
+      const res = await apiGet<{ data: LabelEntry[] }>(session, `/api/labels${qs}`);
+      if (opts.json) { console.log(JSON.stringify(res.data, null, 2)); return; }
+      for (const l of res.data) {
         console.log(`${l.label}  (${l.host})  →  ${l.reported_path}`);
       }
     });
@@ -389,9 +389,9 @@ export function registerRelayCommands(program: Command): void {
     .option("--json", "Output as JSON")
     .action(async (opts: { json?: boolean }) => {
       const session = await getValidSession(cfgDir);
-      const data = await apiGet<FilterEntry[]>(session, "/api/filters");
-      if (opts.json) { console.log(JSON.stringify(data, null, 2)); return; }
-      for (const f of data) {
+      const res = await apiGet<{ data: FilterEntry[] }>(session, "/api/filters");
+      if (opts.json) { console.log(JSON.stringify(res.data, null, 2)); return; }
+      for (const f of res.data) {
         const scope = f.scope_executor_id ? ` [executor: ${f.scope_executor_id}]` : "";
         console.log(`${f.id}  ${f.pattern_type}:${f.pattern}${scope}  (${f.created_at})`);
       }
@@ -437,9 +437,9 @@ export function registerRelayCommands(program: Command): void {
     .option("--json", "Output as JSON")
     .action(async (opts: { json?: boolean }) => {
       const session = await getValidSession(cfgDir);
-      const data = await apiGet<SessionEntry[]>(session, "/api/sessions");
-      if (opts.json) { console.log(JSON.stringify(data, null, 2)); return; }
-      for (const s of data) {
+      const res = await apiGet<{ data: SessionEntry[] }>(session, "/api/sessions");
+      if (opts.json) { console.log(JSON.stringify(res.data, null, 2)); return; }
+      for (const s of res.data) {
         console.log(`${s.id}  client:${s.mcp_client_id}  issued:${s.issued_at}  expires:${s.expires_at}${s.has_refresh_token ? "  [refresh]" : ""}`);
       }
     });

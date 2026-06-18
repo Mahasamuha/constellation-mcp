@@ -8,40 +8,24 @@
  * IPC protocol:
  *   Parent → Worker:  SubnodeInit (once), then SubnodeRequest (many)
  *   Worker → Parent:  SubnodeReady (once after init), then SubnodeResponse
+ *
+ * Message types and the request/response handling logic live in
+ * subnode-worker-logic.ts so they can be unit tested directly — everything
+ * below is the privilege-drop and IPC-wiring bootstrap, which is only safe to
+ * run when this file is actually forked as a worker.
  */
 
 import { FileExecutor, createLogger } from "@constellation/shared";
+import {
+  isValidMessage,
+  handleRequest,
+  type SubnodeInit,
+  type SubnodeRequest,
+  type SubnodeReady,
+  type SubnodeResponse,
+} from "./subnode-worker-logic.js";
 
 const log = createLogger("hub:subnode-worker");
-
-// ---------------------------------------------------------------------------
-// IPC message types
-// ---------------------------------------------------------------------------
-
-interface SubnodeInit {
-  type: "init";
-  labels: Record<string, string>;
-  max_file_size_kb: number;
-}
-
-interface SubnodeRequest {
-  type: "request";
-  request_id: string;
-  tool: string;
-  label: string;
-  params: unknown;
-}
-
-interface SubnodeReady {
-  type: "ready";
-}
-
-interface SubnodeResponse {
-  type: "response";
-  request_id: string;
-  result?: unknown;
-  error?: unknown;
-}
 
 // ---------------------------------------------------------------------------
 // Privilege drop — must happen before any file operations
@@ -143,29 +127,10 @@ process.on("message", (rawMsg: unknown) => {
     if (!initialized || !executor) fatal("Received request before init");
 
     inFlight++;
-    const { request_id, tool, label, params } = msg;
-
-    executor
-      .execute(tool, label, params)
-      .then((result) => {
-        if (result.isError) {
-          send({ type: "response", request_id, error: result.content });
-        } else {
-          send({ type: "response", request_id, result: result.content });
-        }
-      })
-      .catch((err: Error) => {
-        // FileExecutor.execute() already catches and sanitizes its own errors —
-        // reaching here means something unexpected escaped it. Log full detail,
-        // return a generic message (err.message could carry OS-level detail,
-        // e.g. an absolute path from an uncaught fs error).
-        log.error({ err, request_id, tool }, "Unexpected error escaped FileExecutor.execute");
-        send({ type: "response", request_id, error: { message: "Internal error" } });
-      })
-      .finally(() => {
-        inFlight--;
-        if (shuttingDown && inFlight === 0) process.exit(0);
-      });
+    handleRequest(executor, msg, send).finally(() => {
+      inFlight--;
+      if (shuttingDown && inFlight === 0) process.exit(0);
+    });
   }
 });
 
@@ -174,22 +139,3 @@ process.on("SIGTERM", () => {
   if (inFlight === 0) process.exit(0);
   // Otherwise wait for in-flight execute() calls to finish
 });
-
-// ---------------------------------------------------------------------------
-// Message validator
-// ---------------------------------------------------------------------------
-
-function isValidMessage(msg: unknown): msg is SubnodeInit | SubnodeRequest {
-  if (typeof msg !== "object" || msg === null) return false;
-  const m = msg as Record<string, unknown>;
-  if (m["type"] === "init") {
-    return typeof m["labels"] === "object" && m["labels"] !== null
-      && typeof m["max_file_size_kb"] === "number";
-  }
-  if (m["type"] === "request") {
-    return typeof m["request_id"] === "string"
-      && typeof m["tool"] === "string"
-      && typeof m["label"] === "string";
-  }
-  return false;
-}

@@ -441,11 +441,15 @@ apiRouter.post("/api/users", requireAdmin, async (req: Request, res: Response) =
     log.info({ username }, "Local user created via API");
     res.status(201).json({ id: localUser!.id, username: localUser!.username, created_at: localUser!.createdAt.toISOString() });
   } catch (err) {
-    const msg = err instanceof Error ? err.message : "Failed to create user";
+    const msg = err instanceof Error ? err.message : "";
     if (msg.toLowerCase().includes("unique")) {
       res.status(409).json({ error: "conflict", error_description: "Username already taken" });
     } else {
-      res.status(400).json({ error: "invalid_request", error_description: msg });
+      // Anything other than a unique-constraint violation is an unexpected DB/driver
+      // error that may carry table/column/connection detail — log it server-side only,
+      // never echo it to the caller (same pattern as executor/index.ts's buildError()).
+      log.error({ err, username }, "Failed to create local user");
+      res.status(400).json({ error: "invalid_request", error_description: "Failed to create user" });
     }
   }
 });

@@ -47,7 +47,8 @@ operational context.
 **Redis-backed rate limiting:** accurate across restarts and horizontally scalable.
 Rejected for v1 because it adds a hard infrastructure dependency for a feature that
 is "good enough" with in-memory state for the single-instance case. Noted as the
-migration path when horizontal scaling is needed (see `future-deferred.md`).
+migration path when horizontal scaling is needed (see `TODO_DEFERRED.md`'s
+"Horizontal Scaling" section).
 
 **No rate limiting:** rejected. Runaway `grep_files` calls on large trees or
 credential-stuffing attempts on OAuth endpoints are realistic abuse vectors even for

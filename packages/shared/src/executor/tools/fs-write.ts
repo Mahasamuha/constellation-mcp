@@ -95,13 +95,40 @@ export async function movePath(srcAbsolutePath: string, dstAbsolutePath: string,
   try {
     await fs.rename(srcAbsolutePath, dstAbsolutePath);
   } catch (err) {
-    // rename fails cross-device; fall back to copy + delete
-    if ((err as NodeJS.ErrnoException).code === "EXDEV") {
-      await copyRecursive(srcAbsolutePath, dstAbsolutePath);
-      await fs.rm(srcAbsolutePath, { recursive: true });
-    } else {
-      throw err;
-    }
+    if ((err as NodeJS.ErrnoException).code !== "EXDEV") throw err;
+    await crossDeviceMove(srcAbsolutePath, dstAbsolutePath, params.dst_relative_path);
+  }
+}
+
+/**
+ * Cross-device rename has no atomic equivalent — copy then delete is the only option, and
+ * either step can fail on its own. We don't attempt to clean up after a failure: another
+ * process could already be acting on whatever's left, and an automatic rollback could race
+ * with it. Instead we report exactly which step failed (MOVE_INCOMPLETE) so the caller can
+ * tell the user the move didn't fully land, rather than surfacing a generic error while the
+ * filesystem is left in a state nobody was told about.
+ */
+async function crossDeviceMove(srcAbsolutePath: string, dstAbsolutePath: string, dstRelativePath: string): Promise<void> {
+  try {
+    await copyRecursive(srcAbsolutePath, dstAbsolutePath);
+  } catch {
+    throw Object.assign(
+      new Error(
+        `Move did not complete: copying across filesystems failed partway through. The original is untouched, but '${dstRelativePath}' may now contain a partial copy.`
+      ),
+      { code: "MOVE_INCOMPLETE", path: dstRelativePath }
+    );
+  }
+
+  try {
+    await fs.rm(srcAbsolutePath, { recursive: true });
+  } catch {
+    throw Object.assign(
+      new Error(
+        `Move did not complete: the copy to '${dstRelativePath}' succeeded, but the original could not be removed. Both now exist.`
+      ),
+      { code: "MOVE_INCOMPLETE", path: dstRelativePath }
+    );
   }
 }
 
@@ -121,8 +148,17 @@ export async function copyPath(srcAbsolutePath: string, dstAbsolutePath: string,
   await copyRecursive(srcAbsolutePath, dstAbsolutePath);
 }
 
+/**
+ * `src`/`dst` at the top level are already realpath-resolved and boundary-checked by the
+ * executor dispatcher, so they can never be symlinks themselves. Entries discovered via
+ * `readdir` during the walk are not re-validated against the label root, so a symlink
+ * encountered here is skipped outright rather than dereferenced (which would copy whatever
+ * it points to, including paths outside the label root) or recreated as a symlink at the
+ * destination (which would let the destination point outside the label root too).
+ */
 async function copyRecursive(src: string, dst: string): Promise<void> {
   const stat = await fs.lstat(src);
+  if (stat.isSymbolicLink()) return;
   if (stat.isDirectory()) {
     await fs.mkdir(dst, { recursive: true });
     for (const entry of await fs.readdir(src)) {

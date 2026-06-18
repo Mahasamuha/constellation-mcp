@@ -1,5 +1,5 @@
 import type { AccessLevel, LabelConfig } from "./config.js";
-import type { PermissionBlob } from "@constellation/shared";
+import { evaluatePermissionBlob, type PermissionBlob } from "@constellation/shared";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -42,12 +42,7 @@ export function checkPermission(
     return { permitted: false, reason: `Label '${label}' is not in the admin label config` };
   }
 
-  let access: AccessLevel = labelConfig.permissions.default;
-
-  if (userOidcSub) {
-    const override = labelConfig.permissions.overrides.find((o) => o.oidc_sub === userOidcSub);
-    if (override) access = override.access;
-  }
+  const access = evaluatePermissionBlob(labelConfig.permissions, userOidcSub) as AccessLevel;
 
   if (access === "none") {
     return { permitted: false, reason: `Access to label '${label}' is denied` };

@@ -91,4 +91,4 @@ access, once for admin. Friction not warranted for the expected admin frequency.
 - For v1, the 1-hour default and the full reauth requirement (not just a token refresh)
   are the primary mitigations against elevated session token theft. Hardening options
   (origin binding, non-extractable DPoP-style binding) are documented in
-  `plans/future-deferred.md` as post-v1 work.
+  `TODO_DEFERRED.md`'s "Elevated Session Hardening" section as post-v1 work.

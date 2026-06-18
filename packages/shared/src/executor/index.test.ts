@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { promises as fs } from "node:fs";
 import { join } from "node:path";
 import { makeTempDir, cleanTempDir } from "../test/fixtures.js";
@@ -68,5 +68,32 @@ describe("FileExecutor error sanitization", () => {
     expect(content["path"]).toBeUndefined();
     expect(content["edit_index"]).toBeUndefined();
     expect(content["match_count"]).toBeUndefined();
+  });
+
+  it("passes through the MOVE_INCOMPLETE message for a failed cross-device move fallback", async () => {
+    const executor = new FileExecutor({ docs: root }, 1024);
+    await fs.writeFile(join(root, "src.txt"), "hi", "utf8");
+
+    const fsPromises = (await import("node:fs")).promises;
+    vi.spyOn(fsPromises, "rename").mockRejectedValueOnce(
+      Object.assign(new Error("cross-device link"), { code: "EXDEV" })
+    );
+    vi.spyOn(fsPromises, "copyFile").mockRejectedValueOnce(new Error("ENOSPC: no space left on device"));
+
+    const result = await executor.execute("move", "docs", {
+      src_relative_path: "src.txt",
+      dst_relative_path: "dst.txt",
+    });
+    vi.restoreAllMocks();
+
+    expect(result.isError).toBe(true);
+    const content = result.content as { message: string; code?: string; path?: string };
+
+    // Unlike a raw, uncaught fs error, this message is deliberately constructed and safe to
+    // show as-is — the model needs the specifics to tell the user the move didn't fully land.
+    expect(content.code).toBe("MOVE_INCOMPLETE");
+    expect(content.path).toBe("dst.txt");
+    expect(content.message).toContain("partial copy");
+    expect(content.message).not.toContain(root);
   });
 });

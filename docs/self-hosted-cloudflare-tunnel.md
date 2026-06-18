@@ -30,9 +30,11 @@ In the tunnel's **Public Hostname** tab, add a route:
 | Subdomain | anything (e.g. `relay`) |
 | Domain | your Cloudflare-managed domain |
 | Service type | `HTTP` |
-| URL | `relay:3000` |
+| URL | `localhost:3000` |
 
 Your tunnel URL will be `https://<subdomain>.<domain>` (e.g. `https://relay.example.com`).
+
+**Why `localhost:3000` and not `relay:3000`:** the `cloudflared` container in this Compose file runs with `network_mode: service:relay`, sharing the relay container's network namespace. This makes cloudflared's connection to the relay arrive from `127.0.0.1`, which the relay needs in order to trust Cloudflare's forwarded client-IP headers (see `TRUST_PROXY_PRESET` below). Pointing the route at `relay:3000` instead would connect over the Docker bridge network rather than loopback, defeating that trust relationship and collapsing rate limiting onto a single shared IP for all users.
 
 ### 3. Configure environment variables
 

@@ -30,7 +30,7 @@ flowchart TD
     class RouterR,ClientR replicated
 ```
 
-Agents connect over WebSocket to `wss://<relay>/agent/connect` using a long-lived bearer token. The relay keeps one connection per agent in memory (see [`registry.ts`](../packages/relay/src/registry.ts)) and heartbeats it with WebSocket pings.
+Agents connect over WebSocket to `wss://<relay>/executor/connect` using a long-lived bearer token. The relay keeps one connection per agent in memory (see [`registry.ts`](../packages/relay/src/registry.ts)) and heartbeats it with WebSocket pings.
 
 Agents come in two modalities, distinguished by `ExecutorTokenType`:
 
@@ -513,7 +513,7 @@ Standard `grant_type=refresh_token`. Issues a new access token and rotates the r
 
 ## Agent WebSocket Protocol
 
-Agents connect to `wss://<relay>/agent/connect` with:
+Agents connect to `wss://<relay>/executor/connect` with:
 
 ```
 Authorization: Bearer <agent-token>

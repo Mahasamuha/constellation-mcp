@@ -6,8 +6,10 @@ import type { RpcResponse } from "@constellation/shared";
 // Connection registry
 //
 // Single point of access to in-memory connection state. Isolated here so a
-// future move to a shared backing store (see TODO_DEFERRED — Horizontal
-// Scaling) only requires changes in this module, not at every call site.
+// future move to a shared backing store (see TODO_DEFERRED.md's "Horizontal
+// Scaling" section for the migration design; ADR 0012 covers the accepted v1
+// decision to stay in-memory) only requires changes in this module, not at
+// every call site.
 // ---------------------------------------------------------------------------
 
 export interface ConnectedExecutor {
@@ -53,9 +55,9 @@ export function allConnections(): IterableIterator<[string, ConnectedExecutor]> 
 // RPC registry
 //
 // Tracks in-flight requests awaiting a response from an executor. Isolated for
-// the same reason as the connection registry — see TODO_DEFERRED, which notes
-// pendingRpcs would need to move to Redis streams (or similar) alongside the
-// connection map in a multi-instance deployment.
+// the same reason as the connection registry — see TODO_DEFERRED.md, which
+// notes pendingRpcs would need to move to Redis streams (or similar) alongside
+// the connection map in a multi-instance deployment (see also ADR 0012).
 // ---------------------------------------------------------------------------
 
 interface PendingRpc {
@@ -80,15 +82,22 @@ export function dispatchPendingRpc(requestId: string, executorId: string, timeou
   });
 }
 
-/** Resolves a pending RPC by request id. No-op if there is no matching entry (e.g. it already
- * timed out, or the response is for a request this relay no longer tracks). */
-export function resolvePendingRpc(requestId: string, response: RpcResponse): void {
+export type ResolvePendingRpcResult = "resolved" | "not_found" | "owner_mismatch";
+
+/** Resolves a pending RPC by request id. Returns "not_found" if there is no matching entry
+ * (e.g. it already timed out, or the response is for a request this relay no longer tracks) —
+ * a benign, expected case. Returns "owner_mismatch" without resolving if `respondingExecutorId`
+ * doesn't match the executor the request was dispatched to — a connection cannot resolve
+ * another connection's in-flight request. */
+export function resolvePendingRpc(requestId: string, respondingExecutorId: string, response: RpcResponse): ResolvePendingRpcResult {
   const pending = pendingRpcs.get(requestId);
-  if (!pending) return;
+  if (!pending) return "not_found";
+  if (pending.executorId !== respondingExecutorId) return "owner_mismatch";
 
   clearTimeout(pending.timer);
   pendingRpcs.delete(requestId);
   pending.resolve(response);
+  return "resolved";
 }
 
 /** Rejects and removes every pending RPC belonging to the given executor — called on disconnect. */

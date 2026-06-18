@@ -116,8 +116,16 @@ setupRouter.post("/setup", async (req: Request, res: Response) => {
   try {
     await createLocalUser(username, password);
   } catch (err) {
-    const msg = err instanceof Error ? err.message : "Setup failed";
-    rerender([msg]);
+    const msg = err instanceof Error ? err.message : "";
+    if (msg.toLowerCase().includes("unique")) {
+      rerender(["Username already taken."]);
+    } else {
+      // This route is reachable unauthenticated (gated only by setupRequired()'s
+      // one-time race), so a raw DB/driver error must never reach the response —
+      // log it server-side only, same pattern as api.ts's user-creation route.
+      log.error({ err, username }, "Failed to create first user via setup");
+      rerender(["Setup failed. Please try again or contact your administrator."]);
+    }
     return;
   }
 

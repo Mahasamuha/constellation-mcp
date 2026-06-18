@@ -1,5 +1,5 @@
 import { configDir, loadNodeConfig, loadPathsConfig } from "./config.js";
-import { AgentConnection } from "./connection.js";
+import { NodeConnection } from "./connection.js";
 import { createLogger } from "@constellation/shared";
 
 export function runDaemon(configDirOverride?: string): void {
@@ -7,7 +7,7 @@ export function runDaemon(configDirOverride?: string): void {
   const dir = configDir(configDirOverride);
   const config = loadNodeConfig(dir);
 
-  const conn = new AgentConnection({
+  const conn = new NodeConnection({
     configDir: dir,
     getConfig: () => loadNodeConfig(dir),
     getPaths: () => loadPathsConfig(dir).paths,

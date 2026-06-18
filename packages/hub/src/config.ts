@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import yaml from "js-yaml";
-import { resolveQueueTimeout } from "@constellation/shared";
+import { resolveQueueTimeout, str, num } from "@constellation/shared";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -294,20 +294,6 @@ function parseIdentity(raw: Record<string, unknown>): IdentityConfig {
     : false;
 
   return { claims, user_map, allow_preferred_username };
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function str(obj: Record<string, unknown>, key: string): string {
-  const v = obj[key];
-  return typeof v === "string" ? v : "";
-}
-
-function num(obj: Record<string, unknown>, key: string): number | undefined {
-  const v = obj[key];
-  return typeof v === "number" ? v : undefined;
 }
 
 // ---------------------------------------------------------------------------

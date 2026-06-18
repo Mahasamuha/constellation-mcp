@@ -109,7 +109,7 @@ class HubSocket extends RelaySocket {
     private readonly labelRegistry: Record<string, string>,
     private readonly pool: SubnodePool
   ) {
-    super({ logModule: "hub", path: "/agent/connect" });
+    super({ logModule: "hub", path: "/executor/connect" });
   }
 
   protected getRelayUrl(): string {

@@ -24,7 +24,7 @@ model User {
 
   executors      Executor[]
   executorTokens ExecutorToken[]
-  pathLabels     PathLabel[]
+  pathShares     PathShare[]
   relayFilters   RelayPathFilter[]
   oauthSessions  OauthSession[]
   localUser      LocalUser?
@@ -87,9 +87,9 @@ model Executor {
 
   user             User?             @relation(fields: [userId], references: [id])
   executorToken    ExecutorToken     @relation(fields: [executorTokenId], references: [id])
-  pathLabels       PathLabel[]
+  pathShares       PathShare[]
   relayFilters     RelayPathFilter[]
-  hubPathLabels    HubPathLabel[]
+  hubShares        HubShare[]
 
   // Partial unique indexes defined in raw migration SQL (Prisma does not support WHERE on @@unique):
   //   executors_user_id_host_key:           UNIQUE (user_id, host) WHERE user_id IS NOT NULL
@@ -97,19 +97,19 @@ model Executor {
   @@map("executors")
 }
 
-model PathLabel {
+model PathShare {
   id           String  @id @default(cuid())
   userId       String  @map("user_id")
   executorId   String  @map("executor_id")
-  label        String
+  share        String
   reportedPath String  @map("reported_path")
   instructions String? @map("instructions")
 
   user     User     @relation(fields: [userId], references: [id])
   executor Executor @relation(fields: [executorId], references: [id])
 
-  @@unique([userId, label])
-  @@map("path_labels")
+  @@unique([userId, share])
+  @@map("path_shares")
 }
 
 enum PatternType {
@@ -148,7 +148,7 @@ model ActivityLog {
   eventType    ActivityEventType @map("event_type")
   host         String?
   tool         String?
-  label        String?
+  share        String?
   requestId    String?           @map("request_id")
   durationMs   Int?              @map("duration_ms")
   errorCode    String?           @map("error_code")
@@ -228,10 +228,10 @@ model OauthSession {
   @@map("oauth_sessions")
 }
 
-model HubPathLabel {
+model HubShare {
   id             String   @id @default(cuid())
   executorId     String   @map("executor_id")
-  label          String
+  share          String
   reportedPath   String   @map("reported_path")
   permissionBlob Json     @map("permission_blob")
   instructions   String?  @map("instructions")
@@ -239,6 +239,6 @@ model HubPathLabel {
 
   executor Executor @relation(fields: [executorId], references: [id])
 
-  @@unique([executorId, label])
-  @@map("hub_path_labels")
+  @@unique([executorId, share])
+  @@map("hub_shares")
 }

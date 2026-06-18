@@ -3,6 +3,10 @@
   "compilerOptions": {
     "outDir": "./dist",
     "rootDir": "./src",
+    // Required because tsup's `dts: true` bundling pass (rollup-plugin-dts) injects its own
+    // `baseUrl` and trips TS6.0's deprecation error for it — not needed by plain `tsc`, and not
+    // needed by packages/cli or this package's own subnode-worker bundle, neither of which sets
+    // `dts: true` in tsup.config.ts.
     "ignoreDeprecations": "6.0"
   },
   "include": ["src"]

@@ -11,15 +11,15 @@ const PING_TIMEOUT_MS = 10_000;
 export interface RelaySocketOptions {
   /** Module name passed to createLogger, e.g. "node:connection" or "hub". */
   logModule: string;
-  /** WebSocket path appended after the ws(s)://host:port, e.g. "/agent/connect". */
+  /** WebSocket path appended after the ws(s)://host:port, e.g. "/executor/connect". */
   path: string;
 }
 
 /**
  * Shared transport for the relay WebSocket connection.
  *
- * Both the personal node (AgentConnection) and the hub (HubSocket) connect to
- * the same `/agent/connect` endpoint and need identical connection-lifecycle
+ * Both the personal node (NodeConnection) and the hub (HubSocket) connect to
+ * the same `/executor/connect` endpoint and need identical connection-lifecycle
  * handling: deriving the ws(s) URL and refusing ws:// to non-localhost hosts,
  * exponential-backoff reconnect with jitter, ping/pong keepalive with
  * timeout-triggered termination, and JSON message framing. That machinery

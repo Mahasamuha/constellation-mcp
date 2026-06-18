@@ -355,4 +355,54 @@ describe("SubnodePool.dispatch", () => {
 
     await pool.shutdown(0);
   });
+
+  it("evicts a stale worker and spawns fresh when the same username resolves to a different uid", async () => {
+    const pool = new SubnodePool(makeConfig(), {});
+
+    const d1 = pool.dispatch(identity, "list_directory", "docs", {}, "req-1");
+    await waitUntil(() => forkedChildren[0]?.hasPending("req-1") ?? false);
+    forkedChildren[0]!.respond("req-1");
+    await d1;
+
+    // Same username, but the OS now resolves it to a different uid (e.g. the
+    // account was deleted and recreated with a recycled uid). The pool must
+    // not hand this request to the already-warm worker still running under
+    // the old uid.
+    const remappedIdentity: ResolvedIdentity = { ...identity, uid: identity.uid + 1 };
+    const d2 = pool.dispatch(remappedIdentity, "list_directory", "docs", {}, "req-2");
+
+    await waitUntil(() => forkedChildren[0]!.exited);
+    await waitUntil(() => forkedChildren.length === 2 && forkedChildren[1]!.hasPending("req-2"));
+    forkedChildren[1]!.respond("req-2");
+
+    const r2 = await d2;
+    expect(isDispatchError(r2)).toBe(false);
+    expect(forkedChildren.length).toBe(2);
+    expect(forkedChildren[0]!.killed).toBe(true);
+
+    await pool.shutdown(0);
+  });
+
+  it("evicts already-warm workers immediately when a uid is newly blocked by policy", async () => {
+    const subnodeUid: SubnodeUidConfig = {};
+    const pool = new SubnodePool(makeConfig({ subnode_uid: subnodeUid }), {});
+
+    const d1 = pool.dispatch(identity, "list_directory", "docs", {}, "req-1");
+    await waitUntil(() => forkedChildren[0]?.hasPending("req-1") ?? false);
+    forkedChildren[0]!.respond("req-1");
+    await d1;
+
+    // Operator blocks this uid after the worker is already warm.
+    subnodeUid.blocked_uids = [identity.uid];
+
+    const r2 = await pool.dispatch(identity, "list_directory", "docs", {}, "req-2");
+    expect(isDispatchError(r2)).toBe(true);
+    expect((r2 as { kind: string }).kind).toBe("uid_blocked");
+
+    // The already-warm worker from before the block must be torn down rather
+    // than left running indefinitely under now-revoked access.
+    await waitUntil(() => forkedChildren[0]!.exited);
+
+    await pool.shutdown(0);
+  });
 });

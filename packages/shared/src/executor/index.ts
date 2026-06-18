@@ -13,7 +13,13 @@ export interface ToolResult {
   isError?: boolean;
 }
 
-const KNOWN_CODES = new Set(["FILE_TOO_LARGE", "READ_TOO_LARGE", "EDIT_NO_MATCH", "EDIT_AMBIGUOUS", "DEST_EXISTS"]);
+const KNOWN_CODES = new Set(["FILE_TOO_LARGE", "READ_TOO_LARGE", "EDIT_NO_MATCH", "EDIT_AMBIGUOUS", "DEST_EXISTS", "MOVE_INCOMPLETE"]);
+
+// MOVE_INCOMPLETE is "known" in the sense that its message is deliberately constructed and
+// caller-safe (see crossDeviceMove in fs-write.ts), but unlike the other known codes it
+// reflects a real fs failure mid-operation rather than a benign validation rejection — it's
+// always worth an operator's attention, so it's logged even though its code is known.
+const ALWAYS_LOG_CODES = new Set(["MOVE_INCOMPLETE"]);
 
 export class FileExecutor {
   constructor(
@@ -114,6 +120,30 @@ export class FileExecutor {
       }
     }
 
+    // Tools whose dispatch() branch assumes a resolved path field is present
+    // (see the `!` assertions there). Enforced here so a request missing the
+    // field gets the standard "Path rejected" response instead of an
+    // uncaught TypeError deeper in dispatch().
+    const REQUIRED_RESOLVED_FIELDS: Record<string, string[]> = {
+      file_info:        ["relative_path"],
+      read_file:        ["relative_path"],
+      write_file:       ["relative_path"],
+      edit_file:        ["relative_path"],
+      create_directory: ["relative_path"],
+      delete:           ["relative_path"],
+      copy:             ["src_relative_path", "dst_relative_path"],
+      move:             ["src_relative_path", "dst_relative_path"],
+    };
+    const requiredFields = REQUIRED_RESOLVED_FIELDS[tool];
+    if (requiredFields) {
+      for (const field of requiredFields) {
+        if (!resolvedPaths.has(field)) {
+          log.warn({ tool, field }, "Missing required path field");
+          return { content: { message: "Path rejected" }, isError: true };
+        }
+      }
+    }
+
     try {
       const content = await this.dispatch(tool, root, p, resolvedPaths);
       return { content };
@@ -126,7 +156,7 @@ export class FileExecutor {
         max_file_size_kb?: number;
         path?: string;
       };
-      if (!KNOWN_CODES.has(e.code ?? "")) {
+      if (!KNOWN_CODES.has(e.code ?? "") || ALWAYS_LOG_CODES.has(e.code ?? "")) {
         log.error({ err, tool }, "Executor operation failed");
       }
       return { content: buildError(e), isError: true };
@@ -142,6 +172,9 @@ export class FileExecutor {
     // Operate on the realpath-resolved, boundary-checked paths computed during
     // validation — never re-derive join(root, relative_path), which would
     // re-walk (and could re-resolve differently from) any symlinks in the path.
+    // The `!` assertions below are guaranteed by execute()'s REQUIRED_RESOLVED_FIELDS
+    // check, which rejects the request before dispatch() is ever called if a
+    // tool's required field is missing.
     const relPath = resolvedPaths.get("relative_path");
     const srcPath = resolvedPaths.get("src_relative_path");
     const dstPath = resolvedPaths.get("dst_relative_path");

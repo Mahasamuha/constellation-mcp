@@ -61,8 +61,6 @@ function checkToolRateLimit(userId: string, tool: string, params: Record<string,
     if (expensiveTs.length > expensiveLimit) return false;
   }
 
-  // Prune map entries for users who have gone quiet to prevent unbounded growth.
-
   return true;
 }
 

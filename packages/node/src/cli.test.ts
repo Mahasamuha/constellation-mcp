@@ -3,10 +3,12 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { Command } from "commander";
 import { promises as fs } from "node:fs";
 import { join } from "node:path";
+import { WebSocketServer, type WebSocket as WSClient } from "ws";
 import { registerNodeCommands } from "./cli/node.js";
 import {
   writeNodeConfig,
   writePathsConfig,
+  loadPathsConfig,
 } from "./config.js";
 import { makeTempDir, cleanTempDir } from "./test/fixtures.js";
 
@@ -286,5 +288,69 @@ describe("node paths remove — errors", () => {
     );
     expect(exitCode).toBe(1);
     expect(err).toContain("not found");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// node paths add/remove — local config only persists after a successful sync
+// ---------------------------------------------------------------------------
+
+describe("node paths add/remove — relay sync ordering", () => {
+  let wss: WebSocketServer;
+  let port: number;
+
+  beforeEach(async () => {
+    wss = new WebSocketServer({ port: 0 });
+    await new Promise<void>((resolve) => wss.once("listening", resolve));
+    port = (wss.address() as { port: number }).port;
+  });
+
+  afterEach(async () => {
+    await new Promise<void>((resolve) => wss.close(() => resolve()));
+  });
+
+  function respondOnce(responseType: string): void {
+    wss.once("connection", (ws: WSClient) => {
+      ws.once("message", () => {
+        ws.send(JSON.stringify({ type: responseType, error: "rejected" }));
+      });
+    });
+  }
+
+  function configureNode(): void {
+    writeNodeConfig(dir, { relay_url: `http://localhost:${port}`, node_token: "tok", host: "test-host" });
+  }
+
+  it("persists the new label locally once the relay confirms the sync", async () => {
+    configureNode();
+    writePathsConfig(dir, { paths: [] });
+    respondOnce("config_update_ok");
+
+    const { exitCode } = await runCli(["node", "paths", "add", "myrepo", dir], dir);
+
+    expect(exitCode).toBe(0);
+    expect(loadPathsConfig(dir).paths.map((p) => p.label)).toEqual(["myrepo"]);
+  });
+
+  it("does not persist the new label locally when the relay rejects the sync", async () => {
+    configureNode();
+    writePathsConfig(dir, { paths: [] });
+    respondOnce("config_update_error");
+
+    const { exitCode } = await runCli(["node", "paths", "add", "myrepo", dir], dir);
+
+    expect(exitCode).toBe(1);
+    expect(loadPathsConfig(dir).paths).toEqual([]);
+  });
+
+  it("does not remove the local label when the relay rejects the sync", async () => {
+    configureNode();
+    writePathsConfig(dir, { paths: [{ label: "existing", path: "/some/path" }] });
+    respondOnce("config_update_error");
+
+    const { exitCode } = await runCli(["node", "paths", "remove", "existing"], dir);
+
+    expect(exitCode).toBe(1);
+    expect(loadPathsConfig(dir).paths.map((p) => p.label)).toEqual(["existing"]);
   });
 });

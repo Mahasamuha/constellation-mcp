@@ -122,7 +122,7 @@ export function attachHub(server: Server): void {
   _wss = wss;
 
   server.on("upgrade", async (req: IncomingMessage, socket, head) => {
-    if (req.url !== "/agent/connect") {
+    if (req.url !== "/executor/connect") {
       socket.destroy();
       return;
     }
@@ -307,6 +307,7 @@ async function handleConnection(ws: WebSocket, meta: {
         const type = typeof msg["type"] === "string" ? msg["type"] : undefined;
         if (type === "config_update") send(conn.ws, { type: "config_update_error", error: "Internal error" });
         else if (type === "update_host") send(conn.ws, { type: "update_host_error", error: "Internal error" });
+        else if (type === "rotate_token") send(conn.ws, { type: "rotate_token_error", error: "Internal error" });
       });
     });
 
@@ -341,7 +342,7 @@ async function handleExecutorMessage(
 ): Promise<void> {
   // RPC responses carry request_id with result or error but no type field.
   if ("request_id" in msg && ("result" in msg || "error" in msg)) {
-    routeRpcResponse(msg as unknown as RpcResponse);
+    routeRpcResponse(conn.executorId, msg as unknown as RpcResponse);
     return;
   }
 
@@ -678,11 +679,14 @@ export function dispatchRpc(
   return promise;
 }
 
-function routeRpcResponse(msg: RpcResponse): void {
+function routeRpcResponse(respondingExecutorId: string, msg: RpcResponse): void {
   const requestId = msg.request_id;
   if (!requestId) return;
 
-  resolvePendingRpc(requestId, msg);
+  const result = resolvePendingRpc(requestId, respondingExecutorId, msg);
+  if (result === "owner_mismatch") {
+    log.warn({ requestId, respondingExecutorId }, "Dropped RPC response from executor that did not own the request");
+  }
 }
 
 // ---------------------------------------------------------------------------

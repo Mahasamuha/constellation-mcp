@@ -8,3 +8,5 @@ export { MAX_LABEL_INSTRUCTIONS_LENGTH } from "./rpc.js";
 export { FileExecutor, type ToolResult } from "./executor/index.js";
 export { RelaySocket, type RelaySocketOptions } from "./relay-socket.js";
 export { resolveQueueTimeout } from "./queue-timeout.js";
+export { poll, sleep, confirm } from "./cli-util.js";
+export { str, num } from "./config-util.js";

@@ -85,7 +85,7 @@ Restart the process in Terminal 2 after the compiler finishes rebuilding. The re
 
 ### 1. Build and watch
 
-The `constellation` binary lives in `packages/cli`, which bundles `@constellation/node` (and `@constellation/hub`, `@constellation/relay`) from their built `dist/` output. Open two terminals:
+The `constellation` binary lives in `packages/cli`, which bundles `@constellation/node` and `@constellation/hub` from their built `dist/` output. Open two terminals:
 
 **Terminal 1** — rebuild `packages/node` on change:
 ```sh

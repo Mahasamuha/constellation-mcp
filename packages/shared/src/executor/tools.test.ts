@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { promises as fs } from "node:fs";
 import { join } from "node:path";
 import { makeTempDir, cleanTempDir } from "../test/fixtures.js";
@@ -485,6 +485,19 @@ describe("copyPath", () => {
 
     expect(err.code).toBe("DEST_EXISTS");
   });
+
+  it("skips symlinks found during a recursive directory copy", async () => {
+    await fs.mkdir(join(root, "secret"));
+    await fs.writeFile(join(root, "secret", "id_rsa"), "private-key-contents");
+    await fs.mkdir(join(root, "srcdir"));
+    await fs.writeFile(join(root, "srcdir", "a.txt"), "a");
+    await fs.symlink(join(root, "secret", "id_rsa"), join(root, "srcdir", "link.txt"));
+
+    await copyPath(join(root, "srcdir"), join(root, "dstdir"), { dst_relative_path: "dstdir" });
+
+    expect(await fs.readFile(join(root, "dstdir", "a.txt"), "utf8")).toBe("a");
+    await expect(fs.access(join(root, "dstdir", "link.txt"))).rejects.toThrow();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -520,6 +533,45 @@ describe("movePath", () => {
     expect(
       await fs.readFile(join(root, "deep", "nested", "file.txt"), "utf8")
     ).toBe("x");
+  });
+});
+
+describe("movePath EXDEV fallback", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("reports MOVE_INCOMPLETE when the cross-filesystem copy fails partway through", async () => {
+    await fs.writeFile(join(root, "src.txt"), "data");
+    vi.spyOn(fs, "rename").mockRejectedValueOnce(Object.assign(new Error("cross-device link"), { code: "EXDEV" }));
+    vi.spyOn(fs, "copyFile").mockRejectedValueOnce(new Error("ENOSPC: no space left on device"));
+
+    const err = await movePath(join(root, "src.txt"), join(root, "dst.txt"), {
+      dst_relative_path: "dst.txt",
+    }).catch((e) => e);
+
+    expect(err.code).toBe("MOVE_INCOMPLETE");
+    expect(err.message).toContain("partial copy");
+    // Source untouched, destination never created — we don't try to clean up after a
+    // failed step, so the filesystem should be left exactly where the failure left it.
+    expect(await fs.readFile(join(root, "src.txt"), "utf8")).toBe("data");
+    await expect(fs.access(join(root, "dst.txt"))).rejects.toThrow();
+  });
+
+  it("reports MOVE_INCOMPLETE when removing the original after a successful copy fails", async () => {
+    await fs.writeFile(join(root, "src.txt"), "data");
+    vi.spyOn(fs, "rename").mockRejectedValueOnce(Object.assign(new Error("cross-device link"), { code: "EXDEV" }));
+    vi.spyOn(fs, "rm").mockRejectedValueOnce(new Error("EBUSY: resource busy or locked"));
+
+    const err = await movePath(join(root, "src.txt"), join(root, "dst.txt"), {
+      dst_relative_path: "dst.txt",
+    }).catch((e) => e);
+
+    expect(err.code).toBe("MOVE_INCOMPLETE");
+    expect(err.message).toContain("Both now exist");
+    // Copy already succeeded before the delete failed, so both copies legitimately exist now.
+    expect(await fs.readFile(join(root, "src.txt"), "utf8")).toBe("data");
+    expect(await fs.readFile(join(root, "dst.txt"), "utf8")).toBe("data");
   });
 });
 

@@ -15,7 +15,7 @@ import {
   pathsYamlPath,
   type NodeConfig,
 } from "../config.js";
-import { MAX_LABEL_INSTRUCTIONS_LENGTH, type PathEntry } from "@constellation/shared";
+import { MAX_LABEL_INSTRUCTIONS_LENGTH, poll, type PathEntry } from "@constellation/shared";
 import {
   install,
   startService,
@@ -25,7 +25,7 @@ import {
   showLogs,
 } from "./service.js";
 import { runDaemon } from "../index.js";
-import { poll, maskToken } from "./util.js";
+import { maskToken } from "./util.js";
 
 export function registerNodeCommands(program: Command): void {
   const node = program
@@ -214,7 +214,7 @@ export function registerNodeCommands(program: Command): void {
       const dir = getConfigDir();
       const result = await nodeControlCommand(dir, "rotate_token",
         () => ({ type: "rotate_token" }),
-        "token_rotated", null
+        "token_rotated", "rotate_token_error"
       );
       if (result && typeof result === "object" && "token" in result) {
         writeNodeToken(dir, (result as { token: string }).token);
@@ -342,9 +342,12 @@ export function registerNodeCommands(program: Command): void {
       }
       const entry: PathEntry = { label, path: resolvedPath };
       if (opts.instructions) entry.instructions = opts.instructions;
-      cfg.paths.push(entry);
-      writePathsConfig(dir, cfg);
-      await syncPaths(dir);
+      const updatedPaths = [...cfg.paths, entry];
+      // Sync to the relay before persisting locally — if the sync fails, nodeControlCommand
+      // exits the process, leaving the local config untouched instead of silently drifting
+      // ahead of what the relay knows about.
+      await syncPaths(dir, updatedPaths);
+      writePathsConfig(dir, { ...cfg, paths: updatedPaths });
       console.log(`Label '${label}' added and synced.`);
     });
 
@@ -355,14 +358,14 @@ export function registerNodeCommands(program: Command): void {
     .action(async (label: string) => {
       const dir = getConfigDir();
       const cfg = loadPathsConfig(dir);
-      const before = cfg.paths.length;
-      cfg.paths = cfg.paths.filter((p) => p.label !== label);
-      if (cfg.paths.length === before) {
+      const updatedPaths = cfg.paths.filter((p) => p.label !== label);
+      if (updatedPaths.length === cfg.paths.length) {
         console.error(`Label '${label}' not found.`);
         process.exit(1);
       }
-      writePathsConfig(dir, cfg);
-      await syncPaths(dir);
+      // Sync to the relay before persisting locally — see comment in `paths add`.
+      await syncPaths(dir, updatedPaths);
+      writePathsConfig(dir, { ...cfg, paths: updatedPaths });
       console.log(`Label '${label}' removed and synced.`);
     });
 }
@@ -371,11 +374,11 @@ export function registerNodeCommands(program: Command): void {
 // Helpers
 // ---------------------------------------------------------------------------
 
-async function syncPaths(dir: string): Promise<void> {
+async function syncPaths(dir: string, candidatePaths?: PathEntry[]): Promise<void> {
   await nodeControlCommand(dir, "config_update",
     (_cfg, paths) => ({
       type: "config_update",
-      paths: buildConfigUpdatePaths(paths),
+      paths: buildConfigUpdatePaths(candidatePaths ?? paths),
     }),
     "config_update_ok", "config_update_error"
   );
@@ -387,14 +390,14 @@ async function syncPaths(dir: string): Promise<void> {
 
 async function nodeControlCommand(
   dir: string,
-  _cmdName: string,
+  cmdName: string,
   buildMsg: (cfg: NodeConfig, paths: PathEntry[]) => object,
   successType: string,
   errorType: string | null
 ): Promise<object | null> {
   const cfg = loadNodeConfig(dir);
   const paths = loadPathsConfig(dir).paths;
-  const wsUrl = cfg.relay_url.replace(/^http/, "ws") + "/agent/connect";
+  const wsUrl = cfg.relay_url.replace(/^http/, "ws") + "/executor/connect";
 
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(wsUrl, {
@@ -403,7 +406,7 @@ async function nodeControlCommand(
 
     const timeout = setTimeout(() => {
       ws.terminate();
-      reject(new Error("Timed out waiting for relay response"));
+      reject(new Error(`Timed out waiting for relay response to ${cmdName}`));
     }, 15_000);
 
     ws.on("open", () => ws.send(JSON.stringify(buildMsg(cfg, paths))));
@@ -417,14 +420,13 @@ async function nodeControlCommand(
       } else if (errorType && msg["type"] === errorType) {
         clearTimeout(timeout);
         ws.close();
-        console.error("Error:", msg["error"]);
-        process.exit(1);
+        reject(new Error(String(msg["error"])));
       }
     });
 
     ws.on("error", (err) => {
       clearTimeout(timeout);
-      reject(err);
+      reject(new Error(`${cmdName} failed: ${err.message}`));
     });
   }).then((r) => r as object | null)
     .catch((err: Error) => {
