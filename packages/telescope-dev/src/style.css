@@ -1,0 +1,131 @@
+:root {
+  color-scheme: light;
+  font-family: system-ui, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  height: 100vh;
+}
+
+.shell {
+  display: flex;
+  height: 100vh;
+}
+
+.controls {
+  width: 280px;
+  flex: none;
+  padding: 1rem;
+  overflow-y: auto;
+  background: #f4f4f6;
+  border-right: 1px solid #ddd;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.controls h1 {
+  font-size: 1rem;
+  margin: 0;
+}
+
+.controls h2 {
+  font-size: 0.85rem;
+  margin: 0.6rem 0 0;
+}
+
+.hint {
+  font-size: 0.8rem;
+  color: #555;
+  margin: 0;
+}
+
+.hint code {
+  background: #e4e4e8;
+  padding: 0 0.25rem;
+  border-radius: 3px;
+}
+
+label {
+  display: flex;
+  flex-direction: column;
+  font-size: 0.8rem;
+  gap: 0.25rem;
+}
+
+label.checkbox {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+input[type="text"],
+input:not([type]) {
+  padding: 0.35rem;
+  font-size: 0.85rem;
+}
+
+select {
+  padding: 0.35rem;
+  font-size: 0.85rem;
+}
+
+button {
+  padding: 0.4rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+#log {
+  flex: 1;
+  min-height: 150px;
+  overflow-y: auto;
+  background: #1e1e2e;
+  color: #d4d4d8;
+  font-size: 0.7rem;
+  padding: 0.5rem;
+  border-radius: 4px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.viewport {
+  flex: 1;
+  display: flex;
+}
+
+#app-frame {
+  flex: 1;
+  border: none;
+  width: 100%;
+  height: 100%;
+}
+
+#app-frame.draggable-pip {
+  position: fixed;
+  flex: none;
+  z-index: 1000;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  border: 1px solid #888;
+  border-radius: 0 4px 4px 4px;
+}
+
+.pip-titlebar {
+  position: fixed;
+  z-index: 1001;
+  box-sizing: border-box;
+  height: 22px;
+  padding: 3px 10px;
+  background: #333;
+  color: #fff;
+  font-size: 11px;
+  line-height: 16px;
+  border-radius: 4px 4px 0 0;
+  cursor: move;
+  user-select: none;
+}

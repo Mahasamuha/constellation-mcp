@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Telescope Dev Host</title>
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="controls">
+        <h1>Telescope Dev Host</h1>
+        <p class="hint">
+          Mock MCP Apps host for <code>@constellation/telescope</code>. Acts as the
+          host side of the protocol against an in-memory mock filesystem — no relay,
+          agent, or model required.
+        </p>
+
+        <label>
+          Telescope URL
+          <input id="telescope-url" value="http://localhost:5173" />
+        </label>
+
+        <label>
+          Initial share
+          <select id="initial-share"></select>
+        </label>
+
+        <label>
+          Initial path
+          <input id="initial-path" placeholder="src/index.ts" />
+        </label>
+
+        <button id="launch" type="button">Relaunch</button>
+
+        <label class="checkbox">
+          <input id="theme-toggle" type="checkbox" />
+          Dark theme
+        </label>
+        <label class="checkbox">
+          <input id="allow-pip" type="checkbox" checked />
+          Allow PIP display mode
+        </label>
+
+        <label>
+          Force display mode (host-initiated)
+          <select id="force-display-mode">
+            <option value="inline">inline</option>
+            <option value="fullscreen">fullscreen</option>
+            <option value="pip">pip</option>
+          </select>
+        </label>
+
+        <label>
+          PIP style (host implementation choice — spec doesn't define this)
+          <select id="pip-style">
+            <option value="fixed">Fixed corner (TV-style)</option>
+            <option value="draggable">Draggable window (OS-style)</option>
+          </select>
+        </label>
+
+        <label>
+          Simulated tool latency (ms)
+          <input id="latency" type="number" min="0" step="100" value="500" />
+        </label>
+
+        <h2>Tool call log</h2>
+        <pre id="log"></pre>
+      </aside>
+      <main class="viewport">
+        <div id="pip-titlebar" class="pip-titlebar" hidden>⠿ PIP window — drag me</div>
+        <iframe id="app-frame" title="Telescope"></iframe>
+      </main>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
