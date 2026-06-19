@@ -21,6 +21,8 @@ Access any machine's filesystem from any MCP client (Claude, ChatGPT, Cursor) th
 
 That's it. Ask your AI assistant to read, search, or edit anything under a registered path, on any connected machine.
 
+On a client that supports the [MCP Apps extension](docs/relay.md#mcp-apps) to the MCP spec (Claude.ai, Claude Desktop, VS Code Insiders, Goose, Postman), just ask to browse a share or open a file — Constellation can render an interactive file browser (directory tree, syntax-highlighted viewer, editor) right inline in the conversation instead of plain text.
+
 ## Prerequisites
 
 - Docker and Docker Compose (relay)
