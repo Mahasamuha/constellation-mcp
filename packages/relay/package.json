@@ -33,7 +33,7 @@
     "@types/cors": "^2.8.19",
     "@types/escape-html": "^1.0.4",
     "@types/express": "^5.0.6",
-    "@types/node": "^25.0.0",
+    "@types/node": "^24.0.0",
     "@types/pg": "^8.20.0",
     "@types/picomatch": "^4.0.3",
     "@types/ws": "^8.18.1",
