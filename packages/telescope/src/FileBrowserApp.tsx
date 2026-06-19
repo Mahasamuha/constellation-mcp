@@ -23,6 +23,7 @@ interface BrowserContextValue {
   error: Error | null;
   shares: ShareEntry[];
   selectedShare: string | null;
+  selectedHost: string | null;
   selectedPath: string | null;
   fileContent: string | null;
   isEditing: boolean;
@@ -31,9 +32,9 @@ interface BrowserContextValue {
   wordWrap: boolean;
   toggleSidebar: () => void;
   toggleWordWrap: () => void;
-  selectShare: (share: string, openPath?: string) => void;
+  selectShare: (share: string, host: string, openPath?: string) => void;
   handleShareChange: (value: string) => void;
-  openFile: (share: string, relativePath: string) => Promise<void>;
+  openFile: (share: string, host: string, relativePath: string) => Promise<void>;
   saveFile: (content: string) => Promise<void>;
   startEditing: () => void;
   cancelEditing: () => void;
@@ -72,6 +73,7 @@ export function FileBrowserApp() {
   const initialInput = useRef<{ share?: string; path?: string }>({});
   const [shares, setShares] = useState<ShareEntry[]>([]);
   const [selectedShare, setSelectedShare] = useState<string | null>(null);
+  const [selectedHost, setSelectedHost] = useState<string | null>(null);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [fileContent, setFileContent] = useState<string | null>(null);
   const [isEditing, setIsEditing] = useState(false);
@@ -99,11 +101,11 @@ export function FileBrowserApp() {
   useHostStyleVariables(app, app?.getHostContext());
 
   const openFile = useCallback(
-    async (share: string, relativePath: string) => {
+    async (share: string, host: string, relativePath: string) => {
       if (!app) return;
       setIsEditing(false);
       setStatus(`Loading ${relativePath}…`);
-      const result = await app.callServerTool({ name: "read_file", arguments: { share, relative_path: relativePath } });
+      const result = await app.callServerTool({ name: "read_file", arguments: { share, host, relative_path: relativePath } });
       const err = toolErrorMessage(result);
       if (err) {
         setSelectedPath(null);
@@ -123,11 +125,11 @@ export function FileBrowserApp() {
 
   const saveFile = useCallback(
     async (content: string) => {
-      if (!app || !selectedShare || !selectedPath) return;
+      if (!app || !selectedShare || !selectedHost || !selectedPath) return;
       setStatus(`Saving ${selectedPath}…`);
       const written = await app.callServerTool({
         name: "write_file",
-        arguments: { share: selectedShare, relative_path: selectedPath, content, mode: "overwrite" },
+        arguments: { share: selectedShare, host: selectedHost, relative_path: selectedPath, content, mode: "overwrite" },
       });
       const writeErr = toolErrorMessage(written);
       if (writeErr) {
@@ -137,7 +139,7 @@ export function FileBrowserApp() {
       // Re-read to confirm the round-trip rather than trusting the local draft.
       const reread = await app.callServerTool({
         name: "read_file",
-        arguments: { share: selectedShare, relative_path: selectedPath },
+        arguments: { share: selectedShare, host: selectedHost, relative_path: selectedPath },
       });
       const readErr = toolErrorMessage(reread);
       if (readErr) {
@@ -148,34 +150,37 @@ export function FileBrowserApp() {
       setIsEditing(false);
       setStatus(`Saved ${selectedShare}/${selectedPath} at ${new Date().toLocaleTimeString()}`);
     },
-    [app, selectedShare, selectedPath, setStatus, setStatusError]
+    [app, selectedShare, selectedHost, selectedPath, setStatus, setStatusError]
   );
 
   const selectShare = useCallback(
-    (share: string, openPath?: string) => {
+    (share: string, host: string, openPath?: string) => {
       setSelectedShare(share);
+      setSelectedHost(host);
       setSelectedPath(null);
       setFileContent(null);
       setIsEditing(false);
       setStatus(`Browsing ${share}`);
-      if (openPath) void openFile(share, openPath);
+      if (openPath) void openFile(share, host, openPath);
     },
     [openFile, setStatus]
   );
 
   const handleShareChange = useCallback(
     (value: string) => {
-      if (value) {
-        selectShare(value);
+      const match = shares.find((s) => s.share === value);
+      if (match) {
+        selectShare(match.share, match.host);
       } else {
         setSelectedShare(null);
+        setSelectedHost(null);
         setSelectedPath(null);
         setFileContent(null);
         setIsEditing(false);
         setStatus("Select a share to begin.");
       }
     },
-    [selectShare, setStatus]
+    [shares, selectShare, setStatus]
   );
 
   const toggleSidebar = useCallback(() => setSidebarOpen((open) => !open), []);
@@ -224,8 +229,9 @@ export function FileBrowserApp() {
       setShares(loaded);
 
       const initial = initialInput.current;
-      if (initial.share && loaded.some((s) => s.share === initial.share)) {
-        selectShare(initial.share, initial.path);
+      const match = initial.share ? loaded.find((s) => s.share === initial.share) : undefined;
+      if (match) {
+        selectShare(match.share, match.host, initial.path);
       } else {
         setStatus(loaded.length ? "Select a share to begin." : "No shares available.");
       }
@@ -239,6 +245,7 @@ export function FileBrowserApp() {
       error,
       shares,
       selectedShare,
+      selectedHost,
       selectedPath,
       fileContent,
       isEditing,
@@ -260,6 +267,7 @@ export function FileBrowserApp() {
       error,
       shares,
       selectedShare,
+      selectedHost,
       selectedPath,
       fileContent,
       isEditing,
@@ -320,17 +328,19 @@ function FileBrowserLayout() {
 }
 
 function DirectoryTree({ path }: { path: string }) {
-  const { app, selectedShare } = useBrowserContext();
+  const { app, selectedShare, selectedHost } = useBrowserContext();
   const [nodes, setNodes] = useState<DirNode[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!app || !selectedShare) return;
+    if (!app || !selectedShare || !selectedHost) return;
     let cancelled = false;
     void (async () => {
       const result = await app.callServerTool({
         name: "list_directory",
-        arguments: path ? { share: selectedShare, relative_path: path } : { share: selectedShare },
+        arguments: path
+          ? { share: selectedShare, host: selectedHost, relative_path: path }
+          : { share: selectedShare, host: selectedHost },
       });
       if (cancelled) return;
       const err = toolErrorMessage(result);
@@ -346,7 +356,7 @@ function DirectoryTree({ path }: { path: string }) {
     return () => {
       cancelled = true;
     };
-  }, [app, selectedShare, path]);
+  }, [app, selectedShare, selectedHost, path]);
 
   if (error) {
     return (
@@ -374,7 +384,7 @@ function DirectoryTree({ path }: { path: string }) {
 }
 
 function TreeNode({ node }: { node: DirNode }) {
-  const { selectedShare, selectedPath, openFile } = useBrowserContext();
+  const { selectedShare, selectedHost, selectedPath, openFile } = useBrowserContext();
   const [expanded, setExpanded] = useState(false);
   const isDir = node.type === "directory";
   const classes = ["node", isDir ? "dir" : "file", expanded && "expanded", selectedPath === node.path && "selected"]
@@ -385,7 +395,7 @@ function TreeNode({ node }: { node: DirNode }) {
     <li>
       <div
         className={classes}
-        onClick={() => (isDir ? setExpanded((e) => !e) : void openFile(selectedShare!, node.path))}
+        onClick={() => (isDir ? setExpanded((e) => !e) : void openFile(selectedShare!, selectedHost!, node.path))}
       >
         {nodeName(node.path)}
       </div>
@@ -398,6 +408,7 @@ function FileEditor() {
   const {
     fileContent,
     selectedShare,
+    selectedHost,
     selectedPath,
     isEditing,
     startEditing,
@@ -429,11 +440,11 @@ function FileEditor() {
   }, []);
 
   const handleRefresh = useCallback(() => {
-    if (!selectedShare || !selectedPath || refreshCooldown) return;
+    if (!selectedShare || !selectedHost || !selectedPath || refreshCooldown) return;
     setRefreshCooldown(true);
-    void openFile(selectedShare, selectedPath);
+    void openFile(selectedShare, selectedHost, selectedPath);
     refreshTimeoutRef.current = window.setTimeout(() => setRefreshCooldown(false), 2000);
-  }, [selectedShare, selectedPath, openFile, refreshCooldown]);
+  }, [selectedShare, selectedHost, selectedPath, openFile, refreshCooldown]);
 
   if (fileContent == null || highlighted == null) return <pre className="viewer" />;
 

@@ -7,6 +7,13 @@ vi.mock("@constellation/shared", () => {
     createLogger: () => ({ ...log, child: () => log }),
     hashToken: (t: string) => t,
     generateToken: () => "test-token",
+    evaluatePermissionBlob: (blob: { default: string; overrides?: Array<{ oidc_sub: string; access: string }> }, userOidcSub?: string | null) => {
+      if (userOidcSub && blob.overrides) {
+        const override = blob.overrides.find((o) => o.oidc_sub === userOidcSub);
+        if (override) return override.access;
+      }
+      return blob.default || "none";
+    },
   };
 });
 
@@ -50,6 +57,7 @@ import { config } from "./config.js";
 // Typed access to mocked functions
 const db = prisma as unknown as {
   pathShare: { findFirst: ReturnType<typeof vi.fn> };
+  hubShare: { findMany: ReturnType<typeof vi.fn> };
   relayPathFilter: { findMany: ReturnType<typeof vi.fn> };
   executor: { findFirst: ReturnType<typeof vi.fn> };
 };
@@ -186,6 +194,65 @@ describe("share resolution", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Ambiguous hub share resolution
+// ---------------------------------------------------------------------------
+
+function hubShareRow(executorId: string, host: string, access = "read-only") {
+  return {
+    reportedPath: `/data/${host}`,
+    permissionBlob: { default: access },
+    executor: { id: executorId, host, lastHeartbeatAt: new Date() },
+  };
+}
+
+// Hub shares are unique per-executor, not per-user, so the same share name can
+// legitimately exist on multiple hubs a user has access to. `hubShare.findMany`
+// is mocked to actually respect the `executor.host` filter (rather than
+// returning a canned list regardless of args) so these tests exercise the same
+// host-scoping logic resolveShare relies on, not just canned responses.
+function mockHubSharesByHost(rows: ReturnType<typeof hubShareRow>[]) {
+  db.hubShare.findMany.mockImplementation(
+    ({ where }: { where: { executor?: { host?: string } } }) =>
+      Promise.resolve(where.executor?.host ? rows.filter((r) => r.executor.host === where.executor!.host) : rows)
+  );
+}
+
+describe("ambiguous hub share resolution", () => {
+  it("returns ambiguous when the same hub share is visible on two hosts", async () => {
+    db.pathShare.findFirst.mockResolvedValue(null);
+    mockHubSharesByHost([hubShareRow("hub-1", "server-a"), hubShareRow("hub-2", "server-b")]);
+
+    const result = await routeToolCall(uid(), "read_file", "docs", {});
+
+    expect(result).toMatchObject({ code: "ambiguous" });
+    expect((result as { message: string }).message).toContain("server-a");
+    expect((result as { message: string }).message).toContain("server-b");
+  });
+
+  it("resolves without ambiguity when host disambiguates", async () => {
+    db.pathShare.findFirst.mockResolvedValue(null);
+    mockHubSharesByHost([hubShareRow("hub-1", "server-a"), hubShareRow("hub-2", "server-b")]);
+    mockGetConnection.mockReturnValue({ ws: {}, executorId: "hub-1" } as ReturnType<typeof getConnection>);
+    mockDispatchRpc.mockResolvedValue({ request_id: "", result: { ok: true } });
+
+    const result = await routeToolCall(uid(), "read_file", "docs", {}, "server-a");
+
+    expect(result).toMatchObject({ result: { ok: true } });
+  });
+
+  it("excludes hosts the user has no access to from the ambiguity check", async () => {
+    db.pathShare.findFirst.mockResolvedValue(null);
+    mockHubSharesByHost([hubShareRow("hub-1", "server-a", "none"), hubShareRow("hub-2", "server-b", "read-only")]);
+    mockGetConnection.mockReturnValue({ ws: {}, executorId: "hub-2" } as ReturnType<typeof getConnection>);
+    mockDispatchRpc.mockResolvedValue({ request_id: "", result: { ok: true } });
+
+    const result = await routeToolCall(uid(), "read_file", "docs", {});
+
+    expect(result).toMatchObject({ result: { ok: true } });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Path filtering
 // ---------------------------------------------------------------------------
 
@@ -268,6 +335,31 @@ describe("cross-host routing", () => {
     });
 
     expect((result as { code?: string }).code).not.toBe("cross_host");
+  });
+
+  it("scopes destination hub-share resolution to the source's resolved host", async () => {
+    // Source resolves to a personal share on server-a; "dst-share" is not a
+    // personal share, but exists as a hub share on both server-a and server-b.
+    // Without scoping the dst lookup to server-a, this would resolve as
+    // "ambiguous" (or, prior to that fix, arbitrarily match server-b).
+    db.pathShare.findFirst
+      .mockResolvedValueOnce({
+        reportedPath: "/src",
+        executor: { id: "executor-1", host: "server-a", lastHeartbeatAt: new Date() },
+      })
+      .mockResolvedValueOnce(null);
+    mockHubSharesByHost([hubShareRow("executor-1", "server-a", "read-write"), hubShareRow("executor-2", "server-b", "read-write")]);
+    db.relayPathFilter.findMany.mockResolvedValue([]);
+    mockGetConnection.mockReturnValue({ ws: {}, executorId: "executor-1" } as ReturnType<typeof getConnection>);
+    mockDispatchRpc.mockResolvedValue({ request_id: "", result: { ok: true } });
+
+    const result = await routeToolCall(uid(), "copy", "src-share", {
+      src_relative_path: "a.txt",
+      dst_relative_path: "b.txt",
+      dst_share: "dst-share",
+    });
+
+    expect(result).toMatchObject({ result: { ok: true } });
   });
 });
 
