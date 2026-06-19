@@ -35,7 +35,7 @@
     "@constellation/shared": "*",
     "@types/diff": "^8.0.0",
     "@types/js-yaml": "^4.0.9",
-    "@types/node": "^25.0.0",
+    "@types/node": "^24.0.0",
     "@types/picomatch": "^4.0.3",
     "@types/ws": "^8.18.1",
     "@yao-pkg/pkg": "^6.0.0",

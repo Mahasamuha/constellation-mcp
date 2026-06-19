@@ -23,7 +23,7 @@
   },
   "devDependencies": {
     "@types/diff": "^8.0.0",
-    "@types/node": "^25.0.0",
+    "@types/node": "^24.0.0",
     "@types/picomatch": "^4.0.3",
     "@types/ws": "^8.18.1",
     "pino-pretty": "^13.0.0",

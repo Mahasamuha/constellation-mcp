@@ -36,7 +36,7 @@
   "devDependencies": {
     "@constellation/shared": "*",
     "@types/js-yaml": "^4.0.9",
-    "@types/node": "^25.0.0",
+    "@types/node": "^24.0.0",
     "@types/ws": "^8.18.1",
     "pino-pretty": "^13.0.0",
     "tsup": "^8.0.0",
