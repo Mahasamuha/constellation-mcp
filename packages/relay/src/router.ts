@@ -22,7 +22,7 @@ export interface RouteResult {
 }
 
 export interface RouterError {
-  code: "share_not_found" | "host_not_found" | "executor_offline" | "path_filtered" | "rate_limited" | "timeout" | "cross_host";
+  code: "share_not_found" | "host_not_found" | "executor_offline" | "path_filtered" | "rate_limited" | "timeout" | "cross_host" | "ambiguous";
   message: string;
 }
 
@@ -118,7 +118,9 @@ export async function resolveShare(
 /**
  * Looks up hub shares from the relay's synced registry and evaluates
  * optimistic access using the permission blob. Returns the route result if
- * a visible share is found, or null if not.
+ * exactly one visible share is found, an "ambiguous" error if the user has
+ * access to more than one host exposing the same share name, or null if
+ * none are visible.
  *
  * This is optimistic: actual enforcement happens at the hub.
  */
@@ -126,7 +128,7 @@ async function resolveHubShare(
   share: string,
   host?: string,
   userOidcSub?: string | null
-): Promise<RouteResult | null> {
+): Promise<RouteResult | RouterError | null> {
   const hubShares = await prisma.hubShare.findMany({
     where: {
       share,
@@ -135,19 +137,30 @@ async function resolveHubShare(
     include: { executor: { select: { id: true, host: true, lastHeartbeatAt: true } } },
   });
 
-  for (const hs of hubShares) {
-    const access = evaluatePermissionBlob(hs.permissionBlob as unknown as PermissionBlob, userOidcSub);
-    if (access !== "none") {
-      return {
-        executorId: hs.executor.id,
-        absoluteRoot: hs.reportedPath,
-        host: hs.executor.host,
-        lastHeartbeatAt: hs.executor.lastHeartbeatAt,
-      };
-    }
+  const accessible = hubShares.filter(
+    (hs) => evaluatePermissionBlob(hs.permissionBlob as unknown as PermissionBlob, userOidcSub) !== "none"
+  );
+
+  if (accessible.length === 0) return null;
+
+  // Same share name visible on more than one host the user can access — the
+  // hub-share namespace is per-executor, not per-user, so this is a real
+  // collision rather than a bug. Surface it rather than picking arbitrarily.
+  if (accessible.length > 1) {
+    const hosts = accessible.map((hs) => hs.executor.host);
+    return {
+      code: "ambiguous",
+      message: `Share '${share}' is available on multiple hosts you have access to: ${hosts.join(", ")}. Specify host to disambiguate.`,
+    };
   }
 
-  return null;
+  const hs = accessible[0]!;
+  return {
+    executorId: hs.executor.id,
+    absoluteRoot: hs.reportedPath,
+    host: hs.executor.host,
+    lastHeartbeatAt: hs.executor.lastHeartbeatAt,
+  };
 }
 
 
@@ -246,10 +259,12 @@ export async function routeToolCall(
   const { executorId, absoluteRoot, host: executorHost, lastHeartbeatAt } = resolved;
 
   // For copy/move with dst_share: resolve the destination share and inject dst_root.
+  // Scoped to the source's already-resolved host — cross-host copy/move is rejected
+  // below regardless, so there's never a valid reason to consider any other host.
   let effectiveParams = params;
   if ((tool === "copy" || tool === "move") && typeof params["dst_share"] === "string") {
     const dstShare = params["dst_share"];
-    const dstResolved = await resolveShare(userId, dstShare, undefined, userOidcSub);
+    const dstResolved = await resolveShare(userId, dstShare, executorHost, userOidcSub);
     if ("code" in dstResolved) return dstResolved;
     if (dstResolved.executorId !== executorId) {
       return {
