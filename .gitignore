@@ -14,3 +14,4 @@ pnpm-lock.yaml
 # Local Claude Code session/permission state — machine-specific, not shared
 .claude
 .idea
+CLAUDE.local.md
