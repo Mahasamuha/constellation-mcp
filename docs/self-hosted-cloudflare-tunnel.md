@@ -48,10 +48,12 @@ Fill in the required values:
 ```
 RELAY_URL=https://relay.example.com      # your tunnel URL from step 2
 CLOUDFLARE_TUNNEL_TOKEN=<paste token>    # from step 1
-DATABASE_URL=postgresql://postgres:postgres@postgres:5432/constellation
+POSTGRES_PASSWORD=<replace with a strong password>   # .env.example ships a placeholder — change it
 AUTH_MODE=local                          # or oidc if you have a provider
 TRUST_PROXY_PRESET=cloudflare-tunnel     # already set in .env.example
 ```
+
+`DATABASE_URL` isn't set directly — `docker-compose.yml` builds it from `POSTGRES_USER`, `POSTGRES_PASSWORD`, and `POSTGRES_DB`. Make sure `POSTGRES_PASSWORD` is changed from the `.env.example` placeholder before going further.
 
 ### 4. Start the relay
 

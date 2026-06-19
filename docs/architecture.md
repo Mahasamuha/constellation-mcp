@@ -30,13 +30,13 @@
 flowchart TD
     Client["MCP client\n(Claude, ChatGPT, Cursor)"]
     Relay["Relay · VPS / Railway / Fly\nMCP server · OAuth AS · WebSocket hub · request router"]
-    Postgres[("Postgres\nagent registry · OAuth sessions · path shares · filters")]
+    Postgres[("Postgres\nexecutor registry · OAuth sessions · path shares · filters")]
     Node["Node · your machine\noutbound WebSocket only — no inbound ports\nlocal filesystem ops · path enforcement"]
     Hub["Hub · shared machine (NAS, dev server)\noutbound WebSocket only · admin-defined shares\nper-OS-user subnode dispatch"]
 
     Client -->|"HTTPS + OAuth 2.0 Bearer"| Relay
     Relay --- Postgres
-    Relay -->|"wss://&lt;relay&gt;/executor/connect · Bearer &lt;agent-token&gt;"| Node
+    Relay -->|"wss://&lt;relay&gt;/executor/connect · Bearer &lt;node-token&gt;"| Node
     Relay -->|"wss://&lt;relay&gt;/executor/connect · Bearer &lt;hub-token&gt;"| Hub
 ```
 
@@ -45,7 +45,7 @@ flowchart TD
 | Relay | VPS, Railway, or Fly | MCP server, OAuth authorization server, WebSocket hub, request routing, liveness tracking |
 | Node | Any machine, under the user's own identity | WebSocket client, filesystem operations, path enforcement |
 | Hub | A machine shared by multiple users, under a dedicated service identity | WebSocket client, OS-identity resolution, per-user subnode dispatch, admin-defined share permissions |
-| Postgres | Sidecar to relay | Agent registry, OAuth sessions, path shares, path filters |
+| Postgres | Sidecar to relay | Executor registry, OAuth sessions, path shares, path filters |
 
 **Stack:** TypeScript throughout. Relay on Node.js; node distributed as a standalone `constellation` binary. Prisma for database access and migrations. Pino for structured logging.
 
@@ -62,18 +62,18 @@ The relay acts as an OAuth 2.0 authorization server to MCP clients, and as an OI
 MCP clients authenticate via the **Authorization Code flow** (with mandatory PKCE). Dynamic Client Registration (RFC 7591) is supported as the primary path — Claude, ChatGPT, and Cursor attempt DCR automatically on first connection.
 
 The node CLI and relay CLI authenticate via the **Device Code flow** (RFC 8628). Scope determines which flow is served:
-- `agent:register` — creates an agent registration and returns an agent token
+- `agent:register` — creates a node registration and returns a node token
 - `relay:manage` — issues a management API session for `constellation relay` commands
 
 Tokens are 32-byte cryptographically random values stored as SHA-256 hashes. They are never logged in plaintext.
 
 ### WebSocket hub
 
-Agents connect to `/executor/connect` with their agent token in the `Authorization` header. The relay validates the token, then holds the connection in an in-memory map keyed by `executorId`. Only one WebSocket per agent is permitted — a new connection from the same agent terminates the previous one (assumed stale).
+Executors connect to `/executor/connect` with their executor token in the `Authorization` header. The relay validates the token, then holds the connection in an in-memory map keyed by `executorId`. Only one WebSocket per executor is permitted — a new connection from the same executor terminates the previous one (assumed stale).
 
-The relay pings each connected agent every `HEARTBEAT_INTERVAL_SECONDS` (default 60s). The agent's WebSocket library responds with a pong automatically. Each pong updates `last_heartbeat_at` in Postgres. After `HEARTBEAT_MAX_MISSED` (default 3) consecutive missed pongs, the relay terminates the connection.
+The relay pings each connected executor every `HEARTBEAT_INTERVAL_SECONDS` (default 60s). The executor's WebSocket library responds with a pong automatically. Each pong updates `last_heartbeat_at` in Postgres. After `HEARTBEAT_MAX_MISSED` (default 3) consecutive missed pongs, the relay terminates the connection.
 
-On connect, the agent immediately sends a `config_update` message with its current path shares. The relay upserts those shares in Postgres — adding new ones, updating paths on existing ones, removing any not present in the payload. This keeps routing information current without requiring a restart.
+On connect, the executor immediately sends a `config_update` message with its current path shares. The relay upserts those shares in Postgres — adding new ones, updating paths on existing ones, removing any not present in the payload. This keeps routing information current without requiring a restart.
 
 ### Request router
 
@@ -82,14 +82,14 @@ When an MCP client calls a tool, the relay:
 1. Resolves the Bearer token to a `user_id`
 2. Resolves the `share` (and optional `host`) to a target `executor_id` and `absolute_root` path
 3. Applies relay-side deny filters (glob or regex patterns)
-4. Looks up the live WebSocket for that agent
+4. Looks up the live WebSocket for that executor
 5. Forwards an RPC envelope: `{ request_id, tool, absolute_root, ...tool_params }`
 6. Waits up to `RPC_TIMEOUT_MS` (default 30s) for a response
 7. Returns the result or a structured error to the MCP client
 
 The relay passes `absolute_root` — the resolved filesystem path — directly in the RPC envelope. The node never sees share names; it only validates paths. This means the relay cannot fabricate a root the node doesn't know about: it can only route to paths that exist in the node's local `paths.yaml`.
 
-If the node disconnects while an RPC is in flight, the relay immediately rejects all pending requests for that agent. Operations are not retried; any mid-flight filesystem op is left in its current state.
+If the executor disconnects while an RPC is in flight, the relay immediately rejects all pending requests for that executor. Operations are not retried; any mid-flight filesystem op is left in its current state.
 
 ### Data model
 
@@ -112,11 +112,11 @@ oauth_sessions   id, user_id, mcp_client_id, access_token_hash, expires_at, refr
 
 ### Connection
 
-On startup the node connects to `wss://<relay_url>/executor/connect` with `Authorization: Bearer <agent_token>`. It immediately sends a `config_update` with the current `paths.yaml`, then enters a receive loop waiting for RPC envelopes and control messages.
+On startup the node connects to `wss://<relay_url>/executor/connect` with `Authorization: Bearer <node_token>`. It immediately sends a `config_update` with the current `paths.yaml`, then enters a receive loop waiting for RPC envelopes and control messages.
 
 **Reconnect backoff:** starts at 1 second, doubles on each failure up to 60 seconds, with ±20% jitter. Reconnects indefinitely. Because all config is local, reconnection requires no handshake beyond token validation.
 
-**TLS enforcement:** the node refuses to connect over `http://` (or `ws://`) to any host that is not `localhost`, `127.0.0.1`, or `::1`. The agent token is a long-lived credential; transmitting it unencrypted to a remote host is not permitted.
+**TLS enforcement:** the node refuses to connect over `http://` (or `ws://`) to any host that is not `localhost`, `127.0.0.1`, or `::1`. The node token is a long-lived credential; transmitting it unencrypted to a remote host is not permitted.
 
 ### Request handling
 
@@ -225,9 +225,9 @@ This check only covers the path supplied in the RPC — it does not re-run on en
 
 ### Token security
 
-- Agent tokens and OAuth tokens are 32-byte cryptographically random values, encoded as 64-character hex strings
+- Executor tokens and OAuth tokens are 32-byte cryptographically random values, encoded as 64-character hex strings
 - Stored in Postgres as SHA-256 hashes; never logged in plaintext
-- Agent tokens are long-lived credentials — `node.yaml` and `relay-session.yaml` should be `chmod 600`
+- Node tokens are long-lived credentials — `node.yaml` and `relay-session.yaml` should be `chmod 600`
 - The node refuses to transmit its token over an unencrypted connection to a non-localhost host
 
 ### Rate limiting
@@ -238,10 +238,10 @@ This check only covers the path supplied in the RPC — it does not re-run on en
 | Expensive tools (`grep_files`, `find_files`, recursive `list_directory`) | 20 req/min per user | `RATE_LIMIT_EXPENSIVE_TOOLS_PER_MIN` |
 | OAuth endpoints | 10 req/15 min per IP | `RATE_LIMIT_OAUTH_PER_15MIN` |
 | Device code polling | 200 req/15 min per IP | `RATE_LIMIT_DEVICE_POLL_PER_15MIN` |
-| Agent WebSocket reconnects | 10 req/min per agent token | `RATE_LIMIT_WS_RECONNECT_PER_MIN` |
+| Executor WebSocket reconnects | 10 req/min per executor token | `RATE_LIMIT_WS_RECONNECT_PER_MIN` |
 
 Rate limit state is in-memory — no Redis required. State is lost on relay restart, which is acceptable.
 
 ### Account deactivation
 
-Setting `deactivated_at` on a user record immediately blocks all MCP requests and agent connections for that user. Config, agent registrations, and path shares are preserved but inert. Re-activation requires a database-level change; there is no CLI command to re-activate.
+Setting `deactivated_at` on a user record immediately blocks all MCP requests and node connections for that user. Config, node registrations, and path shares are preserved but inert. Re-activation requires a database-level change; there is no CLI command to re-activate.

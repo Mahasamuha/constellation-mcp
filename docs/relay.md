@@ -1,6 +1,6 @@
 # Relay Reference
 
-The relay is a stateful HTTP/WebSocket server that sits between MCP clients and agents. It owns authentication, routing, and path filtering. Agents connect out to the relay — the relay never initiates connections inward.
+The relay is a stateful HTTP/WebSocket server that sits between MCP clients and executors. It owns authentication, routing, and path filtering. Executors connect out to the relay — the relay never initiates connections inward.
 
 ---
 
@@ -30,9 +30,9 @@ flowchart TD
     class RouterR,ClientR replicated
 ```
 
-Agents connect over WebSocket to `wss://<relay>/executor/connect` using a long-lived bearer token. The relay keeps one connection per agent in memory (see [`registry.ts`](../packages/relay/src/registry.ts)) and heartbeats it with WebSocket pings.
+Executors connect over WebSocket to `wss://<relay>/executor/connect` using a long-lived bearer token. The relay keeps one connection per executor in memory (see [`registry.ts`](../packages/relay/src/registry.ts)) and heartbeats it with WebSocket pings.
 
-Agents come in two modalities, distinguished by `ExecutorTokenType`:
+Executors come in two modalities, distinguished by `ExecutorTokenType`:
 
 - **Node** (`NODE`) — bound to one user; runs under the user's own OS identity. Shares are user-managed, synced via `config_update`, and stored as `PathShare` rows.
 - **Hub** (`HUB`) — service-level, not bound to any user; runs on machines shared by multiple people (NAS, dev server). Shares are admin-defined in the hub's config, synced via `hub_share_sync`, and stored as `HubShare` rows alongside a per-share `permission_blob`. The relay performs an *optimistic* permission check against that blob during share resolution — final enforcement (OS identity resolution, share access, sub-path permissions) happens authoritatively at the hub. See [Hub](hub.md) for the full request flow, identity resolution chain, and permission model.
@@ -107,7 +107,7 @@ Relay health check. No auth required.
 {
   "status": "ok",
   "uptime_seconds": 3724,
-  "version": "0.3.1"
+  "version": "0.5.0"
 }
 ```
 
@@ -499,7 +499,7 @@ sequenceDiagram
     Relay-->>CLI: access_token (next poll succeeds)
 ```
 
-- `agent:register` — on approval, the relay creates an `Agent` row and an `ExecutorToken`, then returns `{ access_token, token_type: "agent", host }`.
+- `agent:register` — on approval, the relay creates an `Executor` row and an `ExecutorToken`, then returns `{ access_token, token_type: "agent", host }`.
 - `agent:register:shared` — creates a shared (non-user-bound) `ExecutorToken`; requires admin approval.
 - `relay:manage` — issues a standard OAuth session tied to a static first-party client.
 
@@ -511,27 +511,27 @@ Standard `grant_type=refresh_token`. Issues a new access token and rotates the r
 
 ---
 
-## Agent WebSocket Protocol
+## Executor WebSocket Protocol
 
-Agents connect to `wss://<relay>/executor/connect` with:
+Executors connect to `wss://<relay>/executor/connect` with:
 
 ```
-Authorization: Bearer <agent-token>
+Authorization: Bearer <executor-token>
 ```
 
-The relay validates the token, enforces the reconnect rate limit, and upgrades the connection. Only one WebSocket per agent is allowed — a new connection from the same agent terminates the previous one.
+The relay validates the token, enforces the reconnect rate limit, and upgrades the connection. Only one WebSocket per executor is allowed — a new connection from the same executor terminates the previous one.
 
 ### Heartbeat
 
-The relay sends a WebSocket `ping` frame every `HEARTBEAT_INTERVAL_SECONDS` seconds. The agent must respond with `pong`. After `HEARTBEAT_MAX_MISSED` consecutive missed pongs, the relay terminates the connection and marks the agent offline.
+The relay sends a WebSocket `ping` frame every `HEARTBEAT_INTERVAL_SECONDS` seconds. The executor must respond with `pong`. After `HEARTBEAT_MAX_MISSED` consecutive missed pongs, the relay terminates the connection and marks the executor offline.
 
 Each pong updates `last_heartbeat_at` on the executor row, which is what `online` status in `list_hosts` / `GET /api/executors` reflects.
 
-### Control Messages (relay → agent)
+### Control Messages (relay → executor)
 
 All messages are JSON frames.
 
-**`config_update_ok`** — sent after a successful `config_update` from the agent.
+**`config_update_ok`** — sent after a successful `config_update` from the executor.
 ```json
 { "type": "config_update_ok" }
 ```
@@ -541,15 +541,15 @@ All messages are JSON frames.
 { "type": "config_update_error", "error": "<reason>" }
 ```
 
-**`token_rotated`** — sent after the agent requests token rotation.
+**`token_rotated`** — sent after the executor requests token rotation.
 ```json
-{ "type": "token_rotated", "token": "<new-agent-token>" }
+{ "type": "token_rotated", "token": "<new-executor-token>" }
 ```
-The agent must persist the new token and reconnect within **5 minutes**. The relay does not update `agentTokenId` until the agent reconnects with the new token, so the old token remains valid throughout the window. Once the agent reconnects, the old token is revoked atomically with the `agentTokenId` update.
+The executor must persist the new token and reconnect within **5 minutes**. The relay does not update `executorTokenId` until the executor reconnects with the new token, so the old token remains valid throughout the window. Once the executor reconnects, the old token is revoked atomically with the `executorTokenId` update.
 
-If the agent does not reconnect within 5 minutes, the new token is revoked and the old token continues to work — no lockout occurs.
+If the executor does not reconnect within 5 minutes, the new token is revoked and the old token continues to work — no lockout occurs.
 
-**Lockout scenario:** if both tokens are independently revoked (e.g. the old token is revoked via the management API while the rotation window is open, and the timer then revokes the new token), the agent cannot reconnect and must re-register (`constellation node init` for a node, `constellation hub register` for a hub).
+**Lockout scenario:** if both tokens are independently revoked (e.g. the old token is revoked via the management API while the rotation window is open, and the timer then revokes the new token), the executor cannot reconnect and must re-register (`constellation node init` for a node, `constellation hub register` for a hub).
 
 **`update_host_ok`** / **`update_host_error`** — response to a host rename request.
 ```json
@@ -559,9 +559,9 @@ If the agent does not reconnect within 5 minutes, the new token is revoked and t
 
 **RPC envelope** — forwarded tool calls (see below).
 
-### Control Messages (agent → relay)
+### Control Messages (executor → relay)
 
-**`config_update`** — push path share changes to the relay. Shares not present in the payload are removed. Duplicate shares across agents on the same account are rejected.
+**`config_update`** — push path share changes to the relay. Shares not present in the payload are removed. Duplicate shares across nodes on the same account are rejected.
 ```json
 {
   "type": "config_update",
@@ -572,12 +572,12 @@ If the agent does not reconnect within 5 minutes, the new token is revoked and t
 }
 ```
 
-**`rotate_token`** — request a new agent token. The relay generates it, stores it, and sends `token_rotated` back. The old token is revoked on successful reconnect.
+**`rotate_token`** — request a new executor token. The relay generates it, stores it, and sends `token_rotated` back. The old token is revoked on successful reconnect.
 ```json
 { "type": "rotate_token" }
 ```
 
-**`update_host`** — rename the agent's host identifier. Fails if the name is already taken by another agent on the same account.
+**`update_host`** — rename the node's host identifier. Fails if the name is already taken by another node on the same account.
 ```json
 { "type": "update_host", "host": "new-name" }
 ```
@@ -601,7 +601,7 @@ Relay responds with `hub_share_sync_ok` or `hub_share_sync_error`.
 
 ### RPC Protocol
 
-When an MCP client calls a tool, the relay forwards it to the agent as an RPC envelope:
+When an MCP client calls a tool, the relay forwards it to the executor as an RPC envelope:
 
 ```json
 {
@@ -625,7 +625,7 @@ For hubs the envelope also includes identity fields:
 }
 ```
 
-The agent responds on the same WebSocket:
+The executor responds on the same WebSocket:
 
 ```json
 {
@@ -656,17 +656,18 @@ Or on error:
 | `FILE_TOO_LARGE` | `read_file` — full file exceeds cap | `read_size_kb`, `max_file_size_kb` |
 | `READ_TOO_LARGE` | `read_file` — range result exceeds cap | `read_size_kb` (size of the attempted range), `max_file_size_kb` |
 | `DEST_EXISTS` | `copy` / `move` — destination already exists | `path` (the client-supplied `dst_relative_path` — never the resolved absolute path) |
+| `MOVE_INCOMPLETE` | `move` across filesystems — the copy-then-delete fallback failed partway (copy failed, or copy succeeded but the original couldn't be removed) | `path` (the client-supplied `dst_relative_path`) |
 | _(absent)_ | Path rejected, unknown tool, unexpected error | — |
 
-The relay resolves the share to an `absolute_root` before dispatching, so the agent never sees share names — only absolute paths. The agent enforces its own path restrictions against that root.
+The relay resolves the share to an `absolute_root` before dispatching, so the executor never sees share names — only absolute paths. The executor enforces its own path restrictions against that root.
 
-Requests time out after `RPC_TIMEOUT_MS` milliseconds. When an agent disconnects, all outstanding RPCs for it are rejected immediately.
+Requests time out after `RPC_TIMEOUT_MS` milliseconds. When an executor disconnects, all outstanding RPCs for it are rejected immediately.
 
 ---
 
 ## Path Filters
 
-Path filters are relay-side deny rules applied before an RPC is dispatched. They let you block specific paths from being accessible, even if the agent would otherwise allow them.
+Path filters are relay-side deny rules applied before an RPC is dispatched. They let you block specific paths from being accessible, even if the executor would otherwise allow them.
 
 Filters are evaluated against every path field in the tool call:
 

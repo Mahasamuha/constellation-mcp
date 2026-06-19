@@ -19,9 +19,9 @@ How to connect Claude, ChatGPT, and Cursor to a running Constellation relay.
 4. Claude redirects you to the relay's login page — sign in with your Constellation account
 5. After authorizing, Claude returns to the integration page and the connection is active
 
-### 3. Verify
+### 2. Verify
 
-Start a new conversation and ask Claude to list your available paths or read a file. The `list_shares` tool returns all registered path shares across your online agents.
+Start a new conversation and ask Claude to list your available paths or read a file. The `list_shares` tool returns all registered path shares across your online executors.
 
 ---
 
@@ -40,7 +40,7 @@ Available on Pro, Team, Enterprise, and Edu plans.
 5. Click **Create** — ChatGPT redirects you to the relay's login page
 6. Sign in with your Constellation account and authorize the connection
 
-### 3. Use the connector in a conversation
+### 2. Use the connector in a conversation
 
 MCP connectors must be activated per conversation:
 
@@ -49,9 +49,9 @@ MCP connectors must be activated per conversation:
 3. Enable **Developer Mode**
 4. Select your Constellation connector from the list
 
-### 4. Verify
+### 3. Verify
 
-Ask ChatGPT to list your available paths or read a file. The `list_shares` tool returns all registered path shares across your online agents.
+Ask ChatGPT to list your available paths or read a file. The `list_shares` tool returns all registered path shares across your online executors.
 
 ---
 
@@ -77,7 +77,7 @@ On first use, Cursor opens a browser window to complete the OAuth flow. Sign in 
 
 ### 3. Verify
 
-Open the Cursor MCP panel (or invoke a tool call in the agent) — Constellation's tools should appear. Use `list_shares` to confirm your agents' registered paths are visible.
+Open the Cursor MCP panel (or invoke a tool call in the agent) — Constellation's tools should appear. Use `list_shares` to confirm your executors' registered paths are visible.
 
 ---
 

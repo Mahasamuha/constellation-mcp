@@ -351,3 +351,58 @@ describe("relay executors revoke", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// relay user promote/demote — --relay given on the `relay` parent must reach
+// a subcommand nested two levels deep (relay -> user -> promote/demote).
+// ---------------------------------------------------------------------------
+
+describe("relay user promote/demote", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("promote resolves --relay from the `relay` parent, not just a local flag", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      expect(url).toBe("https://relay.example.com/api/admin/users/alice/promote");
+      return new Response(null, { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { exitCode, out } = await runCli(
+      ["relay", "--relay", "https://relay.example.com", "user", "promote", "alice", "--admin-token", "tok"],
+      dir
+    );
+
+    expect(exitCode).toBe(0);
+    expect(out).toContain("promoted to admin");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("demote resolves --relay from the `relay` parent, not just a local flag", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      expect(url).toBe("https://relay.example.com/api/admin/users/alice/demote");
+      return new Response(null, { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { exitCode, out } = await runCli(
+      ["relay", "--relay", "https://relay.example.com", "user", "demote", "alice", "--admin-token", "tok"],
+      dir
+    );
+
+    expect(exitCode).toBe(0);
+    expect(out).toContain("demoted to regular user");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("errors with the relay-URL hint when neither flag nor config provides one", async () => {
+    const { exitCode, err } = await runCli(
+      ["relay", "user", "promote", "alice", "--admin-token", "tok"],
+      dir
+    );
+
+    expect(exitCode).toBe(1);
+    expect(err).toContain("No relay URL configured");
+  });
+});

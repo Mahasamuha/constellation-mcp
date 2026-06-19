@@ -47,7 +47,7 @@ The OIDC subject identifier (`sub`) for a user can be found in your OIDC provide
 
 ```sh
 sudo constellation hub register \
-  --relay-url https://relay.example.com \
+  --relay https://relay.example.com \
   --host-name nas-shared \
   --env-file /etc/constellation/hub.env
 ```
