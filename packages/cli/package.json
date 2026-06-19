@@ -1,6 +1,6 @@
 {
   "name": "@mahasamuha/constellation-cli",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "type": "module",
   "bin": {
     "constellation": "./dist/cli.js"
