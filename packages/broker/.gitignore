@@ -3,3 +3,6 @@ node_modules
 .env
 
 /src/generated/prisma
+
+# Bundled file browser UI, copied here from packages/telescope/dist at Docker build time
+/ui

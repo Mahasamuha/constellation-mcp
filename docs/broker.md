@@ -41,6 +41,34 @@ Because the broker cannot resolve a shared agent's per-request OS identity itsel
 
 ---
 
+## MCP Apps
+
+The broker implements the [MCP Apps extension](https://github.com/modelcontextprotocol/ext-apps) (`io.modelcontextprotocol/ui`), which lets a tool call render rich, interactive UI inline in a supporting client (Claude.ai, Claude Desktop, VS Code Insiders, Goose, Postman) instead of plain text.
+
+### `open_file_browser`
+
+A trigger tool that launches an interactive file browser — directory tree, syntax-highlighted viewer, and editor — rendered inline in the conversation.
+
+| Param | Type | Description |
+|---|---|---|
+| `label` | string? | Label to open the browser on |
+| `path` | string? | Initial path within the label |
+
+It declares `_meta.ui.resourceUri: "ui://constellation/file-browser"`. On a supporting client, the host fetches that resource (a single bundled HTML page built from `packages/telescope` and served via `resources/read`), renders it in a sandboxed iframe, and forwards the tool's input and result to it via `ui/notifications/tool-input` / `ui/notifications/tool-result`. From there the iframe drives the session itself — calling `list_labels`, `list_directory`, `read_file`, and `write_file` directly through `app.callServerTool()`, proxied by the host back through the same authenticated MCP connection. There is no separate HTTP route, credential flow, or session for the UI; it rides entirely on the existing MCP session and the broker's normal dispatch path (see [Architecture](#architecture)).
+
+On clients that don't support `io.modelcontextprotocol/ui`, `open_file_browser` degrades gracefully to a plain text-only tool — it returns a label or directory listing summary instead of launching the UI. The other file tools are unaffected either way.
+
+### Tool visibility
+
+Tools declare `_meta.ui.visibility` to control where they can be called from:
+
+- `["model"]` — callable by the agent (model) only; hidden from the rendered app
+- `["model", "app"]` — callable by both the agent and the app's iframe
+
+This maps onto how humans and agents tend to work with files differently: a human editing through the file browser saves the whole buffer at once, while an agent makes targeted, conversational edits. Accordingly `write_file` (full overwrite) is `["model", "app"]` so the app can use it to save, while `edit_file` (exact-match substitution), along with `copy`, `move`, `delete`, `create_directory`, and `list_hosts`, are `["model"]` — agent-only operations the app has no use for. `open_file_browser` and the read/navigation tools (`list_labels`, `list_directory`, `read_file`, `find_files`, `grep_files`, `file_info`) are `["model", "app"]`, since both the agent and the app need to browse and read.
+
+---
+
 ## Management API
 
 All `/api/*` endpoints (except `/api/status`) require a valid Bearer token obtained via `constellation broker login` (OAuth device code flow). The token is an OAuth access token tied to a user session — there is no separate API key or scope requirement.

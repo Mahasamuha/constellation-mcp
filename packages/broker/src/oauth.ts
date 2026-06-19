@@ -8,6 +8,7 @@ import { generateToken, hashToken, safeEqual, createLogger, requireEnv } from "@
 import { checkBruteForce, recordFailure, validateLocalUser } from "./local-auth.js";
 import { config } from "./config.js";
 import { issueOAuthSession, makeTokenPair, sendTokenResponse } from "./oauth-tokens.js";
+import { FAVICON_LINK } from "./page-style.js";
 
 const log = createLogger("oauth");
 
@@ -494,6 +495,7 @@ function loginPage(pendingId: string, error?: string): string {
   return `<!DOCTYPE html>
 <html lang="en">
 <head><meta charset="utf-8"><title>Constellation — Sign in</title>
+${FAVICON_LINK}
 <style>
   body { font-family: system-ui, sans-serif; background: #f5f5f5; display: flex; justify-content: center; padding: 4rem 1rem; }
   .card { background: #fff; border-radius: 8px; padding: 2rem; max-width: 380px; width: 100%; box-shadow: 0 2px 8px rgba(0,0,0,.1); }

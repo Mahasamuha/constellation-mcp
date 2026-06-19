@@ -1,0 +1,313 @@
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+}
+
+/*
+ * Fixed (not 100%) height: the host auto-resizes the iframe to match
+ * document.body's measured size (ResizeObserver). A height: 100% chain
+ * would just mirror whatever size the iframe currently has, so the host
+ * never learns the content wants more room and the app stays collapsed.
+ */
+.app {
+  /*
+   * Mahasamuha brand tokens (ink/paper pairing, reversed in dark mode), picked
+   * via light-dark() so they track the host's theme rather than the browser's
+   * — color-scheme is kept in sync with the host by useHostStyleVariables.
+   */
+  --bg: light-dark(oklch(0.97 0.008 80), oklch(0.22 0.015 60));
+  --text: light-dark(oklch(0.22 0.015 60), oklch(0.97 0.008 80));
+  --text-muted: light-dark(rgba(0, 0, 0, 0.55), rgba(255, 255, 255, 0.55));
+  --field: light-dark(oklch(0.93 0.005 80), oklch(0.26 0.005 80));
+  --divider: light-dark(rgba(0, 0, 0, 0.08), rgba(255, 255, 255, 0.10));
+  --accent: oklch(0.5 0.16 265);
+  --error: light-dark(oklch(0.5 0.2 25), oklch(0.75 0.18 25));
+
+  /* Prism token colors, picked to read clearly in both themes via light-dark() */
+  --syn-comment: light-dark(oklch(0.55 0.01 80), oklch(0.62 0.01 80));
+  --syn-keyword: light-dark(oklch(0.5 0.18 320), oklch(0.78 0.14 320));
+  --syn-string: light-dark(oklch(0.5 0.13 150), oklch(0.78 0.13 150));
+  --syn-number: light-dark(oklch(0.55 0.16 50), oklch(0.78 0.14 50));
+  --syn-function: light-dark(oklch(0.5 0.16 265), oklch(0.78 0.13 265));
+  --syn-tag: light-dark(oklch(0.5 0.16 25), oklch(0.78 0.13 25));
+
+  height: 600px;
+  display: flex;
+  flex-direction: column;
+  font: 14px/1.4 system-ui, sans-serif;
+  color-scheme: light dark;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  border-bottom: 1px solid var(--divider);
+}
+
+.header select {
+  flex: 1;
+  min-width: 0;
+}
+
+.menu-toggle {
+  flex: none;
+}
+
+.layout {
+  position: relative;
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.sidebar {
+  width: 240px;
+  max-width: 80vw;
+  flex: none;
+  overflow-y: auto;
+  border-right: 1px solid var(--divider);
+  background: var(--field);
+}
+
+.sidebar[hidden] {
+  display: none;
+}
+
+.main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.viewer-pane {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.viewer {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  padding: 8px;
+  overflow: auto;
+  white-space: pre;
+  font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.viewer.wrap {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.token.comment,
+.token.prolog,
+.token.doctype,
+.token.cdata {
+  color: var(--syn-comment);
+  font-style: italic;
+}
+
+.token.punctuation {
+  color: var(--text-muted);
+}
+
+.token.property,
+.token.tag,
+.token.boolean,
+.token.number,
+.token.constant,
+.token.symbol,
+.token.deleted {
+  color: var(--syn-number);
+}
+
+.token.selector,
+.token.attr-name,
+.token.string,
+.token.char,
+.token.builtin,
+.token.inserted {
+  color: var(--syn-string);
+}
+
+.token.operator,
+.token.entity,
+.token.url {
+  color: var(--syn-tag);
+}
+
+.token.atrule,
+.token.attr-value,
+.token.keyword {
+  color: var(--syn-keyword);
+}
+
+.token.function,
+.token.class-name {
+  color: var(--syn-function);
+}
+
+.token.regex,
+.token.important,
+.token.variable {
+  color: var(--syn-tag);
+}
+
+.token.important,
+.token.bold {
+  font-weight: bold;
+}
+
+.token.italic {
+  font-style: italic;
+}
+
+.viewer-actions {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: flex;
+  gap: 4px;
+}
+
+.editor {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.editor-input {
+  flex: 1;
+  min-height: 0;
+  resize: none;
+  border: none;
+  padding: 8px;
+  font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.editor-actions {
+  display: flex;
+  gap: 8px;
+  padding: 8px;
+  border-top: 1px solid var(--divider);
+}
+
+.editor-actions button,
+.viewer-actions button {
+  padding: 6px 14px;
+  border: 1px solid var(--divider);
+  border-radius: 4px;
+  background: var(--field);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.editor-actions button:hover,
+.viewer-actions button:hover {
+  background: color-mix(in oklch, var(--field), var(--text) 8%);
+}
+
+.viewer-actions button {
+  padding: 4px 8px;
+  min-width: 28px;
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.viewer-actions button.active {
+  background: color-mix(in oklch, var(--accent) 25%, var(--field));
+  border-color: var(--accent);
+}
+
+.viewer-actions button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.status {
+  padding: 4px 8px;
+  border-top: 1px solid var(--divider);
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.status.error {
+  color: var(--error);
+  font-weight: 500;
+}
+
+ul.tree,
+ul.tree ul {
+  list-style: none;
+  margin: 0;
+  padding-left: 14px;
+}
+
+ul.tree {
+  padding: 4px;
+}
+
+.node {
+  padding: 3px 4px;
+  cursor: pointer;
+  white-space: nowrap;
+  border-radius: 3px;
+}
+
+.node:hover {
+  background: color-mix(in oklch, var(--text) 8%, transparent);
+}
+
+.node.selected {
+  background: color-mix(in oklch, var(--accent) 25%, transparent);
+}
+
+.node.error {
+  color: var(--error);
+  cursor: default;
+  white-space: normal;
+}
+
+.node.error:hover {
+  background: none;
+}
+
+.node.dir::before {
+  content: "\25B8\00a0";
+}
+
+.node.dir.expanded::before {
+  content: "\25BE\00a0";
+}
+
+.node.file::before {
+  content: "\00a0\00a0\00a0";
+}
+
+@media (max-width: 640px) {
+  .sidebar {
+    position: absolute;
+    inset: 0 auto 0 0;
+    z-index: 5;
+    box-shadow: 2px 0 8px rgba(0, 0, 0, 0.2);
+  }
+}
