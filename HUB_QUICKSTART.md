@@ -71,7 +71,7 @@ hub_name: nas-shared
 audit_log: /var/log/constellation/hub-audit.jsonl
 env_file: /etc/constellation/hub.env
 
-labels:
+shares:
   - name: projects
     path: /srv/projects
     permissions:
@@ -141,7 +141,7 @@ Once connected the hub appears as online in `list_hosts`. Run `constellation hub
 
 ## What's next
 
-- **Access control** — restrict which relay users can access a label, or grant read-only access to specific users. See [docs/hub.md §4](docs/hub.md#4-permission-model).
+- **Access control** — restrict which relay users can access a share, or grant read-only access to specific users. See [docs/hub.md §4](docs/hub.md#4-permission-model).
 - **UID range restrictions** — block system accounts from being impersonated. See [docs/hub.md §5](docs/hub.md#5-deployment) (`subnode_uid`).
 - **Token rotation** — `constellation hub rotate-token --config-file /etc/constellation/hub.yaml`
 - **Full reference** — [docs/hub.md](docs/hub.md)

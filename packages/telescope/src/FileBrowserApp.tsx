@@ -7,8 +7,8 @@ interface DirNode {
   type: "file" | "directory" | "symlink";
 }
 
-interface LabelEntry {
-  label: string;
+interface ShareEntry {
+  share: string;
   host: string;
 }
 
@@ -21,8 +21,8 @@ interface BrowserContextValue {
   app: App | null;
   isConnected: boolean;
   error: Error | null;
-  labels: LabelEntry[];
-  selectedLabel: string | null;
+  shares: ShareEntry[];
+  selectedShare: string | null;
   selectedPath: string | null;
   fileContent: string | null;
   isEditing: boolean;
@@ -31,15 +31,15 @@ interface BrowserContextValue {
   wordWrap: boolean;
   toggleSidebar: () => void;
   toggleWordWrap: () => void;
-  selectLabel: (label: string, openPath?: string) => void;
-  handleLabelChange: (value: string) => void;
-  openFile: (label: string, relativePath: string) => Promise<void>;
+  selectShare: (share: string, openPath?: string) => void;
+  handleShareChange: (value: string) => void;
+  openFile: (share: string, relativePath: string) => Promise<void>;
   saveFile: (content: string) => Promise<void>;
   startEditing: () => void;
   cancelEditing: () => void;
 }
 
-// App-level context: the file browser's pieces (label picker, tree, editor)
+// App-level context: the file browser's pieces (share picker, tree, editor)
 // all read and act on the same connection/selection/content state, and the
 // set of shared capabilities is expected to grow, so everything lives here
 // rather than being threaded through props.
@@ -69,9 +69,9 @@ function toolErrorMessage(result: { isError?: boolean; content?: ReadonlyArray<{
 }
 
 export function FileBrowserApp() {
-  const initialInput = useRef<{ label?: string; path?: string }>({});
-  const [labels, setLabels] = useState<LabelEntry[]>([]);
-  const [selectedLabel, setSelectedLabel] = useState<string | null>(null);
+  const initialInput = useRef<{ share?: string; path?: string }>({});
+  const [shares, setShares] = useState<ShareEntry[]>([]);
+  const [selectedShare, setSelectedShare] = useState<string | null>(null);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [fileContent, setFileContent] = useState<string | null>(null);
   const [isEditing, setIsEditing] = useState(false);
@@ -89,7 +89,7 @@ export function FileBrowserApp() {
     capabilities: { availableDisplayModes: ["pip", "inline", "fullscreen"] },
     onAppCreated: (app) => {
       app.ontoolinput = (params) => {
-        initialInput.current = (params.arguments as { label?: string; path?: string } | undefined) ?? {};
+        initialInput.current = (params.arguments as { share?: string; path?: string } | undefined) ?? {};
       };
     },
   });
@@ -99,11 +99,11 @@ export function FileBrowserApp() {
   useHostStyleVariables(app, app?.getHostContext());
 
   const openFile = useCallback(
-    async (label: string, relativePath: string) => {
+    async (share: string, relativePath: string) => {
       if (!app) return;
       setIsEditing(false);
       setStatus(`Loading ${relativePath}…`);
-      const result = await app.callServerTool({ name: "read_file", arguments: { label, relative_path: relativePath } });
+      const result = await app.callServerTool({ name: "read_file", arguments: { share, relative_path: relativePath } });
       const err = toolErrorMessage(result);
       if (err) {
         setSelectedPath(null);
@@ -113,9 +113,9 @@ export function FileBrowserApp() {
       }
       setSelectedPath(relativePath);
       setFileContent(String(result.structuredContent?.["content"] ?? ""));
-      setStatus(`${label}/${relativePath}`);
+      setStatus(`${share}/${relativePath}`);
       await app.updateModelContext({
-        content: [{ type: "text", text: `User has file open: ${label}/${relativePath}` }],
+        content: [{ type: "text", text: `User has file open: ${share}/${relativePath}` }],
       });
     },
     [app, setStatus, setStatusError]
@@ -123,11 +123,11 @@ export function FileBrowserApp() {
 
   const saveFile = useCallback(
     async (content: string) => {
-      if (!app || !selectedLabel || !selectedPath) return;
+      if (!app || !selectedShare || !selectedPath) return;
       setStatus(`Saving ${selectedPath}…`);
       const written = await app.callServerTool({
         name: "write_file",
-        arguments: { label: selectedLabel, relative_path: selectedPath, content, mode: "overwrite" },
+        arguments: { share: selectedShare, relative_path: selectedPath, content, mode: "overwrite" },
       });
       const writeErr = toolErrorMessage(written);
       if (writeErr) {
@@ -137,7 +137,7 @@ export function FileBrowserApp() {
       // Re-read to confirm the round-trip rather than trusting the local draft.
       const reread = await app.callServerTool({
         name: "read_file",
-        arguments: { label: selectedLabel, relative_path: selectedPath },
+        arguments: { share: selectedShare, relative_path: selectedPath },
       });
       const readErr = toolErrorMessage(reread);
       if (readErr) {
@@ -146,36 +146,36 @@ export function FileBrowserApp() {
       }
       setFileContent(String(reread.structuredContent?.["content"] ?? ""));
       setIsEditing(false);
-      setStatus(`Saved ${selectedLabel}/${selectedPath} at ${new Date().toLocaleTimeString()}`);
+      setStatus(`Saved ${selectedShare}/${selectedPath} at ${new Date().toLocaleTimeString()}`);
     },
-    [app, selectedLabel, selectedPath, setStatus, setStatusError]
+    [app, selectedShare, selectedPath, setStatus, setStatusError]
   );
 
-  const selectLabel = useCallback(
-    (label: string, openPath?: string) => {
-      setSelectedLabel(label);
+  const selectShare = useCallback(
+    (share: string, openPath?: string) => {
+      setSelectedShare(share);
       setSelectedPath(null);
       setFileContent(null);
       setIsEditing(false);
-      setStatus(`Browsing ${label}`);
-      if (openPath) void openFile(label, openPath);
+      setStatus(`Browsing ${share}`);
+      if (openPath) void openFile(share, openPath);
     },
     [openFile, setStatus]
   );
 
-  const handleLabelChange = useCallback(
+  const handleShareChange = useCallback(
     (value: string) => {
       if (value) {
-        selectLabel(value);
+        selectShare(value);
       } else {
-        setSelectedLabel(null);
+        setSelectedShare(null);
         setSelectedPath(null);
         setFileContent(null);
         setIsEditing(false);
-        setStatus("Select a label to begin.");
+        setStatus("Select a share to begin.");
       }
     },
-    [selectLabel, setStatus]
+    [selectShare, setStatus]
   );
 
   const toggleSidebar = useCallback(() => setSidebarOpen((open) => !open), []);
@@ -213,32 +213,32 @@ export function FileBrowserApp() {
   useEffect(() => {
     if (!app || !isConnected) return;
     void (async () => {
-      setStatus("Loading labels…");
-      const result = await app.callServerTool({ name: "list_labels", arguments: {} });
+      setStatus("Loading shares…");
+      const result = await app.callServerTool({ name: "list_shares", arguments: {} });
       const err = toolErrorMessage(result);
       if (err) {
         setStatusError(err);
         return;
       }
-      const loaded = (result.structuredContent?.["labels"] as LabelEntry[] | undefined) ?? [];
-      setLabels(loaded);
+      const loaded = (result.structuredContent?.["shares"] as ShareEntry[] | undefined) ?? [];
+      setShares(loaded);
 
       const initial = initialInput.current;
-      if (initial.label && loaded.some((l) => l.label === initial.label)) {
-        selectLabel(initial.label, initial.path);
+      if (initial.share && loaded.some((s) => s.share === initial.share)) {
+        selectShare(initial.share, initial.path);
       } else {
-        setStatus(loaded.length ? "Select a label to begin." : "No labels available.");
+        setStatus(loaded.length ? "Select a share to begin." : "No shares available.");
       }
     })();
-  }, [app, isConnected, selectLabel, setStatus, setStatusError]);
+  }, [app, isConnected, selectShare, setStatus, setStatusError]);
 
   const context = useMemo<BrowserContextValue>(
     () => ({
       app,
       isConnected,
       error,
-      labels,
-      selectedLabel,
+      shares,
+      selectedShare,
       selectedPath,
       fileContent,
       isEditing,
@@ -247,8 +247,8 @@ export function FileBrowserApp() {
       wordWrap,
       toggleSidebar,
       toggleWordWrap,
-      selectLabel,
-      handleLabelChange,
+      selectShare,
+      handleShareChange,
       openFile,
       saveFile,
       startEditing,
@@ -258,8 +258,8 @@ export function FileBrowserApp() {
       app,
       isConnected,
       error,
-      labels,
-      selectedLabel,
+      shares,
+      selectedShare,
       selectedPath,
       fileContent,
       isEditing,
@@ -268,8 +268,8 @@ export function FileBrowserApp() {
       wordWrap,
       toggleSidebar,
       toggleWordWrap,
-      selectLabel,
-      handleLabelChange,
+      selectShare,
+      handleShareChange,
       openFile,
       saveFile,
       startEditing,
@@ -285,7 +285,7 @@ export function FileBrowserApp() {
 }
 
 function FileBrowserLayout() {
-  const { error, labels, selectedLabel, sidebarOpen, toggleSidebar, handleLabelChange, status } = useBrowserContext();
+  const { error, shares, selectedShare, sidebarOpen, toggleSidebar, handleShareChange, status } = useBrowserContext();
 
   if (error) return <div className="status">Connection error: {error.message}</div>;
 
@@ -295,18 +295,18 @@ function FileBrowserLayout() {
         <button className="menu-toggle" type="button" aria-label="Toggle file tree" onClick={toggleSidebar}>
           ☰
         </button>
-        <select aria-label="Label" value={selectedLabel ?? ""} onChange={(e) => handleLabelChange(e.target.value)}>
-          <option value="">Select a label…</option>
-          {labels.map((l) => (
-            <option key={l.label} value={l.label}>
-              {l.label} ({l.host})
+        <select aria-label="Share" value={selectedShare ?? ""} onChange={(e) => handleShareChange(e.target.value)}>
+          <option value="">Select a share…</option>
+          {shares.map((s) => (
+            <option key={s.share} value={s.share}>
+              {s.share} ({s.host})
             </option>
           ))}
         </select>
       </header>
       <div className="layout">
         <nav className="sidebar" hidden={!sidebarOpen}>
-          {selectedLabel && <DirectoryTree path="" />}
+          {selectedShare && <DirectoryTree path="" />}
         </nav>
         <div className="main">
           <FileEditor />
@@ -320,17 +320,17 @@ function FileBrowserLayout() {
 }
 
 function DirectoryTree({ path }: { path: string }) {
-  const { app, selectedLabel } = useBrowserContext();
+  const { app, selectedShare } = useBrowserContext();
   const [nodes, setNodes] = useState<DirNode[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!app || !selectedLabel) return;
+    if (!app || !selectedShare) return;
     let cancelled = false;
     void (async () => {
       const result = await app.callServerTool({
         name: "list_directory",
-        arguments: path ? { label: selectedLabel, relative_path: path } : { label: selectedLabel },
+        arguments: path ? { share: selectedShare, relative_path: path } : { share: selectedShare },
       });
       if (cancelled) return;
       const err = toolErrorMessage(result);
@@ -346,7 +346,7 @@ function DirectoryTree({ path }: { path: string }) {
     return () => {
       cancelled = true;
     };
-  }, [app, selectedLabel, path]);
+  }, [app, selectedShare, path]);
 
   if (error) {
     return (
@@ -374,7 +374,7 @@ function DirectoryTree({ path }: { path: string }) {
 }
 
 function TreeNode({ node }: { node: DirNode }) {
-  const { selectedLabel, selectedPath, openFile } = useBrowserContext();
+  const { selectedShare, selectedPath, openFile } = useBrowserContext();
   const [expanded, setExpanded] = useState(false);
   const isDir = node.type === "directory";
   const classes = ["node", isDir ? "dir" : "file", expanded && "expanded", selectedPath === node.path && "selected"]
@@ -385,7 +385,7 @@ function TreeNode({ node }: { node: DirNode }) {
     <li>
       <div
         className={classes}
-        onClick={() => (isDir ? setExpanded((e) => !e) : void openFile(selectedLabel!, node.path))}
+        onClick={() => (isDir ? setExpanded((e) => !e) : void openFile(selectedShare!, node.path))}
       >
         {nodeName(node.path)}
       </div>
@@ -397,7 +397,7 @@ function TreeNode({ node }: { node: DirNode }) {
 function FileEditor() {
   const {
     fileContent,
-    selectedLabel,
+    selectedShare,
     selectedPath,
     isEditing,
     startEditing,
@@ -429,11 +429,11 @@ function FileEditor() {
   }, []);
 
   const handleRefresh = useCallback(() => {
-    if (!selectedLabel || !selectedPath || refreshCooldown) return;
+    if (!selectedShare || !selectedPath || refreshCooldown) return;
     setRefreshCooldown(true);
-    void openFile(selectedLabel, selectedPath);
+    void openFile(selectedShare, selectedPath);
     refreshTimeoutRef.current = window.setTimeout(() => setRefreshCooldown(false), 2000);
-  }, [selectedLabel, selectedPath, openFile, refreshCooldown]);
+  }, [selectedShare, selectedPath, openFile, refreshCooldown]);
 
   if (fileContent == null || highlighted == null) return <pre className="viewer" />;
 

@@ -14,7 +14,7 @@ pub fn query_status_info() -> NodeStatusInfo {
         .and_then(|s| serde_json::from_str::<Value>(&s).ok())
         .map(|v| NodeStatusInfo {
             service: v["service"].as_str().unwrap_or("unknown").to_string(),
-            path_count: v["labels"].as_array().map(|a| a.len()).unwrap_or(0),
+            path_count: v["shares"].as_array().map(|a| a.len()).unwrap_or(0),
         })
         .unwrap_or_else(|| NodeStatusInfo {
             service: "unknown".to_string(),

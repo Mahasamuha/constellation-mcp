@@ -7,14 +7,14 @@ const MAX_INSTRUCTIONS_LENGTH = 500;
 const RECOMMENDED_INSTRUCTIONS_LENGTH = 250;
 
 interface PathEntry {
-  label: string;
+  share: string;
   path: string;
   instructions?: string;
 }
 
 export default function Paths() {
   const [paths, setPaths] = useState<PathEntry[]>([]);
-  const [label, setLabel] = useState("");
+  const [share, setShare] = useState("");
   const [path, setPath] = useState("");
   const [instructions, setInstructions] = useState("");
   const [error, setError] = useState("");
@@ -36,12 +36,12 @@ export default function Paths() {
     try {
       const trimmedInstructions = instructions.trim();
       const updated = await invoke<PathEntry[]>("add_path", {
-        label,
+        share,
         path,
         instructions: trimmedInstructions || undefined,
       });
       setPaths(updated);
-      setLabel("");
+      setShare("");
       setPath("");
       setInstructions("");
     } catch (e) {
@@ -51,10 +51,10 @@ export default function Paths() {
     }
   }
 
-  async function removePath(lbl: string) {
-    setRemoving(lbl);
+  async function removePath(shr: string) {
+    setRemoving(shr);
     try {
-      const updated = await invoke<PathEntry[]>("remove_path", { label: lbl });
+      const updated = await invoke<PathEntry[]>("remove_path", { share: shr });
       setPaths(updated);
     } catch (e) {
       setError(String(e));
@@ -63,7 +63,7 @@ export default function Paths() {
     }
   }
 
-  const canAdd = label.trim().length > 0 && path.trim().length > 0
+  const canAdd = share.trim().length > 0 && path.trim().length > 0
     && instructions.length <= MAX_INSTRUCTIONS_LENGTH && !loading;
 
   return (
@@ -78,7 +78,7 @@ export default function Paths() {
           <table className="paths-table">
             <thead>
               <tr>
-                <th>Label</th>
+                <th>Share</th>
                 <th>Path</th>
                 <th>Instructions</th>
                 <th />
@@ -86,8 +86,8 @@ export default function Paths() {
             </thead>
             <tbody>
               {paths.map((p) => (
-                <tr key={p.label}>
-                  <td className="label-cell">{p.label}</td>
+                <tr key={p.share}>
+                  <td className="share-cell">{p.share}</td>
                   <td className="path-cell">{p.path}</td>
                   <td className="instructions-cell" title={p.instructions ?? ""}>
                     {p.instructions ? p.instructions : <span className="instructions-empty">—</span>}
@@ -95,10 +95,10 @@ export default function Paths() {
                   <td>
                     <button
                       className="paths-remove-btn"
-                      disabled={removing === p.label}
-                      onClick={() => removePath(p.label)}
+                      disabled={removing === p.share}
+                      onClick={() => removePath(p.share)}
                     >
-                      {removing === p.label ? "…" : "Remove"}
+                      {removing === p.share ? "…" : "Remove"}
                     </button>
                   </td>
                 </tr>
@@ -113,10 +113,10 @@ export default function Paths() {
         <div className="paths-section-label">Add Path</div>
         <div className="paths-add-row">
           <input
-            className="paths-input label-input"
-            placeholder="label"
-            value={label}
-            onChange={(e) => setLabel(e.target.value)}
+            className="paths-input share-input"
+            placeholder="share"
+            value={share}
+            onChange={(e) => setShare(e.target.value)}
           />
           <input
             className="paths-input"
@@ -128,7 +128,7 @@ export default function Paths() {
         </div>
         <textarea
           className="paths-textarea"
-          placeholder="Brief framing for MCP clients (optional) — light context on this label's purpose, not full documentation"
+          placeholder="Brief framing for MCP clients (optional) — light context on this share's purpose, not full documentation"
           value={instructions}
           onChange={(e) => setInstructions(e.target.value)}
           rows={3}
