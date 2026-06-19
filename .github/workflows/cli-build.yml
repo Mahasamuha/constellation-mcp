@@ -1,4 +1,4 @@
-name: Build constellation-node CLI
+name: Build constellation CLI
 
 on:
   workflow_dispatch:
@@ -91,21 +91,21 @@ jobs:
           chmod 755 pkg-root/usr/local/bin/constellation
           cp hub/subnode-worker.cjs pkg-root/usr/local/bin/hub/subnode-worker.cjs
           cat > pkg-root/DEBIAN/control <<EOF
-          Package: constellation-node
+          Package: constellation-cli
           Version: ${VERSION}
           Architecture: amd64
           Maintainer: Joe Rybka <joe@joerybka.com>
-          Description: Constellation node CLI
+          Description: Constellation CLI
            Connects your development tools to the Constellation relay.
           EOF
-          dpkg-deb --build pkg-root "constellation-node_${VERSION}_amd64.deb"
+          dpkg-deb --build pkg-root "constellation-cli_${VERSION}_amd64.deb"
 
       - name: Upload artifact (Linux)
         if: runner.os == 'Linux'
         uses: actions/upload-artifact@v7
         with:
-          name: constellation-node-linux
-          path: constellation-node_*_amd64.deb
+          name: constellation-cli-linux
+          path: constellation-cli_*_amd64.deb
 
       # ── macOS: package as .tar.gz ─────────────────────────────────────────────
 
@@ -113,14 +113,14 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           VERSION=$(node -p "require('./packages/cli/package.json').version")
-          tar -czf "constellation-node_${VERSION}_macos-arm64.tar.gz" constellation hub/subnode-worker.cjs
+          tar -czf "constellation-cli_${VERSION}_macos-arm64.tar.gz" constellation hub/subnode-worker.cjs
 
       - name: Upload artifact (macOS)
         if: runner.os == 'macOS'
         uses: actions/upload-artifact@v7
         with:
-          name: constellation-node-macos
-          path: constellation-node_*_macos-arm64.tar.gz
+          name: constellation-cli-macos
+          path: constellation-cli_*_macos-arm64.tar.gz
 
       # ── Windows: package as .zip ──────────────────────────────────────────────
 
@@ -129,14 +129,14 @@ jobs:
         shell: pwsh
         run: |
           $VERSION = node -p "require('./packages/cli/package.json').version"
-          Compress-Archive -Path constellation.exe, hub/subnode-worker.cjs -DestinationPath "constellation-node_${VERSION}_windows-x64.zip"
+          Compress-Archive -Path constellation.exe, hub/subnode-worker.cjs -DestinationPath "constellation-cli_${VERSION}_windows-x64.zip"
 
       - name: Upload artifact (Windows)
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@v7
         with:
-          name: constellation-node-windows
-          path: constellation-node_*_windows-x64.zip
+          name: constellation-cli-windows
+          path: constellation-cli_*_windows-x64.zip
 
   release:
     needs: build

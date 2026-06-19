@@ -48,9 +48,9 @@ Download the latest release from [GitHub Releases](https://github.com/Mahasamuha
 
 | Platform | File | Install |
 |---|---|---|
-| Linux | `constellation-node_*_amd64.deb` | `sudo dpkg -i constellation-node_*_amd64.deb` |
-| macOS | `constellation-node_*_macos-arm64.tar.gz` | Extract, then `sudo mv constellation /usr/local/bin/` |
-| Windows | `constellation-node_*_windows-x64.zip` | Extract and add to `PATH` |
+| Linux | `constellation-cli_*_amd64.deb` | `sudo dpkg -i constellation-cli_*_amd64.deb` |
+| macOS | `constellation-cli_*_macos-arm64.tar.gz` | Extract, then `sudo mv constellation /usr/local/bin/` |
+| Windows | `constellation-cli_*_windows-x64.zip` | Extract and add to `PATH` |
 
 A system tray GUI is also available for desktop machines — see [GitHub Releases](https://github.com/Mahasamuha/constellation-mcp/releases/latest).
 

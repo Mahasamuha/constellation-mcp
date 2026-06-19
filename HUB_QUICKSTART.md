@@ -10,7 +10,7 @@ A hub runs as a system service on a multi-user machine (dev server, NAS, domain 
 
 - Linux with systemd
 - A running relay configured with `AUTH_MODE=oidc`
-- The `constellation` binary installed on the shared machine (`sudo dpkg -i constellation-node_*_amd64.deb`)
+- The `constellation` binary installed on the shared machine (`sudo dpkg -i constellation-cli_*_amd64.deb`)
 - A dedicated low-privilege service account (e.g. `constellation`)
 - Your OIDC provider configured to forward a user attribute as a claim — see [Identity resolution](#identity-resolution)
 
