@@ -1,0 +1,156 @@
+name: Build constellation-node CLI
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            pkg_target: node24-linux-x64
+            binary: constellation
+            arch: amd64
+          - os: macos-latest
+            pkg_target: node24-macos-arm64
+            binary: constellation
+            arch: arm64
+          - os: windows-latest
+            pkg_target: node24-win-x64
+            binary: constellation.exe
+            arch: x64
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Node 24 to match the pkg compilation target.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - name: Cache pkg binaries
+        uses: actions/cache@v4
+        with:
+          path: ~/.pkg-cache
+          key: pkg-${{ matrix.pkg_target }}
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Single esbuild pass: bundles cli + node + shared + hub TypeScript directly to CJS.
+      # Avoids workspace symlink resolution issues with tsup in CI.
+      - name: Bundle to CJS
+        shell: bash
+        run: |
+          VERSION=$(node -p 'require("./packages/cli/package.json").version')
+          npx esbuild packages/cli/src/cli.ts \
+            --bundle \
+            --platform=node \
+            --format=cjs \
+            --external:*.node \
+            --alias:@constellation/shared=./packages/shared/src/index.ts \
+            --alias:@constellation/node/cli=./packages/node/src/cli.ts \
+            --alias:@constellation/node/config=./packages/node/src/config.ts \
+            --alias:@constellation/hub/cli=./packages/hub/src/cli.ts \
+            "--define:__PKG_VERSION__=\"${VERSION}\"" \
+            --outfile=cli-bundle.cjs
+
+      # The hub forks this worker as a child process at runtime.
+      # It must be a separate JS bundle (pkg cannot fork from within a compiled binary).
+      - name: Bundle hub subnode worker
+        shell: bash
+        run: |
+          mkdir -p hub
+          npx esbuild packages/hub/src/subnode-worker.ts \
+            --bundle \
+            --platform=node \
+            --format=cjs \
+            --external:*.node \
+            --alias:@constellation/shared=./packages/shared/src/index.ts \
+            --outfile=hub/subnode-worker.cjs
+
+      - name: Compile to native binary
+        run: npx @yao-pkg/pkg cli-bundle.cjs --target ${{ matrix.pkg_target }} --output ${{ matrix.binary }}
+
+      # ── Linux: package as .deb ────────────────────────────────────────────────
+
+      - name: Package as deb (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          VERSION=$(node -p "require('./packages/cli/package.json').version")
+          mkdir -p pkg-root/usr/local/bin/hub
+          mkdir -p pkg-root/DEBIAN
+          cp constellation pkg-root/usr/local/bin/constellation
+          chmod 755 pkg-root/usr/local/bin/constellation
+          cp hub/subnode-worker.cjs pkg-root/usr/local/bin/hub/subnode-worker.cjs
+          cat > pkg-root/DEBIAN/control <<EOF
+          Package: constellation-node
+          Version: ${VERSION}
+          Architecture: amd64
+          Maintainer: Joe Rybka <joe@joerybka.com>
+          Description: Constellation node CLI
+           Connects your development tools to the Constellation relay.
+          EOF
+          dpkg-deb --build pkg-root "constellation-node_${VERSION}_amd64.deb"
+
+      - name: Upload artifact (Linux)
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: constellation-node-linux
+          path: constellation-node_*_amd64.deb
+
+      # ── macOS: package as .tar.gz ─────────────────────────────────────────────
+
+      - name: Package as tar.gz (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          VERSION=$(node -p "require('./packages/cli/package.json').version")
+          tar -czf "constellation-node_${VERSION}_macos-arm64.tar.gz" constellation hub/subnode-worker.cjs
+
+      - name: Upload artifact (macOS)
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: constellation-node-macos
+          path: constellation-node_*_macos-arm64.tar.gz
+
+      # ── Windows: package as .zip ──────────────────────────────────────────────
+
+      - name: Package as zip (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $VERSION = node -p "require('./packages/cli/package.json').version"
+          Compress-Archive -Path constellation.exe, hub/subnode-worker.cjs -DestinationPath "constellation-node_${VERSION}_windows-x64.zip"
+
+      - name: Upload artifact (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: constellation-node-windows
+          path: constellation-node_*_windows-x64.zip
+
+  release:
+    needs: build
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: false
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*
