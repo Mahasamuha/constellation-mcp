@@ -34,15 +34,15 @@ pub struct NodeRelayInfo {
 #[tauri::command]
 pub fn get_node_relay_info() -> Option<NodeRelayInfo> {
     let host = crate::config::load_node_config().host?;
-    let json = crate::cli::output(&["relay", "agents", "list", "--json"]).ok()?;
-    let agents: Vec<Value> = serde_json::from_str(&json).ok()?;
-    let agent = agents.into_iter().find(|a| a["host"].as_str() == Some(host.as_str()))?;
+    let json = crate::cli::output(&["relay", "executors", "list", "--json"]).ok()?;
+    let executors: Vec<Value> = serde_json::from_str(&json).ok()?;
+    let executor = executors.into_iter().find(|e| e["host"].as_str() == Some(host.as_str()))?;
     Some(NodeRelayInfo {
-        connected: agent["connected"].as_bool().unwrap_or(false),
-        last_heartbeat_at: agent["last_heartbeat_at"].as_str().map(String::from),
-        last_disconnect_reason: agent["last_disconnect_reason"].as_str().map(String::from),
-        registered_at: agent["registered_at"].as_str().map(String::from),
-        token_last_used_at: agent["token_last_used_at"].as_str().map(String::from),
+        connected: executor["connected"].as_bool().unwrap_or(false),
+        last_heartbeat_at: executor["last_heartbeat_at"].as_str().map(String::from),
+        last_disconnect_reason: executor["last_disconnect_reason"].as_str().map(String::from),
+        registered_at: executor["registered_at"].as_str().map(String::from),
+        token_last_used_at: executor["token_last_used_at"].as_str().map(String::from),
     })
 }
 
