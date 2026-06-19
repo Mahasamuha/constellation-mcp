@@ -209,6 +209,11 @@ export function registerRelayCommands(program: Command): void {
   const getConfigDir = (): string => configDir(relay.opts<{ configDir?: string }>().configDir);
   // Capture as a local const so Commander action callbacks don't confuse it with an arg.
   const cfgDir = getConfigDir;
+  // --relay is declared once, here, on the top-level `relay` command. Resolve it via this
+  // closure everywhere — Commander does not reliably forward an ancestor's option value to a
+  // command nested two or more levels deep (e.g. relay -> user -> promote), and redeclaring
+  // --relay locally on each subcommand doesn't help once any ancestor option is also present.
+  const getRelayFlag = (): string | undefined => relay.opts<{ relay?: string }>().relay;
 
   // -------------------------------------------------------------------------
   // login
@@ -217,12 +222,8 @@ export function registerRelayCommands(program: Command): void {
   relay
     .command("login")
     .description("Authenticate with the relay (OAuth device flow)")
-    .option("--relay <url>", "Relay URL")
-    .action(async (opts: { relay?: string }, cmd: Command) => {
-      const relayUrl = resolveRelayUrl(
-        opts.relay ?? (cmd.parent?.opts() as { relay?: string }).relay,
-        getConfigDir
-      );
+    .action(async () => {
+      const relayUrl = resolveRelayUrl(getRelayFlag(), getConfigDir);
 
       const dcRes = await fetch(`${relayUrl}/oauth/device/code`, {
         method: "POST",
@@ -545,13 +546,9 @@ export function registerRelayCommands(program: Command): void {
   relay
     .command("elevate")
     .description("Request temporary admin access via browser approval (step-up authentication)")
-    .option("--relay <url>", "Override relay URL")
-    .action(async (opts: { relay?: string }, cmd: Command) => {
+    .action(async () => {
       const session = await getValidSession(cfgDir);
-      const relayUrl = resolveRelayUrl(
-        opts.relay ?? (cmd.parent?.opts() as { relay?: string }).relay,
-        getConfigDir
-      );
+      const relayUrl = resolveRelayUrl(getRelayFlag(), getConfigDir);
 
       // Fetch the current session ID from the relay (not stored locally).
       const meRes = await apiFetch(session, "/api/me");
@@ -630,18 +627,14 @@ export function registerRelayCommands(program: Command): void {
     .command("promote")
     .argument("<identifier>", "OIDC sub or (local mode) username to promote to admin")
     .description("Grant admin role — requires RELAY_ADMIN_TOKEN env var or --admin-token flag")
-    .option("--relay <url>", "Override relay URL")
     .option("--admin-token <token>", "Relay admin token (defaults to RELAY_ADMIN_TOKEN env var)")
-    .action(async (identifier: string, opts: { relay?: string; adminToken?: string }, cmd: Command) => {
+    .action(async (identifier: string, opts: { adminToken?: string }) => {
       const adminToken = opts.adminToken ?? process.env["RELAY_ADMIN_TOKEN"];
       if (!adminToken) {
         console.error("RELAY_ADMIN_TOKEN is not set. Pass --admin-token or set the env var.");
         process.exit(1);
       }
-      const relayUrl = resolveRelayUrl(
-        opts.relay ?? (cmd.parent?.opts() as { relay?: string }).relay,
-        getConfigDir
-      );
+      const relayUrl = resolveRelayUrl(getRelayFlag(), getConfigDir);
       const res = await fetch(`${relayUrl}/api/admin/users/${encodeURIComponent(identifier)}/promote`, {
         method: "POST",
         headers: { Authorization: `Bearer ${adminToken}` },
@@ -655,18 +648,14 @@ export function registerRelayCommands(program: Command): void {
     .command("demote")
     .argument("<identifier>", "OIDC sub or (local mode) username to demote")
     .description("Revoke admin role — requires RELAY_ADMIN_TOKEN env var or --admin-token flag")
-    .option("--relay <url>", "Override relay URL")
     .option("--admin-token <token>", "Relay admin token (defaults to RELAY_ADMIN_TOKEN env var)")
-    .action(async (identifier: string, opts: { relay?: string; adminToken?: string }, cmd: Command) => {
+    .action(async (identifier: string, opts: { adminToken?: string }) => {
       const adminToken = opts.adminToken ?? process.env["RELAY_ADMIN_TOKEN"];
       if (!adminToken) {
         console.error("RELAY_ADMIN_TOKEN is not set. Pass --admin-token or set the env var.");
         process.exit(1);
       }
-      const relayUrl = resolveRelayUrl(
-        opts.relay ?? (cmd.parent?.opts() as { relay?: string }).relay,
-        getConfigDir
-      );
+      const relayUrl = resolveRelayUrl(getRelayFlag(), getConfigDir);
       const res = await fetch(`${relayUrl}/api/admin/users/${encodeURIComponent(identifier)}/demote`, {
         method: "POST",
         headers: { Authorization: `Bearer ${adminToken}` },
@@ -727,7 +716,7 @@ export function registerRelayCommands(program: Command): void {
       console.error("║  BREAK-GLASS OPERATION                                                   ║");
       console.error("║                                                                          ║");
       console.error("║  The preferred registration path is:                                     ║");
-      console.error("║    constellation hub register --relay-url <url>                         ║");
+      console.error("║    constellation hub register --relay <url>                              ║");
       console.error("║  That flow requires no manual token handling and is safer.               ║");
       console.error("║                                                                          ║");
       console.error("║  Use this command only when the device code flow is unavailable          ║");

@@ -12,15 +12,15 @@ The CLI remains the primary interface; the GUI is a companion. It does not host 
 
 ## Tray Icon
 
-The tray icon is the full Constellation network graph SVG. State is encoded in the hub node's fill colors — no separate overlay.
+The tray icon is the full Constellation network graph SVG. State is encoded in the fill color of the graph's center vertex — referred to below as the "hub node" in the graph-theory sense (the center of the icon's network graph), not the Constellation Hub component — no separate overlay.
 
-Icon PNGs are pre-rendered at `src-tauri/icons/tray/` and swapped at runtime via `set_icon()`. To regenerate them after editing the color spec, run:
+Icon PNGs are pre-rendered at `src-tauri/icons/tray/` (within `packages/node-gui`) and swapped at runtime via `set_icon()`. To regenerate them after editing the color spec, run from the repo root (the script and color spec below live at the repo root, not under `packages/node-gui`):
 
 ```sh
 python3 assets/logo/generate_tray_icons.py
 ```
 
-The color spec lives in `assets/logo/hub_state_colors.html`. Edit the `STATES` array there and re-run the script to update all icons.
+The color spec lives in `assets/logo/hub_state_colors.html` (also relative to the repo root). Edit the `STATES` array there and re-run the script to update all icons.
 
 ### States
 
@@ -87,7 +87,7 @@ Start / Stop / Restart run the corresponding `constellation node <cmd>` CLI comm
 
 ## Windows
 
-All windows are non-resizable panels (~480 px wide) that open centered on screen. A window that is already open is focused rather than reopened.
+All windows are non-resizable panels that open centered on screen. A window that is already open is focused rather than reopened. Most are ~480 px wide; see each window's heading below for its exact dimensions.
 
 ### Auth Window (`480 × 280`)
 

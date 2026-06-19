@@ -2,6 +2,15 @@
 
 A hub is a Constellation deployment for machines shared by multiple users (NAS, dev server, domain-joined host). Unlike a node — which runs under the user's own OS identity and manages its own shares — the hub runs as a dedicated service user and dispatches each tool call under the requesting user's OS identity.
 
+See [Architecture → Hub](architecture.md#hub) for how the hub fits into the relay/node/hub system as a whole; this document covers its design, security model, and operation in full detail.
+
+- [1. Architecture and Design Assumptions](#1-architecture-and-design-assumptions)
+- [2. Security Model](#2-security-model)
+- [3. Request Flow](#3-request-flow)
+- [4. Permission Model](#4-permission-model)
+- [5. Deployment](#5-deployment)
+- [6. Operator Runbook](#6-operator-runbook)
+
 ---
 
 ## 1. Architecture and Design Assumptions
@@ -41,7 +50,7 @@ The hub resolves the requesting user's local OS username using a priority chain.
 - The service-level token is a root-level credential — it is not user-scoped.
 - The token is never stored in the config file. It is read from `CONSTELLATION_HUB_TOKEN` at startup, optionally sourced from an env file (`env_file` in config).
 - The env file should be `0600`, owned by the service user. The hub warns on startup if permissions are too broad.
-- **Subnode workers never inherit the parent's environment.** `CONSTELLATION_HUB_TOKEN` (and anything else read from `env_file`) lives in the hub's `process.env`, but each tool call is dispatched to a forked worker that immediately `setuid()`s to the requesting user — a possibly low-trust local account that could read its own `/proc/<pid>/environ`. Spreading `process.env` into that fork would hand the hub token (and any other secret) to that user. Instead, `buildWorkerEnv()` in `packages/hub/src/subnode.ts` constructs an explicit allowlisted environment (`CONSTELLATION_TARGET_*`, `HOME`/`USER`/`LOGNAME` for the *target* user, `PATH`, `LOG_LEVEL`). **If you find a variable isn't propagating to the subnode worker, this is why — add it explicitly to `buildWorkerEnv`, do not change it back to `...process.env`.** See ADR 0014.
+- **Subnode workers never inherit the parent's environment.** `CONSTELLATION_HUB_TOKEN` (and anything else read from `env_file`) lives in the hub's `process.env`, but each tool call is dispatched to a forked worker that immediately `setuid()`s to the requesting user — a possibly low-trust local account that could read its own `/proc/<pid>/environ`. Spreading `process.env` into that fork would hand the hub token (and any other secret) to that user. Instead, `buildWorkerEnv()` in `packages/hub/src/subnode.ts` constructs an explicit allowlisted environment (`CONSTELLATION_TARGET_*`, `HOME`/`USER`/`LOGNAME` for the *target* user, `PATH`, `LOG_LEVEL`). **If you find a variable isn't propagating to the subnode worker, this is why — add it explicitly to `buildWorkerEnv`, do not change it back to `...process.env`.** See [ADR 0014](adr/0014-subnode-worker-explicit-env.md).
 
 ### Sub-path access control
 
@@ -56,7 +65,7 @@ The hub refuses to spawn subnodes as:
 - UIDs within `subnode_uid.blocked_range` (if configured)
 - UIDs in `subnode_uid.blocked_uids` (if configured)
 
-See the config reference in §5 for details.
+See the config reference in [§5](#5-deployment) for details.
 
 ### GID restrictions
 
@@ -71,7 +80,7 @@ UID allow/block lists would ever see.
 Because group membership is multi-valued, there's no equivalent of
 `allowed_range` / a single "blocked GID" that can be trimmed away — the hub
 either spawns the subnode with the user's full, OS-resolved group list (the
-only option `initgroups()` supports; see ADR 0014) or it doesn't spawn at all.
+only option `initgroups()` supports; see [ADR 0014](adr/0014-subnode-worker-explicit-env.md)) or it doesn't spawn at all.
 So **before every dispatch** (not just at first spawn — group membership is
 re-resolved on each call so admin changes take effect without restarting the
 hub or waiting for a pooled worker to be torn down), the hub resolves the
@@ -103,7 +112,7 @@ audit log for the matching entry and see exactly what was blocked:
 Access denied: one or more of your OS groups are blocked by the hub administrator. Contact your administrator with reference ID: <request_id>
 ```
 
-See the config reference in §5 for details.
+See the config reference in [§5](#5-deployment) for details.
 
 ---
 
@@ -199,7 +208,7 @@ Register the hub with the relay using the device code flow (preferred):
 
 ```sh
 sudo constellation hub register \
-  --relay-url https://relay.example.com \
+  --relay https://relay.example.com \
   --host-name nas-shared \
   --env-file /etc/constellation/hub.env
 ```
@@ -207,7 +216,7 @@ sudo constellation hub register \
 The browser opens automatically for admin approval. The token is written to the env file — the operator never sees the raw token.
 
 Options:
-- `--relay-url` — required (or set `RELAY_URL`)
+- `--relay` — required (or set `RELAY_URL`)
 - `--host-name` — defaults to `hostname()`; used as the hub's display name in the relay
 - `--env-file` — where to write `CONSTELLATION_HUB_TOKEN` (default: `/etc/constellation/hub.env`)
 
@@ -318,6 +327,8 @@ identity:
       local_username: alice
   allow_preferred_username: false          # Tier 3: use preferred_username claim (risky — see §2)
 ```
+
+`instructions`/`context_file` share the same 500-char hard cap, 250-char recommendation, and fallback behavior as a node's `paths.yaml` — see [Configuration → `paths.yaml`](configuration.md#pathsyaml) for the full explanation.
 
 ### Systemd unit
 

@@ -33,14 +33,14 @@ export function registerHubCommands(program: Command): void {
   hub
     .command("register")
     .description("Register this machine as a hub (requires admin approval)")
-    .requiredOption("--relay-url <url>", "Relay URL", process.env["RELAY_URL"])
+    .requiredOption("--relay <url>", "Relay URL", process.env["RELAY_URL"])
     .option("--host-name <name>", "Host name for this hub", hostname())
     .option("--env-file <path>", "Path to write CONSTELLATION_HUB_TOKEN", "/etc/constellation/hub.env")
-    .action(async (opts: { relayUrl: string; hostName: string; envFile: string }) => {
-      const { relayUrl, hostName, envFile } = opts;
+    .action(async (opts: { relay: string; hostName: string; envFile: string }) => {
+      const { relay: relayUrl, hostName, envFile } = opts;
 
       if (!relayUrl) {
-        console.error("Error: --relay-url is required (or set RELAY_URL)");
+        console.error("Error: --relay is required (or set RELAY_URL)");
         process.exit(1);
       }
 

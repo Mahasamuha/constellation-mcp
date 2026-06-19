@@ -23,7 +23,7 @@ constellation node [--config-dir <dir>] <command>
 constellation node init --relay <url>
 ```
 
-Runs the device code OAuth flow, creates an agent registration on the relay, and writes `node.yaml` and an empty `paths.yaml`. Safe to re-run — rewrites credentials without touching existing path config.
+Runs the device code OAuth flow, creates a node registration on the relay, and writes `node.yaml` and an empty `paths.yaml`. Safe to re-run — rewrites credentials without touching existing path config.
 
 ### `node install`
 
@@ -57,7 +57,7 @@ Requests a token rotation from the relay. The new token is written to `node.yaml
 
 ### `node rename <host>`
 
-Pushes a new host name to the relay and updates `node.yaml`. Fails if another agent on the same account already uses that name.
+Pushes a new host name to the relay and updates `node.yaml`. Fails if another node on the same account already uses that name.
 
 ### `node logs [-f] [--lines <n>]`
 
@@ -104,14 +104,14 @@ Every subcommand below that takes `--config-file <path>` resolves it the same wa
 ### `hub register`
 
 ```sh
-constellation hub register --relay-url <url> [--host-name <name>] [--env-file <path>]
+constellation hub register --relay <url> [--host-name <name>] [--env-file <path>]
 ```
 
 Starts a device code OAuth flow that requires admin approval. Once approved, writes the service token to the env file (default `/etc/constellation/hub.env`, mode 0600). The token is never printed to the terminal.
 
 | Flag | Default | Description |
 |---|---|---|
-| `--relay-url` | `$RELAY_URL` | Relay URL (required) |
+| `--relay` | `$RELAY_URL` | Relay URL (required) |
 | `--host-name` | system hostname | Name for this hub on the relay |
 | `--env-file` | `/etc/constellation/hub.env` | Path to write `CONSTELLATION_HUB_TOKEN` |
 
@@ -131,7 +131,7 @@ constellation hub start [--config-file <path>]
 
 Starts the hub daemon.
 
-### `hub status [--json]`
+### `hub status [--json] [--config-file <path>]`
 
 ```sh
 constellation hub status [--config-file <path>]
@@ -226,7 +226,13 @@ These commands manage the relay remotely via the management API. Requires `const
 
 `--config-dir <dir>` (e.g. `constellation relay --config-dir /path login`) and `CONSTELLATION_CONFIG_DIR` override the default config directory where `relay-session.yaml` is read and written.
 
-### `relay login [--relay <url>]`
+`--relay <url>` is declared on the `relay` command itself, not on `login`, `elevate`, `user promote`, or `user demote` individually — it must appear somewhere after `relay` on the command line. The recommended, always-safe position is right after `relay` and before the subcommand (e.g. `constellation relay --relay <url> login`).
+
+### `relay login`
+
+```sh
+constellation relay --relay <url> login
+```
 
 Runs the device code OAuth flow for `relay:manage` scope. Writes session to `relay-session.yaml`. Relay URL defaults to the one in `node.yaml` if not specified.
 
@@ -288,12 +294,12 @@ Sets a new password for a local user and immediately invalidates all of their ex
 
 ### `relay account deactivate`
 
-Deactivates your account after an interactive confirmation prompt. All executor connections and MCP client sessions are immediately blocked. Re-running `constellation node init` is required to restore access.
+Deactivates your account after an interactive confirmation prompt. All executor connections and MCP client sessions are immediately blocked. There is no CLI command to restore a deactivated account — reactivation requires a database-level change.
 
 ### `relay elevate`
 
 ```sh
-constellation relay elevate [--relay <url>]
+constellation relay --relay <url> elevate
 ```
 
 Requests temporary admin access via a browser-approved device code flow (step-up authentication). Opens the approval URL automatically. On success, the current `relay:manage` session is elevated and subsequent admin-required commands succeed. Admin approval is required; the request is denied if the account does not have admin privileges.
@@ -301,7 +307,7 @@ Requests temporary admin access via a browser-approved device code flow (step-up
 ### `relay user promote <identifier>`
 
 ```sh
-constellation relay user promote <identifier> [--admin-token <token>] [--relay <url>]
+constellation relay --relay <url> user promote <identifier> [--admin-token <token>]
 ```
 
 Grants admin role to a user. `<identifier>` is the OIDC sub or (in `AUTH_MODE=local`) the username. Requires `RELAY_ADMIN_TOKEN` env var or `--admin-token` flag — this is a bootstrap operation not gated by OAuth.
@@ -309,7 +315,7 @@ Grants admin role to a user. `<identifier>` is the OIDC sub or (in `AUTH_MODE=lo
 ### `relay user demote <identifier>`
 
 ```sh
-constellation relay user demote <identifier> [--admin-token <token>] [--relay <url>]
+constellation relay --relay <url> user demote <identifier> [--admin-token <token>]
 ```
 
 Revokes admin role from a user. Same auth requirements as `relay user promote`.
