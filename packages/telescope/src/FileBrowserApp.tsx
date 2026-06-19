@@ -2,6 +2,100 @@ import { createContext, use, useCallback, useEffect, useMemo, useRef, useState }
 import { useApp, useHostStyleVariables, type App } from "@modelcontextprotocol/ext-apps/react";
 import { Prism, escapeHtml, languageForPath } from "./prism";
 
+type DisplayMode = "inline" | "fullscreen" | "pip";
+
+const DISPLAY_MODE_LABELS: Record<DisplayMode, string> = { inline: "Inline", fullscreen: "Fullscreen", pip: "PIP" };
+const ALL_DISPLAY_MODES: readonly DisplayMode[] = ["inline", "fullscreen", "pip"];
+
+// SVG instead of Unicode glyphs (▭ ⛶ ▣): symbol-character glyphs aren't
+// vertically centered within their own em-box consistently across fonts/
+// platforms, so flex-centering the button doesn't actually center what you
+// see. A fixed viewBox sidesteps that — we own the geometry outright.
+function DisplayModeIcon({ mode }: { mode: DisplayMode }) {
+  if (mode === "fullscreen") {
+    return (
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M4 9V4h5" />
+        <path d="M15 4h5v5" />
+        <path d="M20 15v5h-5" />
+        <path d="M9 20H4v-5" />
+      </svg>
+    );
+  }
+  if (mode === "pip") {
+    return (
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+        <rect x="3" y="5" width="18" height="14" rx="2" />
+        <rect x="12" y="11" width="7" height="5" rx="1" fill="currentColor" stroke="none" />
+      </svg>
+    );
+  }
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+      <rect x="4" y="5" width="16" height="14" rx="2" />
+    </svg>
+  );
+}
+
+function RefreshIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8" />
+      <path d="M21 3v5h-5" />
+    </svg>
+  );
+}
+
+function WordWrapIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <polyline points="9 10 4 15 9 20" />
+      <path d="M20 4v7a4 4 0 0 1-4 4H4" />
+    </svg>
+  );
+}
+
+function EditIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
+    </svg>
+  );
+}
+
+function SaveIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <polyline points="4 12 9 17 20 6" />
+    </svg>
+  );
+}
+
+function CancelIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+      <line x1="6" y1="6" x2="18" y2="18" />
+      <line x1="18" y1="6" x2="6" y2="18" />
+    </svg>
+  );
+}
+
+function FolderClosedIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" aria-hidden="true">
+      <path d="M3 6h5l2 2h9v10H3z" />
+    </svg>
+  );
+}
+
+function FolderOpenIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" aria-hidden="true">
+      <path d="M3 6h5l2 2h9v8L1 20H3z" />
+    </svg>
+  );
+}
+
 interface DirNode {
   path: string;
   type: "file" | "directory" | "symlink";
@@ -26,15 +120,19 @@ interface BrowserContextValue {
   selectedHost: string | null;
   selectedPath: string | null;
   fileContent: string | null;
+  isLoadingFile: boolean;
   isEditing: boolean;
   status: StatusMessage;
   sidebarOpen: boolean;
   wordWrap: boolean;
+  displayMode: DisplayMode;
+  availableDisplayModes: DisplayMode[];
+  requestDisplayModeChange: (mode: DisplayMode) => void;
   toggleSidebar: () => void;
   toggleWordWrap: () => void;
-  selectShare: (share: string, host: string, openPath?: string) => void;
+  selectShare: (share: string, host: string, openPath?: string, deferSidebarCollapse?: boolean) => void;
   handleShareChange: (value: string) => void;
-  openFile: (share: string, host: string, relativePath: string) => Promise<void>;
+  openFile: (share: string, host: string, relativePath: string, opts?: { deferSidebarCollapse?: boolean }) => Promise<void>;
   saveFile: (content: string) => Promise<void>;
   startEditing: () => void;
   cancelEditing: () => void;
@@ -61,6 +159,22 @@ function nodeName(path: string): string {
   return path.split("/").filter(Boolean).pop() ?? path;
 }
 
+// Spaces out slashes so path segments are easier to pick out when read
+// sideways in the collapsed sidebar bar — tightly-kerned "/" reads as noise
+// rotated 90°.
+function spacedPath(path: string): string {
+  return path.replace(/\//g, " / ");
+}
+
+// A hub share name isn't unique across hosts (see ADR 0017) — list_shares
+// can return e.g. "constellation-project" on both "sirius" and "milky-way".
+// The <select>'s option value must encode both, or selecting the second
+// entry silently resolves to whichever one happens to come first in the
+// array.
+function shareKey(share: string, host: string): string {
+  return `${share}::${host}`;
+}
+
 // MCP tool errors (e.g. an offline agent host) come back as a normal
 // CallToolResult with isError:true rather than a thrown/rejected call —
 // structuredContent is absent, so callers must check this before reading it.
@@ -76,10 +190,13 @@ export function FileBrowserApp() {
   const [selectedHost, setSelectedHost] = useState<string | null>(null);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [fileContent, setFileContent] = useState<string | null>(null);
+  const [isLoadingFile, setIsLoadingFile] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [status, setStatusMessage] = useState<StatusMessage>({ text: "Connecting…", isError: false });
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [wordWrap, setWordWrap] = useState(false);
+  const [displayMode, setDisplayMode] = useState<DisplayMode>("inline");
+  const [availableDisplayModes, setAvailableDisplayModes] = useState<DisplayMode[]>(["inline"]);
 
   const setStatus = useCallback((text: string) => setStatusMessage({ text, isError: false }), []);
   const setStatusError = useCallback((text: string) => setStatusMessage({ text, isError: true }), []);
@@ -101,21 +218,32 @@ export function FileBrowserApp() {
   useHostStyleVariables(app, app?.getHostContext());
 
   const openFile = useCallback(
-    async (share: string, host: string, relativePath: string) => {
+    async (share: string, host: string, relativePath: string, opts: { deferSidebarCollapse?: boolean } = {}) => {
       if (!app) return;
       setIsEditing(false);
+      setIsLoadingFile(true);
+      // Normally the sidebar collapses immediately, concurrent with the load
+      // starting. The one exception is the initial bootstrap open (see the
+      // selectShare call below) — there we want the tree to stay visible
+      // until this load finishes, as a one-time visual cue for new users
+      // that the bar is what they tap to bring the picker back.
+      if (!opts.deferSidebarCollapse) setSidebarOpen(false);
       setStatus(`Loading ${relativePath}…`);
       const result = await app.callServerTool({ name: "read_file", arguments: { share, host, relative_path: relativePath } });
       const err = toolErrorMessage(result);
       if (err) {
         setSelectedPath(null);
         setFileContent(null);
+        setIsLoadingFile(false);
+        setSidebarOpen(true);
         setStatusError(err);
         return;
       }
       setSelectedPath(relativePath);
       setFileContent(String(result.structuredContent?.["content"] ?? ""));
-      setStatus(`${share}/${relativePath}`);
+      setIsLoadingFile(false);
+      if (opts.deferSidebarCollapse) setSidebarOpen(false);
+      setStatus("");
       await app.updateModelContext({
         content: [{ type: "text", text: `User has file open: ${share}/${relativePath}` }],
       });
@@ -154,21 +282,22 @@ export function FileBrowserApp() {
   );
 
   const selectShare = useCallback(
-    (share: string, host: string, openPath?: string) => {
+    (share: string, host: string, openPath?: string, deferSidebarCollapse?: boolean) => {
       setSelectedShare(share);
       setSelectedHost(host);
       setSelectedPath(null);
       setFileContent(null);
       setIsEditing(false);
+      setSidebarOpen(true);
       setStatus(`Browsing ${share}`);
-      if (openPath) void openFile(share, host, openPath);
+      if (openPath) void openFile(share, host, openPath, { deferSidebarCollapse });
     },
     [openFile, setStatus]
   );
 
   const handleShareChange = useCallback(
     (value: string) => {
-      const match = shares.find((s) => s.share === value);
+      const match = shares.find((s) => shareKey(s.share, s.host) === value);
       if (match) {
         selectShare(match.share, match.host);
       } else {
@@ -177,6 +306,7 @@ export function FileBrowserApp() {
         setSelectedPath(null);
         setFileContent(null);
         setIsEditing(false);
+        setSidebarOpen(true);
         setStatus("Select a share to begin.");
       }
     },
@@ -187,6 +317,25 @@ export function FileBrowserApp() {
   const toggleWordWrap = useCallback(() => setWordWrap((wrap) => !wrap), []);
   const startEditing = useCallback(() => setIsEditing(true), []);
   const cancelEditing = useCallback(() => setIsEditing(false), []);
+
+  // User-initiated mode switch (e.g. the header buttons below). Unlike the
+  // auto pip request, this can be called repeatedly — the spec's own
+  // reference pattern is exactly "toggle between modes via a button," not a
+  // one-shot handshake. Still gated on availableDisplayModes per spec.
+  const requestDisplayModeChange = useCallback(
+    (mode: DisplayMode) => {
+      if (!app || !availableDisplayModes.includes(mode)) return;
+      app.requestDisplayMode({ mode }).then(({ mode: granted }) => {
+        setDisplayMode(granted);
+        if (granted !== mode) {
+          console.warn("[telescope] requested display mode", mode, "but host returned:", granted);
+        }
+      }).catch((err: unknown) => {
+        console.error("[telescope] requestDisplayMode failed:", err);
+      });
+    },
+    [app, availableDisplayModes]
+  );
 
   // Prefer floating alongside the conversation (pip) so the browser stays visible
   // while the user keeps chatting; hosts that don't support it fall back to inline.
@@ -207,6 +356,7 @@ export function FileBrowserApp() {
     }
     displayModeRequested.current = true;
     app.requestDisplayMode({ mode: "pip" }).then(({ mode }) => {
+      setDisplayMode(mode);
       if (mode !== "pip") {
         console.warn("[telescope] pip requested but host returned:", mode);
       }
@@ -214,6 +364,31 @@ export function FileBrowserApp() {
       console.error("[telescope] requestDisplayMode failed:", err);
     });
   }, [app, isConnected]);
+
+  // Track the live displayMode and availableDisplayModes (initial value, plus
+  // changes the host pushes on its own, e.g. the user resizing/closing a pip
+  // window) so style.css can size .app accordingly via [data-display-mode] on
+  // <html>, and so the manual mode-switch buttons below know what to offer.
+  useEffect(() => {
+    if (!app || !isConnected) return;
+    const ctx = app.getHostContext();
+    if (ctx?.displayMode) setDisplayMode(ctx.displayMode);
+    if (ctx?.availableDisplayModes) setAvailableDisplayModes(ctx.availableDisplayModes);
+  }, [app, isConnected]);
+
+  useEffect(() => {
+    if (!app) return;
+    const handleContextChange = (ctx: { displayMode?: DisplayMode; availableDisplayModes?: DisplayMode[] }) => {
+      if (ctx.displayMode) setDisplayMode(ctx.displayMode);
+      if (ctx.availableDisplayModes) setAvailableDisplayModes(ctx.availableDisplayModes);
+    };
+    app.addEventListener("hostcontextchanged", handleContextChange);
+    return () => app.removeEventListener("hostcontextchanged", handleContextChange);
+  }, [app]);
+
+  useEffect(() => {
+    document.documentElement.dataset.displayMode = displayMode;
+  }, [displayMode]);
 
   useEffect(() => {
     if (!app || !isConnected) return;
@@ -231,7 +406,7 @@ export function FileBrowserApp() {
       const initial = initialInput.current;
       const match = initial.share ? loaded.find((s) => s.share === initial.share) : undefined;
       if (match) {
-        selectShare(match.share, match.host, initial.path);
+        selectShare(match.share, match.host, initial.path, true);
       } else {
         setStatus(loaded.length ? "Select a share to begin." : "No shares available.");
       }
@@ -248,10 +423,14 @@ export function FileBrowserApp() {
       selectedHost,
       selectedPath,
       fileContent,
+      isLoadingFile,
       isEditing,
       status,
       sidebarOpen,
       wordWrap,
+      displayMode,
+      availableDisplayModes,
+      requestDisplayModeChange,
       toggleSidebar,
       toggleWordWrap,
       selectShare,
@@ -270,10 +449,14 @@ export function FileBrowserApp() {
       selectedHost,
       selectedPath,
       fileContent,
+      isLoadingFile,
       isEditing,
       status,
       sidebarOpen,
       wordWrap,
+      displayMode,
+      availableDisplayModes,
+      requestDisplayModeChange,
       toggleSidebar,
       toggleWordWrap,
       selectShare,
@@ -293,35 +476,106 @@ export function FileBrowserApp() {
 }
 
 function FileBrowserLayout() {
-  const { error, shares, selectedShare, sidebarOpen, toggleSidebar, handleShareChange, status } = useBrowserContext();
+  const {
+    error,
+    shares,
+    selectedShare,
+    selectedHost,
+    selectedPath,
+    sidebarOpen,
+    toggleSidebar,
+    handleShareChange,
+    status,
+    displayMode,
+    availableDisplayModes,
+    requestDisplayModeChange,
+  } = useBrowserContext();
 
   if (error) return <div className="status">Connection error: {error.message}</div>;
+
+  // Only offer modes the host actually supports, and never the one we're
+  // already in — there's nothing to request there.
+  const requestableModes = ALL_DISPLAY_MODES.filter(
+    (mode) => mode !== displayMode && availableDisplayModes.includes(mode)
+  );
 
   return (
     <div className="app">
       <header className="header">
-        <button className="menu-toggle" type="button" aria-label="Toggle file tree" onClick={toggleSidebar}>
-          ☰
-        </button>
-        <select aria-label="Share" value={selectedShare ?? ""} onChange={(e) => handleShareChange(e.target.value)}>
+        <select
+          aria-label="Share"
+          value={selectedShare && selectedHost ? shareKey(selectedShare, selectedHost) : ""}
+          onChange={(e) => handleShareChange(e.target.value)}
+        >
           <option value="">Select a share…</option>
           {shares.map((s) => (
-            <option key={s.share} value={s.share}>
+            <option key={shareKey(s.share, s.host)} value={shareKey(s.share, s.host)}>
               {s.share} ({s.host})
             </option>
           ))}
         </select>
+        {requestableModes.length > 0 && (
+          <div className="display-mode-buttons">
+            {requestableModes.map((mode) => (
+              <button
+                key={mode}
+                type="button"
+                title={`Switch to ${DISPLAY_MODE_LABELS[mode]}`}
+                aria-label={`Switch to ${DISPLAY_MODE_LABELS[mode]} display mode`}
+                onClick={() => requestDisplayModeChange(mode)}
+              >
+                <DisplayModeIcon mode={mode} />
+              </button>
+            ))}
+          </div>
+        )}
       </header>
       <div className="layout">
-        <nav className="sidebar" hidden={!sidebarOpen}>
-          {selectedShare && <DirectoryTree path="" />}
+        <nav className={`sidebar ${sidebarOpen ? "open" : "closed"}`}>
+          {/* Both branches stay mounted, with CSS toggling which is visible —
+           * conditionally rendering DirectoryTree here would unmount it (and
+           * every nested TreeNode's expanded state) every time the bar
+           * closes, forcing a re-fetch and collapsing all navigation on
+           * every reopen. */}
+          <button type="button" className="sidebar-bar" aria-label="Open file tree" onClick={toggleSidebar}>
+            <span className="sidebar-bar-label">{spacedPath(selectedPath ?? selectedShare ?? "")}</span>
+          </button>
+          <div className="sidebar-tree">{selectedShare && <DirectoryTree path="" />}</div>
         </nav>
         <div className="main">
           <FileEditor />
         </div>
       </div>
       <div className={`status${status.isError ? " error" : ""}`}>
-        {status.isError ? `⚠ ${status.text}` : status.text}
+        {status.isError ? `⚠ ${status.text}` : status.text || " "}
+      </div>
+    </div>
+  );
+}
+
+const TREE_SKELETON_WIDTHS = [70, 45, 85, 55, 65];
+
+function TreeSkeleton() {
+  return (
+    <ul className="tree">
+      {TREE_SKELETON_WIDTHS.map((width, i) => (
+        <li key={i} className="node skeleton-row">
+          <span className="skeleton" style={{ width: `${width}%` }} />
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+const EDITOR_SKELETON_WIDTHS = [60, 85, 40, 70, 90, 35, 75, 50, 80, 45];
+
+function EditorSkeleton() {
+  return (
+    <div className="viewer-pane">
+      <div className="skeleton-lines">
+        {EDITOR_SKELETON_WIDTHS.map((width, i) => (
+          <span key={i} className="skeleton" style={{ width: `${width}%` }} />
+        ))}
       </div>
     </div>
   );
@@ -367,9 +621,13 @@ function DirectoryTree({ path }: { path: string }) {
   }
 
   if (nodes === null) {
+    return <TreeSkeleton />;
+  }
+
+  if (nodes.length === 0) {
     return (
       <ul className="tree">
-        <li className="node loading">Loading…</li>
+        <li className="node empty">&lt;empty&gt;</li>
       </ul>
     );
   }
@@ -397,6 +655,7 @@ function TreeNode({ node }: { node: DirNode }) {
         className={classes}
         onClick={() => (isDir ? setExpanded((e) => !e) : void openFile(selectedShare!, selectedHost!, node.path))}
       >
+        <span className="node-icon">{isDir && (expanded ? <FolderOpenIcon /> : <FolderClosedIcon />)}</span>
         {nodeName(node.path)}
       </div>
       {isDir && expanded && <DirectoryTree path={node.path} />}
@@ -407,6 +666,7 @@ function TreeNode({ node }: { node: DirNode }) {
 function FileEditor() {
   const {
     fileContent,
+    isLoadingFile,
     selectedShare,
     selectedHost,
     selectedPath,
@@ -446,46 +706,59 @@ function FileEditor() {
     refreshTimeoutRef.current = window.setTimeout(() => setRefreshCooldown(false), 2000);
   }, [selectedShare, selectedHost, selectedPath, openFile, refreshCooldown]);
 
+  if (isLoadingFile) return <EditorSkeleton />;
+
   if (fileContent == null || highlighted == null) return <pre className="viewer" />;
 
-  if (isEditing) {
-    return (
-      <div className="editor">
-        <textarea ref={textareaRef} className="editor-input" defaultValue={fileContent} spellCheck={false} />
-        <div className="editor-actions">
-          <button type="button" onClick={() => void saveFile(textareaRef.current?.value ?? "")}>
-            Save
-          </button>
-          <button type="button" onClick={cancelEditing}>
-            Cancel
-          </button>
-        </div>
-      </div>
-    );
-  }
-
   return (
-    <div className="viewer-pane">
-      <pre className={`viewer language-${highlighted.language}${wordWrap ? " wrap" : ""}`}>
-        <code className={`language-${highlighted.language}`} dangerouslySetInnerHTML={{ __html: highlighted.html }} />
-      </pre>
-      <div className="viewer-actions">
-        <button type="button" title="Refresh" aria-label="Refresh" disabled={refreshCooldown} onClick={handleRefresh}>
-          ↻
-        </button>
-        <button
-          type="button"
-          className={wordWrap ? "active" : ""}
-          title="Toggle word wrap"
-          aria-label="Toggle word wrap"
-          aria-pressed={wordWrap}
-          onClick={toggleWordWrap}
-        >
-          ↵
-        </button>
-        <button type="button" title="Edit" aria-label="Edit" onClick={startEditing}>
-          ✎
-        </button>
+    <div className="editor-pane">
+      <div className="editor-content">
+        {isEditing ? (
+          <textarea ref={textareaRef} className="editor-input" defaultValue={fileContent} spellCheck={false} />
+        ) : (
+          <pre className={`viewer language-${highlighted.language}${wordWrap ? " wrap" : ""}`}>
+            <code className={`language-${highlighted.language}`} dangerouslySetInnerHTML={{ __html: highlighted.html }} />
+          </pre>
+        )}
+      </div>
+      {/* Persistent — was an absolute overlay on top of the content before,
+       * which covered text on narrower layouts (no room to push it aside). */}
+      <div className="action-bar">
+        {isEditing ? (
+          <>
+            <button
+              type="button"
+              className="save"
+              title="Save"
+              aria-label="Save"
+              onClick={() => void saveFile(textareaRef.current?.value ?? "")}
+            >
+              <SaveIcon />
+            </button>
+            <button type="button" title="Cancel" aria-label="Cancel" onClick={cancelEditing}>
+              <CancelIcon />
+            </button>
+          </>
+        ) : (
+          <>
+            <button type="button" title="Refresh" aria-label="Refresh" disabled={refreshCooldown} onClick={handleRefresh}>
+              <RefreshIcon />
+            </button>
+            <button
+              type="button"
+              className={wordWrap ? "active" : ""}
+              title="Toggle word wrap"
+              aria-label="Toggle word wrap"
+              aria-pressed={wordWrap}
+              onClick={toggleWordWrap}
+            >
+              <WordWrapIcon />
+            </button>
+            <button type="button" title="Edit" aria-label="Edit" onClick={startEditing}>
+              <EditIcon />
+            </button>
+          </>
+        )}
       </div>
     </div>
   );
