@@ -5,7 +5,7 @@ import react from "@vitejs/plugin-react";
 import { viteSingleFile } from "vite-plugin-singlefile";
 
 // Vite names the bundled output after the entry HTML file (index.html).
-// The broker expects the artifact at dist/app.html — rename it post-build.
+// The relay expects the artifact at dist/app.html — rename it post-build.
 function renameToAppHtml(): Plugin {
   return {
     name: "rename-to-app-html",

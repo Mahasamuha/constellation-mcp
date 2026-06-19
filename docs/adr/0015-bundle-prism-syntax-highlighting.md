@@ -5,7 +5,7 @@
 
 ## Context
 
-The MCP Apps file browser (`packages/telescope`, see `plans/broker-file-viewer.md`)
+The MCP Apps file browser (`packages/telescope`, see `plans/relay-file-viewer.md`)
 renders file contents with syntax highlighting. The initial implementation loaded
 highlight.js from cdnjs via a `<script>`/`<link>` tag in `index.html`, with a matching
 CSP `resourceDomains: ["https://cdnjs.cloudflare.com"]` on the `ui://` resource.
@@ -72,7 +72,7 @@ Prism's per-component imports are bundler-native.
 **Keep CDN loading, accept degraded experience on unsupported clients**: rejected —
 defeats the purpose of a polished inline file viewer if highlighting silently breaks
 on mobile and non-claude.ai clients, which are a primary target per
-`plans/broker-file-viewer.md`.
+`plans/relay-file-viewer.md`.
 
 ## Consequences
 
@@ -80,4 +80,4 @@ on mobile and non-claude.ai clients, which are a primary target per
   (written before the switch to Prism) and should be retired or rewritten against
   Prism if CDN whitelisting ever becomes consistent enough to revisit.
 - Adding a new language requires a `packages/telescope` rebuild (`dist/app.html` is
-  copied into the broker image at Docker build time — see `packages/broker/Dockerfile`).
+  copied into the relay image at Docker build time — see `packages/relay/Dockerfile`).

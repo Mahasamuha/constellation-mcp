@@ -6,15 +6,18 @@ import { dirname, join } from "node:path";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const { version } = JSON.parse(
-  readFileSync(new URL("./packages/agent/package.json", import.meta.url), "utf8")
+  readFileSync(new URL("./packages/cli/package.json", import.meta.url), "utf8")
 ) as { version: string };
 
 export default defineConfig({
   resolve: {
     alias: {
-      // Point the workspace package at its TypeScript source so tests don't
-      // require a prior build of @constellation/shared (dist/ may not exist in CI).
+      // Point workspace packages at their TypeScript source so tests don't
+      // require a prior build (dist/ may not exist in CI).
       "@constellation/shared": join(__dirname, "packages/shared/src/index.ts"),
+      "@constellation/node/cli": join(__dirname, "packages/node/src/cli.ts"),
+      "@constellation/node/config": join(__dirname, "packages/node/src/config.ts"),
+      "@constellation/hub/cli": join(__dirname, "packages/hub/src/cli.ts"),
     },
   },
   define: {

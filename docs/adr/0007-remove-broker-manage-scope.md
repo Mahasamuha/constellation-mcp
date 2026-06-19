@@ -1,29 +1,29 @@
-# ADR 0007: Remove broker:manage Scope; Replace with Per-User RLS Filtering
+# ADR 0007: Remove relay:manage Scope; Replace with Per-User RLS Filtering
 
 **Status:** Accepted  
 **Date:** 2026-06-06
 
 ## Context
 
-All `/api/*` broker management endpoints were originally gated by a `broker:manage`
-scope, obtained via `constellation broker login`. The intent was to separate management
+All `/api/*` relay management endpoints were originally gated by a `relay:manage`
+scope, obtained via `constellation relay login`. The intent was to separate management
 API access from ordinary MCP client access.
 
 ## Decision
 
-The `broker:manage` scope has been removed. The `requireBrokerManage` middleware is
+The `relay:manage` scope has been removed. The `requireRelayManage` middleware is
 deleted. All `/api/*` endpoints are now gated by `requireBearerAuth` only, with
 per-route authorization enforced by filtering results to the calling user's `userId`.
 
-The static first-party CLI client was renamed from `"broker-manage"` to
+The static first-party CLI client was renamed from `"relay-manage"` to
 `"constellation-cli"` for clarity.
 
 ## Rationale
 
-The `broker:manage` scope was security theater. Every API query already filtered by
+The `relay:manage` scope was security theater. Every API query already filtered by
 `userId`, so the scope provided no isolation beyond what the query layer enforced.
-Any authenticated user could obtain a `broker:manage`-scoped token by running
-`constellation broker login` — there was no additional approval step.
+Any authenticated user could obtain a `relay:manage`-scoped token by running
+`constellation relay login` — there was no additional approval step.
 
 The real access control is row-level: an agent can only be revoked by its owning user,
 a filter can only be deleted by the user who created it, and so on. This is enforced
@@ -36,7 +36,7 @@ and escalation model (see ADR 0008).
 
 ## Alternatives Considered
 
-**Keeping broker:manage but making it meaningful:** require an explicit admin approval
+**Keeping relay:manage but making it meaningful:** require an explicit admin approval
 step to grant the scope, so it's not freely obtainable. Rejected because the underlying
 issue is that API endpoints already filter by userId — adding a scope gate on top
 adds a layer that doesn't change what data is accessible.
@@ -46,12 +46,12 @@ over-engineered for a personal tool where the user is always acting on their own
 
 ## Consequences
 
-- `requireBrokerManage` is removed from `packages/broker/src/middleware.ts`.
-- `apiRouter.use(requireBrokerManage)` is replaced with `apiRouter.use(requireBearerAuth)`.
-- The `broker:manage` grant type strip from the dynamic client registration handler
+- `requireRelayManage` is removed from `packages/relay/src/middleware.ts`.
+- `apiRouter.use(requireRelayManage)` is replaced with `apiRouter.use(requireBearerAuth)`.
+- The `relay:manage` grant type strip from the dynamic client registration handler
   is removed.
-- Existing `broker-session.yaml` files with `broker:manage`-scoped tokens continue
+- Existing `relay-session.yaml` files with `relay:manage`-scoped tokens continue
   to work until expiry (the token is still a valid OAuth session). Re-login issues
   a standard session token.
-- Admin-gated operations (user management, shared agent registration) use the separate
+- Admin-gated operations (user management, hub registration) use the separate
   `requireAdmin` middleware that checks `adminUntil` on the session row (ADR 0008).

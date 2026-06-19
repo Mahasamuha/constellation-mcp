@@ -1,6 +1,6 @@
 services:
-  broker:
-    image: mahasamuha/constellation-broker:latest
+  relay:
+    image: mahasamuha/constellation-relay:latest
     env_file: .env
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
@@ -27,8 +27,15 @@ services:
     command: tunnel --no-autoupdate run
     environment:
       TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}
+    # Shares relay's network namespace so cloudflared's connection to the relay
+    # arrives from 127.0.0.1 — required for TRUST_PROXY_PRESET=cloudflare-tunnel
+    # to correctly identify the real client IP from CF-forwarded headers instead
+    # of collapsing every request onto cloudflared's bridge-network IP (see
+    # docs/self-hosted-cloudflare-tunnel.md). The tunnel's Public Hostname route
+    # must point at localhost:3000, not relay:3000, to match.
+    network_mode: "service:relay"
     depends_on:
-      - broker
+      - relay
 
 volumes:
   pgdata:

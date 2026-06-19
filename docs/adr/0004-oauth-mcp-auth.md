@@ -5,26 +5,26 @@
 
 ## Context
 
-The broker needs to authenticate MCP clients (Claude, Cursor, GitHub Copilot) before
+The relay needs to authenticate MCP clients (Claude, Cursor, GitHub Copilot) before
 routing tool calls to agents. Options include API keys, shared secrets, OAuth, and
-OIDC. The MCP specification defines an OAuth 2.0-based auth model; the broker must
+OIDC. The MCP specification defines an OAuth 2.0-based auth model; the relay must
 decide how closely to follow it and which flows to support.
 
 ## Decision
 
-The broker implements OAuth 2.0 per the MCP auth specification:
+The relay implements OAuth 2.0 per the MCP auth specification:
 
 - **MCP clients** authenticate via the Authorization Code flow with mandatory PKCE
-  (S256). PKCE is required; the broker rejects `/oauth/authorize` requests that omit
+  (S256). PKCE is required; the relay rejects `/oauth/authorize` requests that omit
   `code_challenge`.
 - **Dynamic Client Registration** (RFC 7591) is supported as the primary client
   onboarding path. Claude, Cursor, and GitHub Copilot all attempt DCR automatically
   on first connection; this eliminates per-client pre-registration for most cases.
-- **Agent CLI and broker CLI** authenticate via the Device Code flow (RFC 8628).
+- **Node CLI and relay CLI** authenticate via the Device Code flow (RFC 8628).
   Scope determines which flow is served:
   - `agent:register` — creates an agent registration, returns an agent token
-  - (formerly `broker:manage`, now removed — see ADR 0007)
-- The broker acts as an OAuth 2.0 authorization server to MCP clients and as an
+  - (formerly `relay:manage`, now removed — see ADR 0007)
+- The relay acts as an OAuth 2.0 authorization server to MCP clients and as an
   OIDC client to an upstream identity provider (Google, Azure AD, Authentik, or any
   OIDC-compliant provider).
 - The `/.well-known/oauth-authorization-server` discovery document is exposed so
@@ -41,7 +41,7 @@ PKCE is mandatory (not optional) because the MCP auth spec is based on OAuth 2.1
 which mandates it for all authorization code flows. All compliant MCP clients support it.
 
 Delegating identity to an upstream OIDC provider avoids building user management
-(password storage, MFA, account recovery) into the broker for the OIDC mode. Local
+(password storage, MFA, account recovery) into the relay for the OIDC mode. Local
 auth (`AUTH_MODE=local`) is supported for offline or simple deployments.
 
 ## Alternatives Considered
@@ -57,7 +57,7 @@ by any current MCP client.
 - Tokens (agent and OAuth) are 32-byte cryptographically random values stored as
   SHA-256 hashes in Postgres. They are never logged in plaintext.
 - Access tokens default to 24-hour lifetime; refresh tokens default to 30 days.
-  Both are configurable via broker environment variables.
+  Both are configurable via relay environment variables.
 - Refresh tokens are rotated on use. If a refresh token expires, the client prompts
   re-authentication.
 - Users are keyed on `(oidcSub, oidcIssuer)`. Switching OIDC providers will orphan

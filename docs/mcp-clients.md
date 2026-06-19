@@ -1,11 +1,11 @@
 # MCP Client Setup
 
-How to connect Claude, ChatGPT, and Cursor to a running Constellation broker.
+How to connect Claude, ChatGPT, and Cursor to a running Constellation relay.
 
 ## Prerequisites
 
-- A Constellation broker running at a publicly accessible HTTPS URL
-- At least one agent registered and online (`constellation broker agents list`)
+- A Constellation relay running at a publicly accessible HTTPS URL
+- At least one executor registered and online (`constellation relay executors list`)
 
 ---
 
@@ -15,13 +15,13 @@ How to connect Claude, ChatGPT, and Cursor to a running Constellation broker.
 
 1. Open [claude.ai](https://claude.ai) and go to **Settings → Integrations**
 2. Click **Add integration**
-3. Enter your broker's MCP endpoint URL: `https://<your-broker>/mcp`
-4. Claude redirects you to the broker's login page — sign in with your Constellation account
+3. Enter your relay's MCP endpoint URL: `https://<your-relay>/mcp`
+4. Claude redirects you to the relay's login page — sign in with your Constellation account
 5. After authorizing, Claude returns to the integration page and the connection is active
 
 ### 3. Verify
 
-Start a new conversation and ask Claude to list your available paths or read a file. The `list_labels` tool returns all registered path labels across your online agents.
+Start a new conversation and ask Claude to list your available paths or read a file. The `list_shares` tool returns all registered path shares across your online agents.
 
 ---
 
@@ -35,9 +35,9 @@ Available on Pro, Team, Enterprise, and Edu plans.
 
 1. Open [chatgpt.com](https://chatgpt.com) and go to **Settings → Apps & Connectors**
 2. Click **Add new connector**
-3. Enter a name (e.g. `Constellation`) and your broker's MCP endpoint URL: `https://<your-broker>/mcp`
+3. Enter a name (e.g. `Constellation`) and your relay's MCP endpoint URL: `https://<your-relay>/mcp`
 4. Set authentication to **OAuth**
-5. Click **Create** — ChatGPT redirects you to the broker's login page
+5. Click **Create** — ChatGPT redirects you to the relay's login page
 6. Sign in with your Constellation account and authorize the connection
 
 ### 3. Use the connector in a conversation
@@ -51,7 +51,7 @@ MCP connectors must be activated per conversation:
 
 ### 4. Verify
 
-Ask ChatGPT to list your available paths or read a file. The `list_labels` tool returns all registered path labels across your online agents.
+Ask ChatGPT to list your available paths or read a file. The `list_shares` tool returns all registered path shares across your online agents.
 
 ---
 
@@ -65,7 +65,7 @@ Create or edit `.cursor/mcp.json` in your project root for a project-scoped conn
 {
   "mcpServers": {
     "constellation": {
-      "url": "https://<your-broker>/mcp"
+      "url": "https://<your-relay>/mcp"
     }
   }
 }
@@ -77,7 +77,7 @@ On first use, Cursor opens a browser window to complete the OAuth flow. Sign in 
 
 ### 3. Verify
 
-Open the Cursor MCP panel (or invoke a tool call in the agent) — Constellation's tools should appear. Use `list_labels` to confirm your agents' registered paths are visible.
+Open the Cursor MCP panel (or invoke a tool call in the agent) — Constellation's tools should appear. Use `list_shares` to confirm your agents' registered paths are visible.
 
 ---
 
@@ -86,8 +86,8 @@ Open the Cursor MCP panel (or invoke a tool call in the agent) — Constellation
 To disconnect a client, revoke its OAuth session:
 
 ```bash
-constellation broker sessions list
-constellation broker sessions revoke <session-id>
+constellation relay sessions list
+constellation relay sessions revoke <session-id>
 ```
 
 Both the access token and refresh token are invalidated immediately.

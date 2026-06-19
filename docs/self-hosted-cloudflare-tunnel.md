@@ -1,10 +1,10 @@
 # Self-hosted with Cloudflare Tunnel
 
-Run a Constellation broker on your own machine with a stable public HTTPS URL — no open ports, no DNS setup, no reverse proxy required.
+Run a Constellation relay on your own machine with a stable public HTTPS URL — no open ports, no DNS setup, no reverse proxy required.
 
 ## How it works
 
-`cloudflared` opens an outbound connection from your machine to Cloudflare's edge. Cloudflare terminates TLS and proxies inbound HTTPS traffic to the broker running locally. A free Cloudflare account is all you need.
+`cloudflared` opens an outbound connection from your machine to Cloudflare's edge. Cloudflare terminates TLS and proxies inbound HTTPS traffic to the relay running locally. A free Cloudflare account is all you need.
 
 ## Prerequisites
 
@@ -27,12 +27,14 @@ In the tunnel's **Public Hostname** tab, add a route:
 
 | Field | Value |
 |---|---|
-| Subdomain | anything (e.g. `broker`) |
+| Subdomain | anything (e.g. `relay`) |
 | Domain | your Cloudflare-managed domain |
 | Service type | `HTTP` |
-| URL | `broker:3000` |
+| URL | `localhost:3000` |
 
-Your tunnel URL will be `https://<subdomain>.<domain>` (e.g. `https://broker.example.com`).
+Your tunnel URL will be `https://<subdomain>.<domain>` (e.g. `https://relay.example.com`).
+
+**Why `localhost:3000` and not `relay:3000`:** the `cloudflared` container in this Compose file runs with `network_mode: service:relay`, sharing the relay container's network namespace. This makes cloudflared's connection to the relay arrive from `127.0.0.1`, which the relay needs in order to trust Cloudflare's forwarded client-IP headers (see `TRUST_PROXY_PRESET` below). Pointing the route at `relay:3000` instead would connect over the Docker bridge network rather than loopback, defeating that trust relationship and collapsing rate limiting onto a single shared IP for all users.
 
 ### 3. Configure environment variables
 
@@ -44,20 +46,20 @@ cp .env.example .env
 Fill in the required values:
 
 ```
-BROKER_URL=https://broker.example.com    # your tunnel URL from step 2
+RELAY_URL=https://relay.example.com      # your tunnel URL from step 2
 CLOUDFLARE_TUNNEL_TOKEN=<paste token>    # from step 1
 DATABASE_URL=postgresql://postgres:postgres@postgres:5432/constellation
 AUTH_MODE=local                          # or oidc if you have a provider
 TRUST_PROXY_PRESET=cloudflare-tunnel     # already set in .env.example
 ```
 
-### 4. Start the broker
+### 4. Start the relay
 
 ```bash
 docker compose up -d
 ```
 
-This starts three containers: `postgres`, `broker`, and `cloudflared`.
+This starts three containers: `postgres`, `relay`, and `cloudflared`.
 
 ### 5. Complete setup
 

@@ -1,4 +1,4 @@
-# Icon Mapping: assets/logo → packages/agent-gui/src-tauri/icons
+# Icon Mapping: assets/logo → packages/node-gui/src-tauri/icons
 
 ## Strategy
 
