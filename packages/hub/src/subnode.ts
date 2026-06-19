@@ -235,6 +235,21 @@ const workerPath = (process as { pkg?: unknown }).pkg
   ? join(dirname(process.execPath), "hub", "subnode-worker.cjs")
   : join(dirname(fileURLToPath(import.meta.url)), "subnode-worker.cjs");
 
+/**
+ * Grace period after SIGTERM before the parent escalates to SIGKILL.
+ *
+ * The worker is expected to self-terminate well within this window on its
+ * own (see SHUTDOWN_GRACE_MS in subnode-worker.ts, which now also falls back
+ * to a self-SIGKILL rather than process.exit() — confirmed by direct test
+ * that process.exit() can hang the main thread indefinitely, rather than
+ * just fail, when a hang is a blocked fs call parked on a libuv threadpool
+ * thread). This is the parent-side backstop for the cases that self-exit
+ * can't cover: a worker killed before its handlers ever installed, or one
+ * that's wedged hard enough that no JS in it — including its own SIGKILL
+ * fallback — ever gets to run.
+ */
+export const FORCE_KILL_GRACE_MS = 15_000;
+
 export class SubnodePool {
   private subnodes = new Map<string, Subnode>();
   private shuttingDown = false;
@@ -425,7 +440,7 @@ export class SubnodePool {
     return new Promise<null | DispatchError>((resolve) => {
       const timer = setTimeout(() => {
         worker.readyWaiters = worker.readyWaiters.filter((w) => w.resolve !== innerResolve);
-        try { worker.child.kill("SIGTERM"); } catch { /* already dead */ }
+        this.terminateChild(worker.child, "did not signal ready in time");
         resolve({ kind: "spawn_failed", message: `Subnode worker did not signal ready within ${timeoutMs}ms` });
       }, timeoutMs);
 
@@ -583,7 +598,7 @@ export class SubnodePool {
     // into an error that crosses the trust boundary to the RPC caller
     // below (see SECURITY-2).
     log.info({ username: subnode.username, reason, tier: worker.tier }, "Removing subnode worker");
-    try { worker.child.kill("SIGTERM"); } catch { /* already dead */ }
+    this.terminateChild(worker.child, reason);
 
     const err = new Error("Subnode worker terminated unexpectedly");
     for (const w of worker.readyWaiters) w.reject(err);
@@ -603,6 +618,23 @@ export class SubnodePool {
         this.subnodes.delete(subnode.username);
       }
     }
+  }
+
+  /**
+   * Sends SIGTERM, then escalates to SIGKILL if the process hasn't exited
+   * within FORCE_KILL_GRACE_MS. The worker is expected to exit on its own
+   * well within that window (see SHUTDOWN_GRACE_MS in subnode-worker.ts) —
+   * this is the backstop for a worker that never gets the chance to (killed
+   * before its handler installs) or is too wedged to honor its own timers.
+   */
+  private terminateChild(child: ChildProcess, reason: string): void {
+    try { child.kill("SIGTERM"); } catch { /* already dead */ }
+    setTimeout(() => {
+      if (child.exitCode === null && child.signalCode === null) {
+        log.warn({ reason }, "Worker did not exit after SIGTERM — sending SIGKILL");
+        try { child.kill("SIGKILL"); } catch { /* already dead */ }
+      }
+    }, FORCE_KILL_GRACE_MS);
   }
 
   /**

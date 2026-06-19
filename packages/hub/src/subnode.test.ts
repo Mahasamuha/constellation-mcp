@@ -19,6 +19,15 @@ class FakeChild extends EventEmitter {
   killed = false;
   /** True once the queued "exit" event has actually fired (removeWorker has run). */
   exited = false;
+  /** Mirrors the real ChildProcess fields terminateChild() inspects to decide whether to escalate. */
+  exitCode: number | null = null;
+  signalCode: string | null = null;
+  /**
+   * Simulates a worker wedged on something that ignores SIGTERM (e.g. a hung
+   * fs call) — SIGTERM is recorded but does not cause an exit. SIGKILL always
+   * succeeds, matching real OS signal semantics where SIGKILL can't be caught.
+   */
+  ignoreSigterm = false;
   private requests = new Map<string, () => void>();
 
   send(msg: unknown): boolean {
@@ -49,13 +58,17 @@ class FakeChild extends EventEmitter {
   }
 
   kill(signal?: string): boolean {
-    if (this.killed) return true;
     this.killed = true;
+    if (this.exited) return true;
+    if (signal === "SIGTERM" && this.ignoreSigterm) return true;
     queueMicrotask(() => {
       // removeWorker runs synchronously inside this emit, so by the time it
       // returns, the worker has been removed from subnode.workers/subnodes.
-      this.emit("exit", null, signal ?? "SIGTERM");
+      if (this.exited) return;
+      this.exitCode = null;
+      this.signalCode = signal ?? "SIGTERM";
       this.exited = true;
+      this.emit("exit", this.exitCode, this.signalCode);
     });
     return true;
   }
@@ -71,7 +84,7 @@ vi.mock("node:child_process", () => ({
   }),
 }));
 
-const { SubnodePool, isDispatchError } = await import("./subnode.js");
+const { SubnodePool, isDispatchError, FORCE_KILL_GRACE_MS } = await import("./subnode.js");
 const { checkUidRestrictions } = await import("./subnode.js");
 import type { HubConfig, SubnodeUidConfig, SubnodeWorkersConfig } from "./config.js";
 import type { ResolvedIdentity } from "./identity.js";
@@ -404,5 +417,38 @@ describe("SubnodePool.dispatch", () => {
     await waitUntil(() => forkedChildren[0]!.exited);
 
     await pool.shutdown(0);
+  });
+
+  it("escalates to SIGKILL when a worker ignores SIGTERM past the force-kill grace period", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const pool = new SubnodePool(makeConfig({ subnode_rpc_timeout_seconds: 5 }), {});
+
+      const d1 = pool.dispatch(identity, "list_directory", "docs", {}, "req-1");
+      await waitUntil(() => forkedChildren[0]?.hasPending("req-1") ?? false);
+
+      // This worker never responds and won't honor SIGTERM — simulates a
+      // worker wedged on a hung fs call (e.g. a stalled network mount).
+      const child = forkedChildren[0]!;
+      child.ignoreSigterm = true;
+
+      // RPC timeout fires — pool sends SIGTERM, which this worker ignores.
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(child.killed).toBe(true);
+      expect(child.exited).toBe(false);
+
+      // Past the force-kill grace period, the pool escalates to SIGKILL.
+      await vi.advanceTimersByTimeAsync(FORCE_KILL_GRACE_MS);
+      await waitUntil(() => child.exited);
+      expect(child.signalCode).toBe("SIGKILL");
+
+      const r1 = await d1;
+      expect(isDispatchError(r1)).toBe(true);
+      expect((r1 as { kind: string }).kind).toBe("timeout");
+
+      await pool.shutdown(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

@@ -134,8 +134,42 @@ process.on("message", (rawMsg: unknown) => {
   }
 });
 
-process.on("SIGTERM", () => {
+// Grace period for in-flight execute() calls to finish before this process
+// forces its own exit.
+const SHUTDOWN_GRACE_MS = 10_000;
+
+function beginShutdown(reason: string): void {
+  if (shuttingDown) return;
   shuttingDown = true;
-  if (inFlight === 0) process.exit(0);
-  // Otherwise wait for in-flight execute() calls to finish
-});
+  if (inFlight === 0) {
+    process.exit(0);
+    return;
+  }
+  log.warn({ inFlight, reason }, "Shutting down with in-flight request(s) outstanding");
+  setTimeout(() => {
+    log.error({ inFlight, reason }, "In-flight request(s) did not finish within grace period — sending self SIGKILL");
+    // Deliberately not process.exit() here: if the hang is a blocked fs call
+    // (e.g. a stalled network mount or a blocking read on a special file
+    // under a share), it's parked on a libuv threadpool thread, and
+    // process.exit() needs to join that thread before it can return at all —
+    // confirmed by direct test, it can hang the main thread indefinitely
+    // rather than terminating or even reaching the next line. SIGKILL is
+    // enforced by the kernel regardless of anything running inside this
+    // process, so a process can always reliably kill itself with it even
+    // when process.exit() can't get the job done.
+    process.kill(process.pid, "SIGKILL");
+  }, SHUTDOWN_GRACE_MS);
+}
+
+process.on("SIGTERM", () => beginShutdown("SIGTERM"));
+
+// Fires when the IPC channel to the hub goes away — including the hub
+// process dying outright (crash, OOM-kill, kill -9) without ever sending
+// SIGTERM. An idle worker would exit on its own in that case anyway (the IPC
+// channel was the only handle keeping its event loop alive), but a worker
+// with in-flight work has nothing else telling it the hub is gone, and there
+// is no longer any parent left to send the RPC timeout, SIGTERM, or SIGKILL
+// it would otherwise have received from a live SubnodePool. Without this
+// handler such a worker would run forever (or until an external supervisor,
+// e.g. systemd's cgroup KillMode, happens to clean it up).
+process.on("disconnect", () => beginShutdown("parent disconnected"));
