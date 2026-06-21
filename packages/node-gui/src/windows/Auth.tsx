@@ -14,7 +14,6 @@ interface DeviceCodeInfo {
 }
 
 type AuthResult =
-  | { status: "pending" }
   | { status: "success"; host: string }
   | { status: "error"; message: string }
   | { status: "timeout" };

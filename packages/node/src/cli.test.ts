@@ -149,6 +149,147 @@ describe("node init — relay URL scheme validation", () => {
 });
 
 // ---------------------------------------------------------------------------
+// node auth device-code / complete — internal JSON primitives used by
+// node-gui as a subprocess instead of reimplementing the device-code client.
+// ---------------------------------------------------------------------------
+
+describe("node auth device-code", () => {
+  it("prints a JSON error (exit 0) for a non-localhost http:// relay, never reaching fetch", async () => {
+    const { exitCode, out } = await runCli(["node", "auth", "device-code", "--relay", "http://relay.example.com"], dir);
+    expect(exitCode).toBe(0);
+    expect(JSON.parse(out)).toMatchObject({ ok: false, error: expect.stringContaining("ws://") });
+  });
+
+  it("prints the relay's device-code response as JSON on success", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({
+        device_code: "dc-1", user_code: "ABCD-1234",
+        verification_uri: "https://relay.example.com/activate",
+        verification_uri_complete: "https://relay.example.com/activate?code=ABCD-1234",
+        expires_in: 900, interval: 5,
+      }),
+    }));
+    const { exitCode, out } = await runCli(["node", "auth", "device-code", "--relay", "https://relay.example.com"], dir);
+    vi.unstubAllGlobals();
+    expect(exitCode).toBe(0);
+    expect(JSON.parse(out)).toEqual({
+      ok: true,
+      data: {
+        device_code: "dc-1", user_code: "ABCD-1234",
+        verification_uri: "https://relay.example.com/activate",
+        verification_uri_complete: "https://relay.example.com/activate?code=ABCD-1234",
+        expires_in: 900, interval: 5,
+      },
+    });
+  });
+
+  it("prints a JSON error when the relay rejects the request", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, text: () => Promise.resolve("relay says no") }));
+    const { exitCode, out } = await runCli(["node", "auth", "device-code", "--relay", "https://relay.example.com"], dir);
+    vi.unstubAllGlobals();
+    expect(exitCode).toBe(0);
+    expect(JSON.parse(out)).toEqual({ ok: false, error: "relay says no" });
+  });
+});
+
+describe("node auth complete", () => {
+  const completeArgs = ["node", "auth", "complete", "--relay", "https://relay.example.com", "--device-code", "dc-1"];
+
+  it("prints a JSON error (exit 0) for a non-localhost http:// relay, never reaching fetch", async () => {
+    const { exitCode, out } = await runCli(
+      ["node", "auth", "complete", "--relay", "http://relay.example.com", "--device-code", "dc-1", "--interval", "1", "--expires-in", "30"],
+      dir
+    );
+    expect(exitCode).toBe(0);
+    expect(JSON.parse(out)).toMatchObject({ status: "error", message: expect.stringContaining("ws://") });
+  });
+
+  it("polls, persists node.yaml/paths.yaml, and prints success", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ access_token: "tok-new", host: "new-host" }),
+    }));
+    const { exitCode, out } = await runCli([...completeArgs, "--interval", "1", "--expires-in", "30"], dir);
+    vi.unstubAllGlobals();
+    expect(exitCode).toBe(0);
+    expect(JSON.parse(out)).toEqual({ status: "success", host: "new-host" });
+    const cfg = loadNodeConfig(dir);
+    expect(cfg.node_token).toBe("tok-new");
+    expect(cfg.host).toBe("new-host");
+    expect(cfg.relay_url).toBe("https://relay.example.com");
+  });
+
+  it("prints a JSON error when the relay denies the request", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      status: 400,
+      ok: false,
+      json: () => Promise.resolve({ error: "access_denied" }),
+    }));
+    const { exitCode, out } = await runCli([...completeArgs, "--interval", "1", "--expires-in", "30"], dir);
+    vi.unstubAllGlobals();
+    expect(exitCode).toBe(0);
+    expect(JSON.parse(out)).toEqual({ status: "error", message: "Access denied." });
+  });
+
+  it("prints a timeout result when the deadline elapses with no terminal response", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      status: 400,
+      ok: false,
+      json: () => Promise.resolve({ error: "authorization_pending" }),
+    }));
+    const { exitCode, out } = await runCli([...completeArgs, "--interval", "1", "--expires-in", "0"], dir);
+    vi.unstubAllGlobals();
+    expect(exitCode).toBe(0);
+    expect(JSON.parse(out)).toEqual({ status: "timeout" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// node config set
+// ---------------------------------------------------------------------------
+
+describe("node config set", () => {
+  beforeEach(() => {
+    writeNodeConfig(dir, { relay_url: "https://relay.example.com", node_token: "tok-original", host: "test-host", max_file_size_kb: 100 });
+  });
+
+  it("updates relay_url and max_file_size_kb while preserving node_token/host", async () => {
+    const { exitCode } = await runCli(
+      ["node", "config", "set", "--relay-url", "https://new-relay.example.com", "--max-file-size-kb", "250"],
+      dir
+    );
+    expect(exitCode).toBe(0);
+    const cfg = loadNodeConfig(dir);
+    expect(cfg.relay_url).toBe("https://new-relay.example.com");
+    expect(cfg.max_file_size_kb).toBe(250);
+    expect(cfg.node_token).toBe("tok-original");
+    expect(cfg.host).toBe("test-host");
+  });
+
+  it("rejects a non-localhost http:// relay URL and leaves node.yaml untouched", async () => {
+    const { exitCode, err } = await runCli(
+      ["node", "config", "set", "--relay-url", "http://new-relay.example.com"],
+      dir
+    );
+    expect(exitCode).toBe(1);
+    expect(err).toContain("ws://");
+    expect(loadNodeConfig(dir).relay_url).toBe("https://relay.example.com");
+  });
+
+  it("errors when node.yaml does not exist yet", async () => {
+    const freshDir = await makeTempDir();
+    try {
+      const { exitCode, err } = await runCli(["node", "config", "set", "--max-file-size-kb", "50"], freshDir);
+      expect(exitCode).toBe(1);
+      expect(err).toContain("node init");
+    } finally {
+      await cleanTempDir(freshDir);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // node config path
 // ---------------------------------------------------------------------------
 

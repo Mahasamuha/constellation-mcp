@@ -54,20 +54,6 @@ pub fn load_node_config() -> NodeConfig {
     }
 }
 
-pub fn write_secure(path: &std::path::Path, data: &[u8]) -> Result<(), String> {
-    use std::io::Write;
-    std::fs::create_dir_all(path.parent().unwrap_or(path)).map_err(|e| e.to_string())?;
-    let mut file = std::fs::OpenOptions::new()
-        .write(true).create(true).truncate(true)
-        .open(path).map_err(|e| e.to_string())?;
-    #[cfg(unix)] {
-        use std::os::unix::fs::PermissionsExt;
-        file.set_permissions(std::fs::Permissions::from_mode(0o600))
-            .map_err(|e| e.to_string())?;
-    }
-    file.write_all(data).map_err(|e| e.to_string())
-}
-
 pub fn detect_state(config: &NodeConfig, service: &str) -> NodeState {
     if config.relay_url.is_none() || config.node_token.is_none() {
         return NodeState::Unconfigured;

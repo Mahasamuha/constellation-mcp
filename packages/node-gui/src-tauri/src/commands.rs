@@ -34,27 +34,16 @@ pub fn save_settings(
         crate::cli::run(&["node", "rename", host])?;
     }
 
-    let path = config::config_dir().join("node.yaml");
-
-    // Preserve fields we don't manage (e.g. node_token)
-    let mut map = match std::fs::read_to_string(&path) {
-        Ok(s) => serde_yaml::from_str::<serde_yaml::Value>(&s)
-            .unwrap_or_else(|_| serde_yaml::Value::Mapping(Default::default())),
-        Err(_) => serde_yaml::Value::Mapping(Default::default()),
-    };
-
-    if let serde_yaml::Value::Mapping(ref mut m) = map {
-        if !relay_url.is_empty() {
-            m.insert("relay_url".into(), relay_url.into());
-        }
-        if !host.is_empty() {
-            m.insert("host".into(), host.into());
-        }
-        m.insert("max_file_size_kb".into(), max_file_size_kb.into());
+    // Everything else is written by the CLI too — node-gui never touches node.yaml
+    // directly, so there's exactly one implementation of "persist node config safely".
+    let max_file_size_kb_str = max_file_size_kb.to_string();
+    let mut args = vec!["node", "config", "set", "--max-file-size-kb", &max_file_size_kb_str];
+    if !relay_url.is_empty() {
+        args.push("--relay-url");
+        args.push(relay_url);
     }
+    crate::cli::run(&args)?;
 
-    let content = serde_yaml::to_string(&map).map_err(|e| e.to_string())?;
-    config::write_secure(&path, content.as_bytes())?;
     crate::refresh_tray(&app);
     Ok(())
 }

@@ -63,27 +63,12 @@ export function registerNodeCommands(program: Command): void {
         try { return loadNodeConfig(getConfigDir()).host; } catch { return undefined; }
       })();
 
-      const dcParams: Record<string, string> = { scope: "agent:register" };
-      if (existingHost) dcParams["host"] = existingHost;
-
-      // Request a device code.
-      const dcRes = await fetch(`${relayUrl}/oauth/device/code`, {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams(dcParams),
-      });
-      if (!dcRes.ok) {
-        console.error("Failed to start device flow:", await dcRes.text());
+      const dcResult = await requestDeviceCode(relayUrl, existingHost);
+      if (!dcResult.ok) {
+        console.error("Failed to start device flow:", dcResult.error);
         process.exit(1);
       }
-      const dc = await dcRes.json() as {
-        device_code: string;
-        user_code: string;
-        verification_uri: string;
-        verification_uri_complete: string;
-        expires_in: number;
-        interval: number;
-      };
+      const dc = dcResult.data;
 
       console.log(`\nOpen the following URL to authenticate (opening browser automatically):`);
       console.log(`  ${dc.verification_uri_complete}\n`);
@@ -91,54 +76,93 @@ export function registerNodeCommands(program: Command): void {
 
       try { await open(dc.verification_uri_complete); } catch { /* ignore */ }
 
-      // Poll for completion.
-      const result = await poll(
-        async () => {
-          const r = await fetch(`${relayUrl}/oauth/token`, {
-            method: "POST",
-            headers: { "Content-Type": "application/x-www-form-urlencoded" },
-            body: new URLSearchParams({
-              grant_type: "urn:ietf:params:oauth:grant-type:device_code",
-              device_code: dc.device_code,
-            }),
-          });
-          if (r.status === 400) {
-            const body = await r.json() as { error: string };
-            if (body.error === "authorization_pending") return null;
-            if (body.error === "access_denied") {
-              console.error("\nAccess denied.");
-              process.exit(1);
-            }
-            console.error("\nDevice flow error:", body.error);
-            process.exit(1);
-          }
-          if (!r.ok) return null;
-          return r.json() as Promise<{ access_token: string; host: string }>;
-        },
-        dc.interval * 1000,
-        dc.expires_in * 1000
-      );
+      const outcome = await pollDeviceToken(relayUrl, dc.device_code, dc.interval * 1000, dc.expires_in * 1000);
 
-      if (!result) {
+      if (outcome === null) {
         console.error("Timed out waiting for authentication.");
+        process.exit(1);
+      }
+      if (outcome.kind === "denied") {
+        console.error("\nAccess denied.");
+        process.exit(1);
+      }
+      if (outcome.kind === "error") {
+        console.error("\nDevice flow error:", outcome.message);
         process.exit(1);
       }
 
       const dir = getConfigDir();
-      writeNodeConfig(dir, {
-        relay_url: relayUrl,
-        node_token: result.access_token,
-        host: result.host,
-        max_file_size_kb: 100,
-      });
-      // Create an empty paths.yaml if it doesn't exist.
-      try { loadPathsConfig(dir); } catch {
-        writePathsConfig(dir, { paths: [] });
-      }
+      persistNodeRegistration(dir, relayUrl, outcome.access_token, outcome.host);
 
-      console.log(`\nNode registered as '${result.host}'.`);
+      console.log(`\nNode registered as '${outcome.host}'.`);
       console.log(`Config written to: ${dir}`);
       console.log(`Add paths with: constellation node paths add <share> <path>`);
+    });
+
+  // -------------------------------------------------------------------------
+  // auth subcommands — internal, JSON-only primitives used by node-gui to
+  // drive its own auth UI without reimplementing the device-code client.
+  // Each prints exactly one JSON object to stdout and exits 0; the JSON
+  // payload itself (not the exit code) carries the outcome, so a calling
+  // process never has to choose between parsing stdout and parsing stderr.
+  // -------------------------------------------------------------------------
+
+  const auth = node.command("auth").description("Internal device-code auth primitives (used by node-gui)");
+
+  auth
+    .command("device-code")
+    .description("Request a device code from the relay")
+    .requiredOption("--relay <url>", "Relay URL")
+    .action(async (opts: { relay: string }) => {
+      try {
+        assertSecureRelayUrl(opts.relay.replace(/^http/, "ws"));
+      } catch (err) {
+        console.log(JSON.stringify({ ok: false, error: (err as Error).message }));
+        return;
+      }
+      const existingHost = (() => {
+        try { return loadNodeConfig(getConfigDir()).host; } catch { return undefined; }
+      })();
+      console.log(JSON.stringify(await requestDeviceCode(opts.relay, existingHost)));
+    });
+
+  auth
+    .command("complete")
+    .description("Poll for device-code completion and persist the result")
+    .requiredOption("--relay <url>", "Relay URL")
+    .requiredOption("--device-code <code>", "Device code from 'node auth device-code'")
+    .requiredOption("--interval <seconds>", "Poll interval in seconds")
+    .requiredOption("--expires-in <seconds>", "Device code expiry in seconds")
+    .action(async (opts: { relay: string; deviceCode: string; interval: string; expiresIn: string }) => {
+      try {
+        assertSecureRelayUrl(opts.relay.replace(/^http/, "ws"));
+      } catch (err) {
+        console.log(JSON.stringify({ status: "error", message: (err as Error).message }));
+        return;
+      }
+
+      const outcome = await pollDeviceToken(
+        opts.relay,
+        opts.deviceCode,
+        parseInt(opts.interval, 10) * 1000,
+        parseInt(opts.expiresIn, 10) * 1000
+      );
+
+      if (outcome === null) {
+        console.log(JSON.stringify({ status: "timeout" }));
+        return;
+      }
+      if (outcome.kind === "denied") {
+        console.log(JSON.stringify({ status: "error", message: "Access denied." }));
+        return;
+      }
+      if (outcome.kind === "error") {
+        console.log(JSON.stringify({ status: "error", message: outcome.message }));
+        return;
+      }
+
+      persistNodeRegistration(getConfigDir(), opts.relay, outcome.access_token, outcome.host);
+      console.log(JSON.stringify({ status: "success", host: outcome.host }));
     });
 
   // -------------------------------------------------------------------------
@@ -326,6 +350,44 @@ export function registerNodeCommands(program: Command): void {
     .description("Print path to config directory")
     .action(() => console.log(getConfigDir()));
 
+  cfg
+    .command("set")
+    .description("Update relay_url/max_file_size_kb without re-registering (used by node-gui's settings save)")
+    .option("--relay-url <url>", "New relay URL")
+    .option("--max-file-size-kb <n>", "New max file size in KB")
+    .action((opts: { relayUrl?: string; maxFileSizeKb?: string }) => {
+      const dir = getConfigDir();
+      let nodeCfg: NodeConfig;
+      try {
+        nodeCfg = loadNodeConfig(dir);
+      } catch {
+        console.error("Error: node.yaml not found — run 'constellation node init' first");
+        process.exit(1);
+      }
+
+      const update: Partial<NodeConfig> = {};
+      if (opts.relayUrl) {
+        try {
+          assertSecureRelayUrl(opts.relayUrl.replace(/^http/, "ws"));
+        } catch (err) {
+          console.error("Error:", (err as Error).message);
+          process.exit(1);
+        }
+        update.relay_url = opts.relayUrl;
+      }
+      if (opts.maxFileSizeKb) {
+        const n = parseInt(opts.maxFileSizeKb, 10);
+        if (!Number.isFinite(n) || n <= 0) {
+          console.error("Error: --max-file-size-kb must be a positive integer");
+          process.exit(1);
+        }
+        update.max_file_size_kb = n;
+      }
+
+      writeNodeConfig(dir, { ...nodeCfg, ...update });
+      console.log("Config updated.");
+    });
+
   // -------------------------------------------------------------------------
   // paths subcommands
   // -------------------------------------------------------------------------
@@ -414,6 +476,89 @@ async function syncPaths(dir: string, candidatePaths?: PathEntry[]): Promise<voi
     }),
     "config_update_ok", "config_update_error"
   );
+}
+
+// ---------------------------------------------------------------------------
+// Device-code flow — shared by `node init` (human terminal output) and the
+// `node auth` subcommands (JSON output, used by node-gui as a subprocess) so
+// there's exactly one implementation of the relay device-code client and one
+// implementation of "persist a registration to disk."
+// ---------------------------------------------------------------------------
+
+interface DeviceCodeInfo {
+  device_code: string;
+  user_code: string;
+  verification_uri: string;
+  verification_uri_complete: string;
+  expires_in: number;
+  interval: number;
+}
+
+type DeviceCodeResult =
+  | { ok: true; data: DeviceCodeInfo }
+  | { ok: false; error: string };
+
+async function requestDeviceCode(relayUrl: string, existingHost?: string): Promise<DeviceCodeResult> {
+  const dcParams: Record<string, string> = { scope: "agent:register" };
+  if (existingHost) dcParams["host"] = existingHost;
+
+  const dcRes = await fetch(`${relayUrl}/oauth/device/code`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams(dcParams),
+  });
+  if (!dcRes.ok) return { ok: false, error: await dcRes.text() };
+  return { ok: true, data: await dcRes.json() as DeviceCodeInfo };
+}
+
+type DeviceTokenOutcome =
+  | { kind: "denied" }
+  | { kind: "error"; message: string }
+  | { kind: "success"; access_token: string; host: string };
+
+/** Polls until the device code is approved/denied/errors, or returns null on timeout. */
+async function pollDeviceToken(
+  relayUrl: string,
+  deviceCode: string,
+  intervalMs: number,
+  timeoutMs: number
+): Promise<DeviceTokenOutcome | null> {
+  return poll<DeviceTokenOutcome>(
+    async () => {
+      const r = await fetch(`${relayUrl}/oauth/token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "urn:ietf:params:oauth:grant-type:device_code",
+          device_code: deviceCode,
+        }),
+      });
+      if (r.status === 400) {
+        const body = await r.json() as { error: string };
+        if (body.error === "authorization_pending") return null;
+        if (body.error === "access_denied") return { kind: "denied" };
+        return { kind: "error", message: body.error };
+      }
+      if (!r.ok) return null;
+      const data = await r.json() as { access_token: string; host: string };
+      return { kind: "success", access_token: data.access_token, host: data.host };
+    },
+    intervalMs,
+    timeoutMs
+  );
+}
+
+function persistNodeRegistration(dir: string, relayUrl: string, accessToken: string, host: string): void {
+  writeNodeConfig(dir, {
+    relay_url: relayUrl,
+    node_token: accessToken,
+    host,
+    max_file_size_kb: 100,
+  });
+  // Create an empty paths.yaml if it doesn't exist.
+  try { loadPathsConfig(dir); } catch {
+    writePathsConfig(dir, { paths: [] });
+  }
 }
 
 // ---------------------------------------------------------------------------
