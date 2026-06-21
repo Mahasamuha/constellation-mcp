@@ -352,6 +352,92 @@ describe("relay executors revoke", () => {
   });
 });
 
+describe("relay sessions revoke", () => {
+  beforeEach(() => {
+    writeRelaySession(dir, {
+      relay_url: "https://relay.example.com",
+      access_token: "tok_valid",
+      access_token_expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.mocked(mockedConfirm).mockReset();
+  });
+
+  it("does not call the API when the user declines the confirmation", async () => {
+    vi.mocked(mockedConfirm).mockResolvedValue(false);
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { exitCode, out } = await runCli(["relay", "sessions", "revoke", "sess-1"], dir);
+
+    expect(exitCode).toBe(0);
+    expect(out).toContain("Cancelled.");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("revokes the session when the user confirms", async () => {
+    vi.mocked(mockedConfirm).mockResolvedValue(true);
+    const fetchMock = vi.fn(async (url: string, opts?: RequestInit) => {
+      expect(url).toBe("https://relay.example.com/api/sessions/sess-1");
+      expect(opts?.method).toBe("DELETE");
+      return new Response(null, { status: 204 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { exitCode, out } = await runCli(["relay", "sessions", "revoke", "sess-1"], dir);
+
+    expect(exitCode).toBe(0);
+    expect(out).toContain("Session revoked.");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("relay filters remove", () => {
+  beforeEach(() => {
+    writeRelaySession(dir, {
+      relay_url: "https://relay.example.com",
+      access_token: "tok_valid",
+      access_token_expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.mocked(mockedConfirm).mockReset();
+  });
+
+  it("does not call the API when the user declines the confirmation", async () => {
+    vi.mocked(mockedConfirm).mockResolvedValue(false);
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { exitCode, out } = await runCli(["relay", "filters", "remove", "filter-1"], dir);
+
+    expect(exitCode).toBe(0);
+    expect(out).toContain("Cancelled.");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("removes the filter when the user confirms", async () => {
+    vi.mocked(mockedConfirm).mockResolvedValue(true);
+    const fetchMock = vi.fn(async (url: string, opts?: RequestInit) => {
+      expect(url).toBe("https://relay.example.com/api/filters/filter-1");
+      expect(opts?.method).toBe("DELETE");
+      return new Response(null, { status: 204 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { exitCode, out } = await runCli(["relay", "filters", "remove", "filter-1"], dir);
+
+    expect(exitCode).toBe(0);
+    expect(out).toContain("Filter removed.");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // relay users remove — regression test for a route mismatch (was calling
 // DELETE /api/users/:username, a route the relay never registered, instead

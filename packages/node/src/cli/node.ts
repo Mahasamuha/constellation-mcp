@@ -15,7 +15,7 @@ import {
   pathsYamlPath,
   type NodeConfig,
 } from "../config.js";
-import { MAX_SHARE_INSTRUCTIONS_LENGTH, poll, assertSecureRelayUrl, type PathEntry } from "@constellation/shared";
+import { MAX_SHARE_INSTRUCTIONS_LENGTH, poll, confirm, assertSecureRelayUrl, type PathEntry } from "@constellation/shared";
 import {
   install,
   startService,
@@ -212,6 +212,8 @@ export function registerNodeCommands(program: Command): void {
     .command("rotate")
     .description("Request a new node token from the relay")
     .action(async () => {
+      const ok = await confirm("Rotate the node token? If no daemon is running to confirm the reconnect, the node will be disconnected until you start the service with the new token.");
+      if (!ok) { console.log("Cancelled."); return; }
       const dir = getConfigDir();
 
       // Prefer asking the running daemon to rotate on its own live connection — it
@@ -377,6 +379,8 @@ export function registerNodeCommands(program: Command): void {
     .argument("<share>", "Share to remove")
     .description("Remove a path share and sync to the relay")
     .action(async (share: string) => {
+      const ok = await confirm(`Remove share '${share}'? MCP clients will lose access to it immediately.`);
+      if (!ok) { console.log("Cancelled."); return; }
       const dir = getConfigDir();
       const cfg = loadPathsConfig(dir);
       const updatedPaths = cfg.paths.filter((p) => p.share !== share);

@@ -422,6 +422,8 @@ export function registerRelayCommands(program: Command): void {
     .argument("<filter-id>", "Filter ID to remove")
     .description("Remove a deny filter")
     .action(async (filterId: string) => {
+      const ok = await confirm(`Remove deny filter ${filterId}? This widens access — anything it was blocking becomes reachable again.`);
+      if (!ok) { console.log("Cancelled."); return; }
       const session = await getValidSession(cfgDir);
       await apiDelete(session, `/api/filters/${filterId}`);
       console.log("Filter removed.");
@@ -451,6 +453,8 @@ export function registerRelayCommands(program: Command): void {
     .argument("<session-id>", "Session ID to revoke")
     .description("Invalidate an MCP client session")
     .action(async (sessionId: string) => {
+      const ok = await confirm(`Revoke session ${sessionId}? The MCP client will need to re-authenticate.`);
+      if (!ok) { console.log("Cancelled."); return; }
       const session = await getValidSession(cfgDir);
       await apiDelete(session, `/api/sessions/${sessionId}`);
       console.log("Session revoked.");

@@ -15,6 +15,12 @@ import {
 import { startControlServer } from "./control.js";
 import { makeTempDir, cleanTempDir } from "./test/fixtures.js";
 
+vi.mock("@constellation/shared", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@constellation/shared")>();
+  return { ...actual, confirm: vi.fn() };
+});
+import { confirm as mockedConfirm } from "@constellation/shared";
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -86,6 +92,10 @@ let dir: string;
 
 beforeEach(async () => {
   dir = await makeTempDir();
+  // Default to "confirmed" so existing tests exercising paths remove/rotate (which
+  // now prompt) don't need to know about confirm() at all; tests that specifically
+  // care about the decline path override this per-test.
+  vi.mocked(mockedConfirm).mockReset().mockResolvedValue(true);
 });
 
 afterEach(async () => {
@@ -292,6 +302,17 @@ describe("node paths remove — errors", () => {
     expect(exitCode).toBe(1);
     expect(err).toContain("not found");
   });
+
+  it("does not touch local config when the user declines the confirmation", async () => {
+    vi.mocked(mockedConfirm).mockResolvedValue(false);
+    writePathsConfig(dir, { paths: [{ share: "existing", path: "/some/path" }] });
+
+    const { exitCode, out } = await runCli(["node", "paths", "remove", "existing"], dir);
+
+    expect(exitCode).toBe(0);
+    expect(out).toContain("Cancelled.");
+    expect(loadPathsConfig(dir).paths.map((p) => p.share)).toEqual(["existing"]);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -427,5 +448,19 @@ describe("node rotate — no daemon running", () => {
     expect(exitCode).toBe(0);
     expect(out).toContain("Start the node service to connect with the new token");
     expect(loadNodeConfig(dir).node_token).toBe("tok-rotated");
+  });
+
+  it("does not attempt rotation when the user declines the confirmation", async () => {
+    vi.mocked(mockedConfirm).mockResolvedValue(false);
+    writeNodeConfig(dir, { relay_url: `http://localhost:${port}`, node_token: "tok-original", host: "test-host" });
+    const connectionAttempted = vi.fn();
+    wss.once("connection", connectionAttempted);
+
+    const { exitCode, out } = await runCli(["node", "rotate"], dir);
+
+    expect(exitCode).toBe(0);
+    expect(out).toContain("Cancelled.");
+    expect(connectionAttempted).not.toHaveBeenCalled();
+    expect(loadNodeConfig(dir).node_token).toBe("tok-original");
   });
 });
