@@ -208,10 +208,8 @@ class HubSocket extends RelaySocket {
       return { request_id, error: { message: identity.message } };
     }
 
-    // Check permissions — for cross-share copy/move, dst_share is checked too.
-    const dstShare = (tool === "copy" || tool === "move") && typeof envelope["dst_share"] === "string"
-      ? envelope["dst_share"]
-      : null;
+    // Check permissions — for cross-share copy/move, the destination share is checked too.
+    const dstShare = resolveDstShare(envelope, tool, this.shareRegistry);
     const permission = checkRpcPermission(userOidcSub, share, dstShare, tool, this.cfg.shares);
     if (!permission.permitted) {
       return this.permissionDenied(request_id, tool, permission.share, userOidcSub, identity.username, permission.reason);
@@ -392,6 +390,26 @@ function guessShare(absoluteRoot: string, registry: Record<string, string>): str
     if (path === absoluteRoot) return name;
   }
   return "";
+}
+
+/**
+ * Resolves the destination share name for cross-share copy/move permission checks.
+ * Prefers the client-supplied dst_share; falls back to reverse-mapping dst_root the
+ * same way guessShare() does for the source share. FileExecutor independently accepts
+ * dst_root on its own (resolving it against its own share registry — see
+ * packages/shared/src/executor/index.ts), so this check must recognize the same shape
+ * or a destination reachable via dst_root alone would bypass the permission layer
+ * entirely.
+ */
+export function resolveDstShare(
+  envelope: RpcEnvelope,
+  tool: string,
+  registry: Record<string, string>
+): string | null {
+  if (tool !== "copy" && tool !== "move") return null;
+  if (typeof envelope["dst_share"] === "string") return envelope["dst_share"];
+  if (typeof envelope["dst_root"] === "string") return guessShare(envelope["dst_root"], registry) || null;
+  return null;
 }
 
 function writeTokenToEnvFile(envFile: string, token: string): void {
