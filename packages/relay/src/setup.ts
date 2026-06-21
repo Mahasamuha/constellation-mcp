@@ -60,7 +60,7 @@ setupRouter.get("/setup", async (_req: Request, res: Response) => {
   const csrfToken = generateToken();
   res.cookie("csrf_setup", csrfToken, {
     httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
+    secure: config.secureCookies,
     sameSite: "strict",
     maxAge: 30 * 60 * 1000,
   });
@@ -93,7 +93,7 @@ setupRouter.post("/setup", async (req: Request, res: Response) => {
     const newToken = generateToken();
     res.cookie("csrf_setup", newToken, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
+      secure: config.secureCookies,
       sameSite: "strict",
       maxAge: 30 * 60 * 1000,
     });

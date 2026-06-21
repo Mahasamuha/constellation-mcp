@@ -148,7 +148,7 @@ deviceRouter.get("/activate", async (req: Request, res: Response) => {
   // here on — the actual device_code bearer secret never needs to leave the polling device.
   res.cookie(`activate_pending_${pendingId}`, JSON.stringify({ state, codeVerifier, userCode: entry.userCode }), {
     httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
+    secure: config.secureCookies,
     maxAge: 10 * 60 * 1000,
     sameSite: "lax",
   });
@@ -192,7 +192,7 @@ deviceRouter.post("/activate/login", async (req: Request, res: Response) => {
   const csrfToken = generateToken();
   res.cookie("csrf_activate", csrfToken, {
     httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
+    secure: config.secureCookies,
     sameSite: "strict",
     maxAge: 15 * 60 * 1000,
   });
@@ -262,7 +262,7 @@ deviceRouter.get("/activate/callback", async (req: Request, res: Response) => {
   const csrfToken = generateToken();
   res.cookie("csrf_activate", csrfToken, {
     httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
+    secure: config.secureCookies,
     sameSite: "strict",
     maxAge: 15 * 60 * 1000,
   });
@@ -323,7 +323,7 @@ deviceRouter.post("/activate/confirm", async (req: Request, res: Response) => {
       const freshCsrf = generateToken();
       res.cookie("csrf_activate", freshCsrf, {
         httpOnly: true,
-        secure: process.env.NODE_ENV === "production",
+        secure: config.secureCookies,
         sameSite: "strict",
         maxAge: 15 * 60 * 1000,
       });

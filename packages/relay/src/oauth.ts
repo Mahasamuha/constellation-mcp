@@ -161,7 +161,7 @@ oauthRouter.get("/oauth/authorize", async (req: Request, res: Response) => {
       downstreamState: req.query["state"],
     }), {
       httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
+      secure: config.secureCookies,
       maxAge: 10 * 60 * 1000,
       sameSite: "strict",
     });
@@ -191,7 +191,7 @@ oauthRouter.get("/oauth/authorize", async (req: Request, res: Response) => {
     downstreamState: req.query["state"],
   }), {
     httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
+    secure: config.secureCookies,
     maxAge: 10 * 60 * 1000, // 10 minutes
     sameSite: "lax",
   });

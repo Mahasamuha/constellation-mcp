@@ -1,7 +1,21 @@
 import { parseEnvInt } from "@constellation/shared";
 
+// Cookies should only lack the Secure flag when RELAY_URL is explicitly http://
+// (e.g. local development behind no TLS). Anything unset or unparsable defaults
+// to secure rather than trusting NODE_ENV, which a non-Docker deploy may leave unset.
+function isRelayUrlSecure(): boolean {
+  const relayUrl = process.env["RELAY_URL"];
+  if (!relayUrl) return true;
+  try {
+    return new URL(relayUrl).protocol !== "http:";
+  } catch {
+    return true;
+  }
+}
+
 export const config = {
   port: parseEnvInt("PORT", 3000),
+  secureCookies: isRelayUrlSecure(),
   // "local" enables username/password auth with a built-in setup flow; anything
   // else (including unset) runs in OIDC mode against an upstream provider.
   authMode: (process.env["AUTH_MODE"] === "local" ? "local" : "oidc") as "local" | "oidc",
