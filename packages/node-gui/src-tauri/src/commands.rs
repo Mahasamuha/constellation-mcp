@@ -2,8 +2,8 @@ use crate::config;
 use tauri_plugin_autostart::ManagerExt;
 
 #[tauri::command]
-pub fn get_config() -> config::NodeConfig {
-    config::load_node_config()
+pub fn get_config() -> config::RendererNodeConfig {
+    config::RendererNodeConfig::from(&config::load_node_config())
 }
 
 #[tauri::command]

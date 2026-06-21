@@ -9,6 +9,27 @@ pub struct NodeConfig {
     pub max_file_size_kb: Option<u32>,
 }
 
+/// What `get_config` exposes to the webview. The renderer is the least-trusted part
+/// of this app (XSS, a compromised npm dependency, or local devtools access can all
+/// read whatever crosses into it) and never reads `node_token` — so the long-lived
+/// node credential stays Rust-side only, never serialized across the IPC boundary.
+#[derive(Debug, Serialize, Default, Clone)]
+pub struct RendererNodeConfig {
+    pub relay_url: Option<String>,
+    pub host: Option<String>,
+    pub max_file_size_kb: Option<u32>,
+}
+
+impl From<&NodeConfig> for RendererNodeConfig {
+    fn from(cfg: &NodeConfig) -> Self {
+        Self {
+            relay_url: cfg.relay_url.clone(),
+            host: cfg.host.clone(),
+            max_file_size_kb: cfg.max_file_size_kb,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum NodeState {
