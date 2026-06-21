@@ -128,6 +128,8 @@ model RelayPathFilter {
   scopeUser     User      @relation(fields: [scopeUserId], references: [id])
   scopeExecutor Executor? @relation(fields: [scopeExecutorId], references: [id])
 
+  @@index([scopeUserId])
+  @@index([scopeUserId, scopeExecutorId])
   @@map("relay_path_filters")
 }
 
