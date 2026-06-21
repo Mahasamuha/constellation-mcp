@@ -108,7 +108,7 @@ export function writeNodeConfig(dir: string, config: Partial<NodeConfig>): void 
     // file may not exist yet during init
   }
   Object.assign(parsed, config);
-  mkdirSync(dir, { recursive: true });
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
   atomicWriteFileSync(path, yaml.dump(parsed), { mode: 0o600 });
 }
 
@@ -139,7 +139,7 @@ export function loadPathsConfig(dir: string): PathsConfig {
 }
 
 export function writePathsConfig(dir: string, config: PathsConfig): void {
-  mkdirSync(dir, { recursive: true });
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
   atomicWriteFileSync(pathsYamlPath(dir), yaml.dump(config), { mode: 0o600 });
 }
 
@@ -221,7 +221,7 @@ export function loadRelaySession(dir: string): RelaySession {
 }
 
 export function writeRelaySession(dir: string, session: RelaySession): void {
-  mkdirSync(dir, { recursive: true });
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
   atomicWriteFileSync(relaySessionPath(dir), yaml.dump(session), { mode: 0o600 });
 }
 
