@@ -600,7 +600,7 @@ Delete a file or directory. If the target is a directory and `recursive` is abse
 
 ## Management API
 
-All `/api/*` endpoints require a `relay:manage`-scoped Bearer token obtained via `constellation relay login`. Tokens without that scope receive `403 insufficient_scope`.
+All `/api/*` endpoints (except `/api/status`) require a valid Bearer token obtained via `constellation relay login`. The token is an OAuth access token tied to a user session — there is no separate API key or scope requirement.
 
 Admin-only endpoints additionally require the session to be elevated (see `relay elevate`). Requests without admin privileges receive `403 ESCALATION_REQUIRED`.
 
@@ -608,6 +608,14 @@ All error responses follow:
 ```json
 { "error": "<code>", "error_description": "<human-readable>" }
 ```
+
+Common auth errors:
+
+| Status | `error` | Meaning |
+|---|---|---|
+| `401` | `unauthorized` | Bearer token missing |
+| `401` | `invalid_token` | Token expired or not found |
+| `403` | `ESCALATION_REQUIRED` | Admin endpoint — run `constellation relay elevate` |
 
 List endpoints support pagination via `limit` (default 100, max 1000) and `offset` (default 0) query parameters and return:
 ```json
@@ -775,6 +783,65 @@ Break-glass hub token creation. Requires an elevated admin session. Creates a us
 ```
 
 The token is returned once and not stored. Revoke via `DELETE /api/executors/:id/token`.
+
+---
+
+### `GET /api/activity`
+
+Activity log for the authenticated user. Returns tool calls, errors, rate limit hits, and executor connection events, newest first.
+
+**Query params**
+
+| Param | Description |
+|---|---|
+| `event_type` | Filter to one event type (optional). See table below. Returns `400` for unrecognised values. |
+| `limit` | Default 100, max 1000 |
+| `offset` | Default 0 |
+
+**Response `200`**
+```json
+{
+  "data": [
+    {
+      "id": 42,
+      "event_type": "tool_call",
+      "host": "home-server",
+      "tool": "read_file",
+      "share": "projects",
+      "request_id": "a3f9c2e1d4b85f2a...",
+      "duration_ms": 84,
+      "error_code": null,
+      "error_message": null,
+      "created_at": "2026-05-27T20:00:00.000Z"
+    }
+  ],
+  "total": 142,
+  "limit": 100,
+  "offset": 0
+}
+```
+
+**Event types**
+
+| `event_type` | Populated fields | Description |
+|---|---|---|
+| `tool_call` | `host`, `tool`, `share`, `request_id`, `duration_ms`; `error_code` + `error_message` when the executor returned an error | RPC reached the executor and a response was received |
+| `tool_error` | `host`, `tool`, `share`, `request_id`, `error_code` | RPC could not be delivered: `executor_offline`, `executor_disconnected`, or `timeout` |
+| `rate_limited` | `tool`, `share`, `request_id` | Call rejected before dispatch — per-user rate limit exceeded |
+| `executor_connect` | `host` | Executor opened a WebSocket connection |
+| `executor_disconnect` | `host`; `error_code` (`timeout` or `error`) for non-clean disconnects | Executor connection closed |
+
+The `request_id` on `tool_call`, `tool_error`, and `rate_limited` events matches the `request_id` field in the relay's structured log output, allowing activity entries to be correlated with log lines.
+
+The log is capped at `ACTIVITY_LOG_MAX_ENTRIES` rows per user (default 1000). Oldest rows are pruned every 5 minutes.
+
+---
+
+### `GET /api/admin/activity`
+
+Activity log entries with no associated user — `executor_connect`/`executor_disconnect` events for **hubs**, which aren't bound to any single user. Admins collectively own this data, since no individual user does. Newest first.
+
+Accepts the same `event_type`, `limit`, and `offset` query params, and returns the same response shape, as `GET /api/activity`. Entries are capped and pruned the same way, as their own ring buffer (`user_id IS NULL` rows are partitioned together by `ACTIVITY_LOG_MAX_ENTRIES`).
 
 ---
 
