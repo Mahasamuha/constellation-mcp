@@ -184,7 +184,7 @@ model AuthCode {
 }
 
 model DeviceCode {
-  deviceCode       String   @id @map("device_code")
+  deviceCodeHash   String   @id @map("device_code_hash")
   userCode         String   @unique @map("user_code")
   scope            String
   expiresAt        DateTime @map("expires_at")
