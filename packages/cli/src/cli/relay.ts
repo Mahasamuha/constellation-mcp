@@ -177,6 +177,7 @@ async function apiPost<T>(
     body: JSON.stringify(body),
   });
   if (!res.ok) die(res);
+  if (res.status === 204) return undefined as T;
   return res.json() as Promise<T>;
 }
 
@@ -501,7 +502,7 @@ export function registerRelayCommands(program: Command): void {
       const ok = await confirm(`Deactivate user '${username}'? Their sessions will become invalid.`);
       if (!ok) { console.log("Cancelled."); return; }
       const session = await getValidSession(cfgDir);
-      await apiDelete(session, `/api/users/${encodeURIComponent(username)}`);
+      await apiPost(session, `/api/users/${encodeURIComponent(username)}/deactivate`, {});
       console.log(`User '${username}' deactivated.`);
     });
 

@@ -353,6 +353,93 @@ describe("relay executors revoke", () => {
 });
 
 // ---------------------------------------------------------------------------
+// relay users remove — regression test for a route mismatch (was calling
+// DELETE /api/users/:username, a route the relay never registered, instead
+// of POST /api/users/:username/deactivate) compounded by apiPost choking on
+// the deactivate route's 204 No Content response.
+// ---------------------------------------------------------------------------
+
+describe("relay users remove", () => {
+  beforeEach(() => {
+    writeRelaySession(dir, {
+      relay_url: "https://relay.example.com",
+      access_token: "tok_valid",
+      access_token_expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.mocked(mockedConfirm).mockReset();
+  });
+
+  it("does not call the API when the user declines the confirmation", async () => {
+    vi.mocked(mockedConfirm).mockResolvedValue(false);
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { exitCode, out } = await runCli(["relay", "users", "remove", "alice"], dir);
+
+    expect(exitCode).toBe(0);
+    expect(out).toContain("Cancelled.");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("deactivates the user via POST .../deactivate and handles the 204 response", async () => {
+    vi.mocked(mockedConfirm).mockResolvedValue(true);
+    const fetchMock = vi.fn(async (url: string, opts?: RequestInit) => {
+      expect(url).toBe("https://relay.example.com/api/users/alice/deactivate");
+      expect(opts?.method).toBe("POST");
+      return new Response(null, { status: 204 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { exitCode, out } = await runCli(["relay", "users", "remove", "alice"], dir);
+
+    expect(exitCode).toBe(0);
+    expect(out).toContain("User 'alice' deactivated.");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// relay account deactivate — same apiPost/204 bug as users remove above hit
+// this command too; deleteRelaySession() ran after the now-fixed apiPost
+// call, so the local session file was previously never being cleared either.
+// ---------------------------------------------------------------------------
+
+describe("relay account deactivate", () => {
+  beforeEach(() => {
+    writeRelaySession(dir, {
+      relay_url: "https://relay.example.com",
+      access_token: "tok_valid",
+      access_token_expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.mocked(mockedConfirm).mockReset();
+  });
+
+  it("deactivates the account, handles the 204 response, and clears the local session", async () => {
+    vi.mocked(mockedConfirm).mockResolvedValue(true);
+    const fetchMock = vi.fn(async (url: string, opts?: RequestInit) => {
+      expect(url).toBe("https://relay.example.com/api/account/deactivate");
+      expect(opts?.method).toBe("POST");
+      return new Response(null, { status: 204 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { exitCode, out } = await runCli(["relay", "account", "deactivate"], dir);
+
+    expect(exitCode).toBe(0);
+    expect(out).toContain("Account deactivated.");
+    expect(existsSync(relaySessionPath(dir))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // relay user promote/demote — --relay given on the `relay` parent must reach
 // a subcommand nested two levels deep (relay -> user -> promote/demote).
 // ---------------------------------------------------------------------------
