@@ -14,6 +14,142 @@ afterEach(async () => {
   await cleanTempDir(root);
 });
 
+function rejected(result: { isError?: boolean; content: unknown }): boolean {
+  return result.isError === true && (result.content as { message?: string }).message === "Path rejected";
+}
+
+// FileExecutor.execute() is the literal chokepoint for path-traversal/symlink-escape
+// enforcement and cross-share resolution — reused by both node and hub. The tests
+// above only ever exercise the underlying tool functions with already-resolved
+// paths, bypassing this validation entirely. These call execute() directly.
+describe("FileExecutor path-traversal/symlink-escape boundary check", () => {
+  it("rejects an unregistered share name outright", async () => {
+    const executor = new FileExecutor({ docs: root }, 1024);
+
+    const result = await executor.execute("read_file", "nonexistent", { relative_path: "x.txt" });
+
+    expect(rejected(result)).toBe(true);
+  });
+
+  it("rejects a relative_path that traverses outside the share root via ../", async () => {
+    const executor = new FileExecutor({ docs: root }, 1024);
+
+    const result = await executor.execute("read_file", "docs", { relative_path: "../../etc/passwd" });
+
+    expect(rejected(result)).toBe(true);
+  });
+
+  it("rejects a symlink inside the share whose target resolves outside the share root", async () => {
+    const outside = await makeTempDir();
+    try {
+      const executor = new FileExecutor({ docs: root }, 1024);
+      await fs.writeFile(join(outside, "secret.txt"), "sensitive", "utf8");
+      await fs.symlink(join(outside, "secret.txt"), join(root, "link.txt"));
+
+      const result = await executor.execute("read_file", "docs", { relative_path: "link.txt" });
+
+      expect(rejected(result)).toBe(true);
+    } finally {
+      await cleanTempDir(outside);
+    }
+  });
+
+  it("rejects a write targeting the share root itself", async () => {
+    const executor = new FileExecutor({ docs: root }, 1024);
+
+    const result = await executor.execute("write_file", "docs", { relative_path: "", content: "x" });
+
+    expect(rejected(result)).toBe(true);
+  });
+
+  it("rejects a cross-share move whose dst_relative_path resolves to the destination share's root", async () => {
+    const otherRoot = await makeTempDir();
+    try {
+      const executor = new FileExecutor({ docs: root, other: otherRoot }, 1024);
+      await fs.writeFile(join(root, "src.txt"), "hi", "utf8");
+
+      const result = await executor.execute("move", "docs", {
+        src_relative_path: "src.txt",
+        dst_share: "other",
+        dst_relative_path: "",
+      });
+
+      expect(rejected(result)).toBe(true);
+    } finally {
+      await cleanTempDir(otherRoot);
+    }
+  });
+
+  it("resolves dst_share to a different registered share's root for cross-share copy", async () => {
+    const otherRoot = await makeTempDir();
+    try {
+      const executor = new FileExecutor({ docs: root, other: otherRoot }, 1024);
+      await fs.writeFile(join(root, "src.txt"), "hello", "utf8");
+
+      const result = await executor.execute("copy", "docs", {
+        src_relative_path: "src.txt",
+        dst_share: "other",
+        dst_relative_path: "copied.txt",
+      });
+
+      expect(result.isError).toBeUndefined();
+      await expect(fs.readFile(join(otherRoot, "copied.txt"), "utf8")).resolves.toBe("hello");
+    } finally {
+      await cleanTempDir(otherRoot);
+    }
+  });
+
+  it("rejects a dst_share name that isn't in the registry", async () => {
+    const executor = new FileExecutor({ docs: root }, 1024);
+    await fs.writeFile(join(root, "src.txt"), "hello", "utf8");
+
+    const result = await executor.execute("copy", "docs", {
+      src_relative_path: "src.txt",
+      dst_share: "nonexistent",
+      dst_relative_path: "copied.txt",
+    });
+
+    expect(rejected(result)).toBe(true);
+  });
+
+  it("resolves a raw dst_root directly when it matches a registered share's root (no dst_share)", async () => {
+    const otherRoot = await makeTempDir();
+    try {
+      const executor = new FileExecutor({ docs: root, other: otherRoot }, 1024);
+      await fs.writeFile(join(root, "src.txt"), "hello", "utf8");
+
+      const result = await executor.execute("copy", "docs", {
+        src_relative_path: "src.txt",
+        dst_root: otherRoot,
+        dst_relative_path: "copied.txt",
+      });
+
+      expect(result.isError).toBeUndefined();
+      await expect(fs.readFile(join(otherRoot, "copied.txt"), "utf8")).resolves.toBe("hello");
+    } finally {
+      await cleanTempDir(otherRoot);
+    }
+  });
+
+  it("rejects a dst_root that doesn't resolve to any registered share — a compromised relay can't smuggle in an arbitrary destination", async () => {
+    const unregistered = await makeTempDir();
+    try {
+      const executor = new FileExecutor({ docs: root }, 1024);
+      await fs.writeFile(join(root, "src.txt"), "hello", "utf8");
+
+      const result = await executor.execute("copy", "docs", {
+        src_relative_path: "src.txt",
+        dst_root: unregistered,
+        dst_relative_path: "copied.txt",
+      });
+
+      expect(rejected(result)).toBe(true);
+    } finally {
+      await cleanTempDir(unregistered);
+    }
+  });
+});
+
 describe("FileExecutor error sanitization", () => {
   it("strips the absolute path and raw fs message from an uncaught errno error", async () => {
     const executor = new FileExecutor({ docs: root }, 1024);
