@@ -90,6 +90,8 @@ For self-hosted options see [Self-hosted with Cloudflare Tunnel](docs/self-hoste
 
 To expose a shared multi-user machine (NAS, dev server, domain host) see [Hub Quick Start](HUB_QUICKSTART.md).
 
+Running self-hosted in production? See [docs/operations.md](docs/operations.md) for backup, restore, and upgrade guidance.
+
 ## Configuration
 
 ### Server (relay)

@@ -75,6 +75,9 @@ docker compose pull
 docker compose up -d
 ```
 
+For backup and restore guidance — and what to expect after restoring an
+older backup — see [docs/operations.md](operations.md).
+
 ## Troubleshooting
 
 **Tunnel not connecting** — check the `cloudflared` logs: `docker compose logs cloudflared`
