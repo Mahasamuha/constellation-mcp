@@ -51,6 +51,13 @@ export function registerNodeCommands(program: Command): void {
         process.exit(1);
       }
 
+      try {
+        assertSecureRelayUrl(relayUrl.replace(/^http/, "ws"));
+      } catch (err) {
+        console.error("Error:", (err as Error).message);
+        process.exit(1);
+      }
+
       // Pass existing host (if already configured) so the consent page can pre-fill it.
       const existingHost = (() => {
         try { return loadNodeConfig(getConfigDir()).host; } catch { return undefined; }

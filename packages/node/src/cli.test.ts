@@ -117,6 +117,38 @@ describe("node --help", () => {
 });
 
 // ---------------------------------------------------------------------------
+// node init — relay URL scheme validation
+// ---------------------------------------------------------------------------
+
+describe("node init — relay URL scheme validation", () => {
+  it("rejects a plaintext http:// relay URL for a non-localhost host before doing anything else", async () => {
+    const { exitCode, err } = await runCli(["node", "init", "--relay", "http://relay.example.com"], dir);
+    expect(exitCode).toBe(1);
+    expect(err).toContain("ws://");
+    expect(() => loadNodeConfig(dir)).toThrow();
+  });
+
+  it("allows a plaintext http:// relay URL for localhost", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, text: () => Promise.resolve("boom") }));
+    const { exitCode, err } = await runCli(["node", "init", "--relay", "http://localhost:3000"], dir);
+    vi.unstubAllGlobals();
+    // Scheme validation passes; the command fails later on the (mocked) device-code request instead.
+    expect(exitCode).toBe(1);
+    expect(err).not.toContain("ws://");
+    expect(err).toContain("Failed to start device flow");
+  });
+
+  it("allows a https:// relay URL", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, text: () => Promise.resolve("boom") }));
+    const { exitCode, err } = await runCli(["node", "init", "--relay", "https://relay.example.com"], dir);
+    vi.unstubAllGlobals();
+    expect(exitCode).toBe(1);
+    expect(err).not.toContain("ws://");
+    expect(err).toContain("Failed to start device flow");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // node config path
 // ---------------------------------------------------------------------------
 
