@@ -88,9 +88,11 @@ All numeric variables are validated at startup. A non-integer value causes the r
 | Variable | Default | Window | Denominator | Description |
 |---|---|---|---|---|
 | `RATE_LIMIT_TOOL_CALLS_PER_MIN` | `60` | 60 s | Per user | Standard MCP tool call limit |
-| `RATE_LIMIT_EXPENSIVE_TOOLS_PER_MIN` | `20` | 60 s | Per user | Limit for `grep_files`, `find_files`, and recursive `list_directory` |
-| `RATE_LIMIT_OAUTH_PER_15MIN` | `10` | 15 min | Per IP | Requests to `/oauth/token`, `/oauth/register`, `/oauth/device/code`, `/setup`, `/auth/login` |
+| `RATE_LIMIT_EXPENSIVE_TOOLS_PER_MIN` | `20` | 60 s | Per user | Limit for `grep_files`, `find_files`, recursive `list_directory`, **and any MCP tool not explicitly classified as "standard" in `router.ts`'s `classifyTool`** |
+| `RATE_LIMIT_OAUTH_PER_15MIN` | `10` | 15 min | Per IP | Requests to `/oauth/token` (non-device-code grants), `/oauth/register`, `/oauth/device/code`, `/setup`, `/auth/login` |
 | `RATE_LIMIT_DEVICE_POLL_PER_15MIN` | `200` | 15 min | Per IP | Requests to `/oauth/token` with `grant_type=device_code`. Device clients poll every 5 s for up to 15 min (≈180 requests); this must exceed that. |
+| `RATE_LIMIT_DEVICE_AUTH_PER_15MIN` | `20` | 15 min | Per IP | Requests to `/activate`, `/activate/login`, `/activate/callback`, `/activate/confirm` — the device-authorization consent flow |
+| `RATE_LIMIT_DEFAULT_PER_15MIN` | `10` | 15 min | Per IP | Catch-all for any HTTP route not explicitly classified in `app.ts`'s `classifyHttpRoute` (e.g. `/api/*`). Deliberately the strictest HTTP bucket — see [architecture.md](architecture.md#rate-limiting). `/healthz` and `/mcp` are explicitly exempt instead of falling here; see that doc for why. |
 | `RATE_LIMIT_WS_RECONNECT_PER_MIN` | `10` | 60 s | Per executor token | Executor WebSocket reconnect attempts |
 
 Rate limit state is in-memory. It is lost on relay restart, which is acceptable for single-instance deployments.

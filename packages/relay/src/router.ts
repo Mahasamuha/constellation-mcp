@@ -22,46 +22,62 @@ export interface RouteResult {
 }
 
 export interface RouterError {
-  code: "share_not_found" | "host_not_found" | "executor_offline" | "path_filtered" | "rate_limited" | "timeout" | "cross_host" | "ambiguous";
+  code: "share_not_found" | "host_not_found" | "executor_offline" | "path_filtered" | "timeout" | "cross_host" | "ambiguous";
   message: string;
 }
 
 // ---------------------------------------------------------------------------
 // Rate limiting — per-user sliding window
+//
+// Every MCP tool call hits exactly one bucket, decided by classifyTool(). Tools
+// must be explicitly listed in STANDARD_TOOLS to get the lenient bucket — anything
+// not listed (a tool added later and never classified here, as much as a tool
+// deliberately considered "expensive") falls through to the strict one. That's
+// deliberate: the failure mode for forgetting to classify a new tool is "rate
+// limited too aggressively," never "not rate limited at all." This is the one
+// and only enforcement point for tool-call rate limiting — every tool handler in
+// mcp.ts is required to go through checkToolRateLimit() via its registerTool()
+// wrapper before doing anything else, including tools (list_hosts, list_shares)
+// that never reach routeToolCall() below.
 // ---------------------------------------------------------------------------
 
 const toolCallTimestamps = new Map<string, number[]>();
 const expensiveToolTimestamps = new Map<string, number[]>();
 
+/** Tools cheap enough for the standard per-minute budget. Anything else — including
+ * any tool not listed here at all — uses the stricter expensive-tools budget. */
+const STANDARD_TOOLS = new Set([
+  "list_hosts",
+  "list_shares",
+  "open_file_browser",
+  "list_directory", // unless recursive: true — see classifyTool
+  "file_info",
+  "read_file",
+  "write_file",
+  "edit_file",
+  "copy",
+  "create_directory",
+  "delete",
+  "move",
+]);
 
-const EXPENSIVE_TOOLS = new Set(["grep_files", "find_files"]);
-
-function isExpensive(tool: string, params: Record<string, unknown>): boolean {
-  if (EXPENSIVE_TOOLS.has(tool)) return true;
-  if (tool === "list_directory" && params["recursive"] === true) return true;
-  return false;
+export function classifyTool(tool: string, params: Record<string, unknown>): "standard" | "expensive" {
+  if (tool === "list_directory" && params["recursive"] === true) return "expensive";
+  return STANDARD_TOOLS.has(tool) ? "standard" : "expensive";
 }
 
-function checkToolRateLimit(userId: string, tool: string, params: Record<string, unknown>): boolean {
+export function checkToolRateLimit(userId: string, tool: string, params: Record<string, unknown>): boolean {
   const now = Date.now();
   const window = 60_000;
 
-  const standardLimit = config.rateLimits.toolCallsPerMin;
-  const expensiveLimit = config.rateLimits.expensiveToolsPerMin;
+  const expensive = classifyTool(tool, params) === "expensive";
+  const limit = expensive ? config.rateLimits.expensiveToolsPerMin : config.rateLimits.toolCallsPerMin;
+  const timestamps = expensive ? expensiveToolTimestamps : toolCallTimestamps;
 
-  const standardTs = (toolCallTimestamps.get(userId) ?? []).filter((t) => now - t < window);
-  standardTs.push(now);
-  toolCallTimestamps.set(userId, standardTs);
-  if (standardTs.length > standardLimit) return false;
-
-  if (isExpensive(tool, params)) {
-    const expensiveTs = (expensiveToolTimestamps.get(userId) ?? []).filter((t) => now - t < window);
-    expensiveTs.push(now);
-    expensiveToolTimestamps.set(userId, expensiveTs);
-    if (expensiveTs.length > expensiveLimit) return false;
-  }
-
-  return true;
+  const ts = (timestamps.get(userId) ?? []).filter((t) => now - t < window);
+  ts.push(now);
+  timestamps.set(userId, ts);
+  return ts.length <= limit;
 }
 
 // ---------------------------------------------------------------------------
@@ -247,11 +263,6 @@ export async function routeToolCall(
 ): Promise<DispatchResult | RouterError> {
   const startTime = Date.now();
   const requestId = randomBytes(16).toString("hex");
-
-  if (!checkToolRateLimit(userId, tool, params)) {
-    logEvent({ userId, eventType: "rate_limited", tool, share, requestId });
-    return { code: "rate_limited", message: "Rate limit exceeded. Please slow down." };
-  }
 
   const resolved = await resolveShare(userId, share, host, userOidcSub);
   if ("code" in resolved) return resolved;

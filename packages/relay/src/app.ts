@@ -11,6 +11,7 @@ import { setupRouter, setupMiddleware } from "./setup.js";
 import { prisma } from "./db.js";
 import { createLogger } from "@constellation/shared";
 import { config } from "./config.js";
+import { classifyHttpRoute } from "./rate-limit-classify.js";
 
 const log = createLogger("app");
 
@@ -98,18 +99,39 @@ export const devicePollLimiter = rateLimit({
   message: { error: "rate_limit_exceeded" },
 });
 
-app.use("/oauth/token", (req, res, next) => {
-  const grant = (req.body as Record<string, unknown>)?.["grant_type"];
-  if (grant === "urn:ietf:params:oauth:grant-type:device_code") {
-    devicePollLimiter(req, res, next);
-  } else {
-    oauthLimiter(req, res, next);
+// The device-authorization consent flow (/activate*) — a separate bucket from
+// oauthLimiter since one flow spans several requests (code entry, login or OIDC
+// callback, consent), not the single round-trip oauthPer15Min is sized for.
+export const deviceAuthLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: config.rateLimits.deviceAuthPer15Min,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  message: { error: "rate_limit_exceeded" },
+});
+
+// Catch-all for any route not explicitly classified in the dispatcher below.
+export const defaultLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: config.rateLimits.defaultPer15Min,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  message: { error: "rate_limit_exceeded" },
+});
+
+/** Single rate-limit dispatcher — every request that reaches this point hits exactly
+ * one bucket, decided by classifyHttpRoute() (rate-limit-classify.ts). See that
+ * function for the exemptions and the unclassified-falls-through-to-strict rule. */
+app.use((req: Request, res: Response, next: NextFunction) => {
+  const bucket = classifyHttpRoute(req.path, (req.body as Record<string, unknown> | undefined)?.["grant_type"]);
+  switch (bucket) {
+    case "exempt": return next();
+    case "oauth": return oauthLimiter(req, res, next);
+    case "device-poll": return devicePollLimiter(req, res, next);
+    case "device-auth": return deviceAuthLimiter(req, res, next);
+    case "default": return defaultLimiter(req, res, next);
   }
 });
-app.use("/oauth/register", oauthLimiter);
-app.use("/oauth/device/code", oauthLimiter);
-app.use("/setup", oauthLimiter);
-app.use("/auth/login", oauthLimiter);
 
 app.use(setupMiddleware);
 

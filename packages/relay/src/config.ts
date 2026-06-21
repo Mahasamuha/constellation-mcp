@@ -23,6 +23,15 @@ export const config = {
     wsReconnectPerMin: parseEnvInt("RATE_LIMIT_WS_RECONNECT_PER_MIN", 10),
     oauthPer15Min: parseEnvInt("RATE_LIMIT_OAUTH_PER_15MIN", 10),
     devicePollPer15Min: parseEnvInt("RATE_LIMIT_DEVICE_POLL_PER_15MIN", 200),
+    // The device-authorization consent flow (/activate*) — a human walking through
+    // user-code entry, login, and consent. Sized a bit above oauthPer15Min since one
+    // flow spans multiple requests/routes.
+    deviceAuthPer15Min: parseEnvInt("RATE_LIMIT_DEVICE_AUTH_PER_15MIN", 20),
+    // Catch-all for any HTTP route not explicitly classified in app.ts's rate-limit
+    // dispatcher. Deliberately the strictest configurable HTTP bucket (same default as
+    // oauthPer15Min) — a route added later without updating that dispatcher is
+    // rate-limited too aggressively rather than not at all.
+    defaultPer15Min: parseEnvInt("RATE_LIMIT_DEFAULT_PER_15MIN", 10),
   },
   heartbeat: {
     intervalMs: parseEnvInt("HEARTBEAT_INTERVAL_SECONDS", 60) * 1000,

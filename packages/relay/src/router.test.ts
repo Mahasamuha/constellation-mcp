@@ -51,7 +51,7 @@ vi.mock("./hub.js", () => ({
 
 import { prisma } from "./db.js";
 import { getConnection, dispatchRpc } from "./hub.js";
-import { routeToolCall } from "./router.js";
+import { routeToolCall, checkToolRateLimit, classifyTool } from "./router.js";
 import { config } from "./config.js";
 
 // Typed access to mocked functions
@@ -89,67 +89,82 @@ beforeEach(() => {
 // Rate limiting
 // ---------------------------------------------------------------------------
 
-describe("rate limiting", () => {
-  it("allows calls within the standard limit", async () => {
+// checkToolRateLimit/classifyTool are the single enforcement point for tool-call rate
+// limiting (router.ts no longer self-checks inside routeToolCall — every caller,
+// including mcp.ts's registerTool() wrapper for tools that never reach routeToolCall
+// at all, like list_hosts/list_shares, goes through these directly). Tested as plain
+// functions rather than through routeToolCall/stubShare, since they need none of that
+// machinery.
+describe("classifyTool", () => {
+  it("classifies known cheap tools as standard", () => {
+    for (const tool of [
+      "list_hosts", "list_shares", "open_file_browser", "read_file", "write_file",
+      "edit_file", "file_info", "copy", "create_directory", "delete", "move",
+    ]) {
+      expect(classifyTool(tool, {})).toBe("standard");
+    }
+  });
+
+  it("classifies grep_files and find_files as expensive", () => {
+    expect(classifyTool("grep_files", {})).toBe("expensive");
+    expect(classifyTool("find_files", {})).toBe("expensive");
+  });
+
+  it("treats list_directory as expensive only when recursive", () => {
+    expect(classifyTool("list_directory", { recursive: true })).toBe("expensive");
+    expect(classifyTool("list_directory", {})).toBe("standard");
+    expect(classifyTool("list_directory", { recursive: false })).toBe("standard");
+  });
+
+  it("defaults an unclassified tool to expensive — the strict fallback for anything not explicitly listed", () => {
+    expect(classifyTool("some_future_tool_nobody_classified_yet", {})).toBe("expensive");
+  });
+});
+
+describe("checkToolRateLimit", () => {
+  it("allows calls within the standard limit", () => {
     config.rateLimits.toolCallsPerMin = 3;
-    stubShare();
     const u = uid();
 
-    const results = await Promise.all([
-      routeToolCall(u, "read_file", "projects", {}),
-      routeToolCall(u, "read_file", "projects", {}),
-    ]);
-
-    expect(results.every((r) => !("code" in r && (r as { code: string }).code === "rate_limited"))).toBe(true);
+    expect(checkToolRateLimit(u, "read_file", {})).toBe(true);
+    expect(checkToolRateLimit(u, "read_file", {})).toBe(true);
   });
 
-  it("returns rate_limited after exceeding standard limit", async () => {
+  it("rejects once the standard limit is exceeded", () => {
     config.rateLimits.toolCallsPerMin = 2;
-    stubShare();
     const u = uid();
 
-    await routeToolCall(u, "read_file", "projects", {});
-    await routeToolCall(u, "read_file", "projects", {});
-    const result = await routeToolCall(u, "read_file", "projects", {});
-
-    expect(result).toMatchObject({ code: "rate_limited" });
+    expect(checkToolRateLimit(u, "read_file", {})).toBe(true);
+    expect(checkToolRateLimit(u, "read_file", {})).toBe(true);
+    expect(checkToolRateLimit(u, "read_file", {})).toBe(false);
   });
 
-  it("returns rate_limited for expensive tool after exceeding expensive limit", async () => {
+  it("rejects an expensive tool once the stricter expensive limit is exceeded", () => {
     config.rateLimits.toolCallsPerMin = 100;
     config.rateLimits.expensiveToolsPerMin = 1;
-    stubShare();
     const u = uid();
 
-    await routeToolCall(u, "grep_files", "projects", {});
-    const result = await routeToolCall(u, "grep_files", "projects", {});
-
-    expect(result).toMatchObject({ code: "rate_limited" });
+    expect(checkToolRateLimit(u, "grep_files", {})).toBe(true);
+    expect(checkToolRateLimit(u, "grep_files", {})).toBe(false);
   });
 
-  it("treats recursive list_directory as expensive", async () => {
+  it("gates an unclassified tool by the expensive bucket, not the lenient standard one", () => {
     config.rateLimits.toolCallsPerMin = 100;
     config.rateLimits.expensiveToolsPerMin = 1;
-    stubShare();
     const u = uid();
 
-    await routeToolCall(u, "list_directory", "projects", { recursive: true });
-    const result = await routeToolCall(u, "list_directory", "projects", { recursive: true });
-
-    expect(result).toMatchObject({ code: "rate_limited" });
+    expect(checkToolRateLimit(u, "some_future_tool", {})).toBe(true);
+    expect(checkToolRateLimit(u, "some_future_tool", {})).toBe(false);
   });
 
-  it("does not rate-limit non-recursive list_directory as expensive", async () => {
+  it("standard and expensive calls from the same user count against independent buckets", () => {
+    config.rateLimits.toolCallsPerMin = 1;
     config.rateLimits.expensiveToolsPerMin = 1;
-    stubShare();
     const u = uid();
 
-    // Two non-recursive calls should both pass the expensive check
-    const r1 = await routeToolCall(u, "list_directory", "projects", { recursive: false });
-    const r2 = await routeToolCall(u, "list_directory", "projects", { recursive: false });
-
-    expect((r1 as { code?: string }).code).not.toBe("rate_limited");
-    expect((r2 as { code?: string }).code).not.toBe("rate_limited");
+    expect(checkToolRateLimit(u, "read_file", {})).toBe(true); // consumes the standard bucket
+    expect(checkToolRateLimit(u, "grep_files", {})).toBe(true); // independent expensive bucket
+    expect(checkToolRateLimit(u, "grep_files", {})).toBe(false); // expensive bucket now exhausted
   });
 });
 
