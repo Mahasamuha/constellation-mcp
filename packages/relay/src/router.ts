@@ -273,14 +273,14 @@ export async function routeToolCall(
   // Scoped to the source's already-resolved host — cross-host copy/move is rejected
   // below regardless, so there's never a valid reason to consider any other host.
   let effectiveParams = params;
-  if ((tool === "copy" || tool === "move") && typeof params["dst_share"] === "string") {
-    const dstShare = params["dst_share"];
-    const dstResolved = await resolveShare(userId, dstShare, executorHost, userOidcSub);
+  const dstShareParam = typeof params["dst_share"] === "string" ? params["dst_share"] : undefined;
+  if ((tool === "copy" || tool === "move") && dstShareParam !== undefined) {
+    const dstResolved = await resolveShare(userId, dstShareParam, executorHost, userOidcSub);
     if ("code" in dstResolved) return dstResolved;
     if (dstResolved.executorId !== executorId) {
       return {
         code: "cross_host",
-        message: `'${share}' is on '${executorHost}' and '${dstShare}' is on '${dstResolved.host}' — cross-host move/copy is not supported`,
+        message: `'${share}' is on '${executorHost}' and '${dstShareParam}' is on '${dstResolved.host}' — cross-host move/copy is not supported`,
       };
     }
     effectiveParams = { ...params, dst_root: dstResolved.absoluteRoot };
@@ -289,21 +289,26 @@ export async function routeToolCall(
   // Apply relay-side deny filters — check every path field supplied for this call.
   // Use join() rather than string concatenation so traversal sequences (e.g. "../../x")
   // are normalized before filter matching — otherwise a crafted relative_path can bypass filters.
-  const pathsToFilter: string[] = [];
+  // `label` is share-name + client-supplied relative path, never the resolved absolute
+  // filesystem path — a filter meant to hide a sensitive subpath shouldn't surface its
+  // absolute location to the client in the denial message. The absolute path is still
+  // logged server-side below.
+  const pathsToFilter: Array<{ absolute: string; label: string }> = [];
   const relPath = typeof effectiveParams["relative_path"] === "string" ? effectiveParams["relative_path"] : "";
-  pathsToFilter.push(relPath ? join(absoluteRoot, relPath) : absoluteRoot);
+  pathsToFilter.push({ absolute: relPath ? join(absoluteRoot, relPath) : absoluteRoot, label: relPath ? `${share}/${relPath}` : share });
   const srcRelPath = typeof effectiveParams["src_relative_path"] === "string" ? effectiveParams["src_relative_path"] : "";
-  if (srcRelPath) pathsToFilter.push(join(absoluteRoot, srcRelPath));
+  if (srcRelPath) pathsToFilter.push({ absolute: join(absoluteRoot, srcRelPath), label: `${share}/${srcRelPath}` });
   const dstRelPath = typeof effectiveParams["dst_relative_path"] === "string" ? effectiveParams["dst_relative_path"] : "";
   if (dstRelPath) {
     const dstRoot = typeof effectiveParams["dst_root"] === "string" ? effectiveParams["dst_root"] : absoluteRoot;
-    pathsToFilter.push(join(dstRoot, dstRelPath));
+    const dstShareLabel = dstShareParam ?? share;
+    pathsToFilter.push({ absolute: join(dstRoot, dstRelPath), label: `${dstShareLabel}/${dstRelPath}` });
   }
 
-  for (const candidatePath of pathsToFilter) {
-    if (await isPathFiltered(userId, executorId, candidatePath)) {
-      log.info({ userId, executorId, tool, candidatePath }, "Path blocked by relay filter");
-      return { code: "path_filtered", message: `Path blocked by relay filter: ${candidatePath}` };
+  for (const candidate of pathsToFilter) {
+    if (await isPathFiltered(userId, executorId, candidate.absolute)) {
+      log.info({ userId, executorId, tool, candidatePath: candidate.absolute }, "Path blocked by relay filter");
+      return { code: "path_filtered", message: `Path blocked by relay filter: ${candidate.label}` };
     }
   }
 

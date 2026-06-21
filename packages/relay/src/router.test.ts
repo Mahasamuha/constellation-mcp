@@ -286,7 +286,11 @@ describe("path filtering", () => {
       relative_path: "secrets/creds.txt",
     });
 
-    expect(result).toMatchObject({ code: "path_filtered" });
+    expect(result).toMatchObject({
+      code: "path_filtered",
+      message: "Path blocked by relay filter: projects/secrets/creds.txt",
+    });
+    expect((result as { message: string }).message).not.toContain("/home/user/projects");
   });
 
   it("returns path_filtered when a regex filter blocks the path", async () => {
