@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { readdirSync } from "node:fs";
 import { writeNodeConfig, writeNodeToken, clearPreviousToken, loadNodeConfig } from "./config.js";
 import { makeTempDir, cleanTempDir } from "./test/fixtures.js";
 
@@ -44,5 +45,13 @@ describe("clearPreviousToken", () => {
   it("is a no-op when there is nothing to clear", () => {
     expect(() => clearPreviousToken(dir)).not.toThrow();
     expect(loadNodeConfig(dir).node_token).toBe("tok-original");
+  });
+});
+
+describe("atomic writes", () => {
+  it("leaves no leftover temp file behind after writeNodeToken", () => {
+    writeNodeToken(dir, "tok-rotated");
+
+    expect(readdirSync(dir)).toEqual(["node.yaml"]);
   });
 });

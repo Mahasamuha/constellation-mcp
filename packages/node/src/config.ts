@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, mkdirSync, unlinkSync } from "node:fs";
+import { readFileSync, writeFileSync, renameSync, mkdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { homedir, platform } from "node:os";
 import yaml from "js-yaml";
@@ -22,6 +22,19 @@ export function configDir(override?: string): string {
 
 export function nodeYamlPath(dir: string): string { return join(dir, "node.yaml"); }
 export function pathsYamlPath(dir: string): string { return join(dir, "paths.yaml"); }
+
+/**
+ * Writes via a temp file + rename so a crash mid-write can never leave `path` holding
+ * a torn/partial file. rename(2) is a single atomic syscall — readers only ever see
+ * the old or the new complete content, never something in between. This protects
+ * against file corruption from an interrupted write; it's not a durability guarantee
+ * against power loss (no fsync), which isn't a concern worth solving for local config.
+ */
+function atomicWriteFileSync(path: string, data: string, options: { mode: number }): void {
+  const tmpPath = `${path}.tmp-${process.pid}-${Date.now()}`;
+  writeFileSync(tmpPath, data, options);
+  renameSync(tmpPath, path);
+}
 
 // ---------------------------------------------------------------------------
 // node.yaml
@@ -73,7 +86,7 @@ export function writeNodeToken(dir: string, token: string): void {
   const parsed = yaml.load(raw) as Partial<NodeConfig>;
   if (parsed.node_token) parsed.previous_node_token = parsed.node_token;
   parsed.node_token = token;
-  writeFileSync(path, yaml.dump(parsed), { mode: 0o600 });
+  atomicWriteFileSync(path, yaml.dump(parsed), { mode: 0o600 });
 }
 
 /** Drops previous_node_token once a connection using the current token has succeeded. */
@@ -83,7 +96,7 @@ export function clearPreviousToken(dir: string): void {
   const parsed = yaml.load(raw) as Partial<NodeConfig>;
   if (parsed.previous_node_token === undefined) return;
   delete parsed.previous_node_token;
-  writeFileSync(path, yaml.dump(parsed), { mode: 0o600 });
+  atomicWriteFileSync(path, yaml.dump(parsed), { mode: 0o600 });
 }
 
 export function writeNodeConfig(dir: string, config: Partial<NodeConfig>): void {
@@ -96,7 +109,7 @@ export function writeNodeConfig(dir: string, config: Partial<NodeConfig>): void 
   }
   Object.assign(parsed, config);
   mkdirSync(dir, { recursive: true });
-  writeFileSync(path, yaml.dump(parsed), { mode: 0o600 });
+  atomicWriteFileSync(path, yaml.dump(parsed), { mode: 0o600 });
 }
 
 // ---------------------------------------------------------------------------
@@ -127,7 +140,7 @@ export function loadPathsConfig(dir: string): PathsConfig {
 
 export function writePathsConfig(dir: string, config: PathsConfig): void {
   mkdirSync(dir, { recursive: true });
-  writeFileSync(pathsYamlPath(dir), yaml.dump(config), { mode: 0o600 });
+  atomicWriteFileSync(pathsYamlPath(dir), yaml.dump(config), { mode: 0o600 });
 }
 
 /**
@@ -209,7 +222,7 @@ export function loadRelaySession(dir: string): RelaySession {
 
 export function writeRelaySession(dir: string, session: RelaySession): void {
   mkdirSync(dir, { recursive: true });
-  writeFileSync(relaySessionPath(dir), yaml.dump(session), { mode: 0o600 });
+  atomicWriteFileSync(relaySessionPath(dir), yaml.dump(session), { mode: 0o600 });
 }
 
 export function deleteRelaySession(dir: string): void {
