@@ -176,6 +176,16 @@ so concurrent dispatches cannot race to double-spawn.
 timeout, crash), the subnode is deleted. The next request from that user creates
 a fresh subnode.
 
+**Global subnode cap.** `subnode_workers.max` bounds workers *per user* — it
+does not limit how many distinct users can have a subnode at once. On a
+directory-backed hub (LDAP/AD), every distinct account that connects gets its
+own subnode, so a deployment with many users has no built-in ceiling on total
+worker processes unless `max_concurrent_subnodes` is set. When the cap is hit,
+a request from a *new* user is rejected with a capacity error; requests from
+users who already have a subnode are unaffected. Defaults to `0` (unlimited) —
+the per-user cap and idle eviction above already bound steady-state growth, so
+this is an opt-in extra ceiling, not a mandatory one.
+
 ---
 
 ## 4. Permission Model
@@ -262,6 +272,9 @@ audit_log: /var/log/constellation/hub-audit.jsonl
 # Optional
 env_file: /etc/constellation/hub.env       # Source CONSTELLATION_HUB_TOKEN from this file
 subnode_rpc_timeout_seconds: 30            # Timeout per in-flight tool call IPC round-trip (default: 30)
+max_concurrent_subnodes: 0                 # Global cap on distinct users with a subnode at once.
+                                           # 0 = unlimited (default). Independent of subnode_workers.max,
+                                           # which only caps workers per user — see "Global subnode cap" above.
 
 subnode_workers:
   min: 1                                   # Always-warm workers per user (floor: 1; default: 1)

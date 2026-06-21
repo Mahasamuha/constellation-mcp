@@ -152,6 +152,7 @@ function baseConfig(overrides: Partial<HubConfig> = {}): HubConfig {
     relay_url: "https://relay.example.com",
     hub_name: "test-hub",
     subnode_workers: { min: 1, max: 1, warm_idle_seconds: 300, burst_idle_seconds: 30, queue_timeout: 0.5 },
+    max_concurrent_subnodes: 0,
     subnode_rpc_timeout_seconds: 30,
     subnode_uid: {},
     subnode_gid: {},

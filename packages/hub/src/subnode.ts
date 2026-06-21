@@ -224,7 +224,8 @@ export type DispatchError =
   | { kind: "gid_blocked"; message: string }
   | { kind: "spawn_failed"; message: string }
   | { kind: "timeout"; message: string }
-  | { kind: "worker_error"; message: string };
+  | { kind: "worker_error"; message: string }
+  | { kind: "subnode_limit"; message: string };
 
 export function isDispatchError(v: DispatchResult | DispatchError): v is DispatchError {
   return "kind" in v;
@@ -300,6 +301,16 @@ export class SubnodePool {
 
     let subnode = this.subnodes.get(identity.username);
     if (!subnode) {
+      // max_concurrent_subnodes (0 = unlimited) bounds total distinct identities, independent
+      // of subnode_workers.max which only bounds workers *per* identity — see HubConfig for
+      // why this only gates new identities, not further requests from ones already tracked.
+      const limit = this.cfg.max_concurrent_subnodes;
+      if (limit > 0 && this.subnodes.size >= limit) {
+        return {
+          kind: "subnode_limit",
+          message: "Hub is at capacity for the number of distinct users it can serve concurrently. Please try again shortly.",
+        };
+      }
       subnode = { username: identity.username, workers: [], queue: [], lock: Promise.resolve() };
       this.subnodes.set(identity.username, subnode);
     }

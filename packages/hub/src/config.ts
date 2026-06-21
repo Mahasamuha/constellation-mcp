@@ -61,6 +61,17 @@ export interface HubConfig {
   hub_name: string;
   env_file?: string;
   subnode_workers: SubnodeWorkersConfig;
+  /**
+   * Global ceiling on distinct OS identities (subnodes) tracked concurrently — independent
+   * of subnode_workers.max, which only bounds worker processes *per* identity. Without this,
+   * an LDAP/AD-backed deployment with many distinct accounts has no overall limit on total
+   * worker processes. Mirrors Samba's `max smbd processes` (a global cap, default unlimited,
+   * reject-on-exceeded) layered on top of its per-share `max connections` — same shape as
+   * this hub's existing per-user cap plus idle eviction (`max connections` and `deadtime`).
+   * 0 means unlimited, matching that same default — the per-identity cap and idle eviction
+   * already bound steady-state growth, so this is an opt-in extra ceiling, not a mandatory one.
+   */
+  max_concurrent_subnodes: number;
   subnode_rpc_timeout_seconds: number;
   subnode_uid: SubnodeUidConfig;
   subnode_gid: SubnodeGidConfig;
@@ -87,6 +98,7 @@ export function loadHubConfig(path: string): HubConfig {
 
   const env_file = str(parsed, "env_file") || undefined;
   const subnode_rpc_timeout_seconds = num(parsed, "subnode_rpc_timeout_seconds") ?? 30;
+  const max_concurrent_subnodes = num(parsed, "max_concurrent_subnodes") ?? 0;
 
   const shares = parseShares(parsed);
   const subnode_uid = parseSubnodeUid((parsed["subnode_uid"] ?? {}) as Record<string, unknown>);
@@ -99,6 +111,7 @@ export function loadHubConfig(path: string): HubConfig {
     hub_name,
     env_file,
     subnode_workers,
+    max_concurrent_subnodes,
     subnode_rpc_timeout_seconds,
     subnode_uid,
     subnode_gid,
@@ -124,6 +137,10 @@ export function validateHubConfig(cfg: HubConfig): ValidationResult {
 
   if (cfg.subnode_rpc_timeout_seconds <= 0) {
     errors.push("subnode_rpc_timeout_seconds must be a positive integer");
+  }
+
+  if (cfg.max_concurrent_subnodes < 0) {
+    errors.push("max_concurrent_subnodes must be >= 0 (0 means unlimited)");
   }
 
   const w = cfg.subnode_workers;

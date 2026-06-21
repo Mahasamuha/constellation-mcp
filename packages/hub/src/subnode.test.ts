@@ -100,11 +100,16 @@ function workersConfig(overrides: Partial<SubnodeWorkersConfig> = {}): SubnodeWo
   };
 }
 
-function configWith(subnode_uid: SubnodeUidConfig, workers?: Partial<SubnodeWorkersConfig>): HubConfig {
+function configWith(
+  subnode_uid: SubnodeUidConfig,
+  workers?: Partial<SubnodeWorkersConfig>,
+  maxConcurrentSubnodes = 0
+): HubConfig {
   return {
     relay_url: "https://relay.example.com",
     hub_name: "test-hub",
     subnode_workers: workersConfig(workers),
+    max_concurrent_subnodes: maxConcurrentSubnodes,
     subnode_rpc_timeout_seconds: 30,
     subnode_uid,
     subnode_gid: {},
@@ -450,5 +455,48 @@ describe("SubnodePool.dispatch", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  describe("max_concurrent_subnodes", () => {
+    const bob: ResolvedIdentity = { username: "bob", uid: 1001, gid: 1000, home: "/home/bob" };
+    const carol: ResolvedIdentity = { username: "carol", uid: 1002, gid: 1000, home: "/home/carol" };
+
+    it("rejects a new identity once the global cap is reached, without disturbing identities already tracked", async () => {
+      const pool = new SubnodePool(configWith({}, undefined, 1), {});
+
+      const d1 = pool.dispatch(identity, "list_directory", "docs", {}, "req-1");
+      await waitUntil(() => forkedChildren[0]?.hasPending("req-1") ?? false);
+      forkedChildren[0]!.respond("req-1");
+      expect(isDispatchError(await d1)).toBe(false);
+
+      // alice's subnode now occupies the one slot the cap allows — bob, a new
+      // identity, must be rejected rather than spawning a second one.
+      const bobResult = await pool.dispatch(bob, "list_directory", "docs", {}, "req-2");
+      expect(isDispatchError(bobResult)).toBe(true);
+      expect((bobResult as { kind: string }).kind).toBe("subnode_limit");
+      expect(forkedChildren.length).toBe(1);
+
+      // alice is already tracked, so the cap must not block her further requests.
+      const d3 = pool.dispatch(identity, "list_directory", "docs", {}, "req-3");
+      await waitUntil(() => forkedChildren[0]!.hasPending("req-3"));
+      forkedChildren[0]!.respond("req-3");
+      expect(isDispatchError(await d3)).toBe(false);
+
+      await pool.shutdown(0);
+    });
+
+    it("treats 0 (the default) as unlimited", async () => {
+      const pool = new SubnodePool(configWith({}, undefined, 0), {});
+
+      for (const [id, reqId] of [[identity, "req-1"], [bob, "req-2"], [carol, "req-3"]] as const) {
+        const d = pool.dispatch(id, "list_directory", "docs", {}, reqId);
+        await waitUntil(() => forkedChildren.at(-1)?.hasPending(reqId) ?? false);
+        forkedChildren.at(-1)!.respond(reqId);
+        expect(isDispatchError(await d)).toBe(false);
+      }
+      expect(forkedChildren.length).toBe(3);
+
+      await pool.shutdown(0);
+    });
   });
 });
