@@ -91,12 +91,17 @@ export const oauthLimiter = rateLimit({
 
 // Device code polling is high-frequency by design (5s interval, 15min TTL ≈ 180 polls).
 // Give it a separate, higher-capacity bucket so it doesn't exhaust the strict OAuth limit.
+// On trip, this bucket alone emits RFC 8628 §3.5's "slow_down" token-error response
+// (400 + {error: "slow_down"}) instead of a generic 429 — it's the only bucket whose
+// traffic is exclusively device-flow polling, so existing pollers that already
+// understand authorization_pending/access_denied can back off instead of hard-failing.
 export const devicePollLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   limit: config.rateLimits.devicePollPer15Min,
   standardHeaders: "draft-7",
   legacyHeaders: false,
-  message: { error: "rate_limit_exceeded" },
+  statusCode: 400,
+  message: { error: "slow_down" },
 });
 
 // The device-authorization consent flow (/activate*) — a separate bucket from

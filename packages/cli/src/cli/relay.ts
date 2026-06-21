@@ -249,7 +249,7 @@ export function registerRelayCommands(program: Command): void {
       try { await open(dc.verification_uri_complete); } catch { /* ignore */ }
 
       const result = await poll(
-        async () => {
+        async ({ intervalMs, setIntervalMs }) => {
           const r = await fetch(`${relayUrl}/oauth/token`, {
             method: "POST",
             headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -261,6 +261,7 @@ export function registerRelayCommands(program: Command): void {
           if (r.status === 400) {
             const body = await r.json() as { error: string };
             if (body.error === "authorization_pending") return null;
+            if (body.error === "slow_down") { setIntervalMs(intervalMs + 5000); return null; }
             console.error("\nDevice flow error:", body.error);
             process.exit(1);
           }
@@ -587,7 +588,7 @@ export function registerRelayCommands(program: Command): void {
       try { await open(dc.verification_uri_complete); } catch { /* ignore */ }
 
       const result = await poll(
-        async () => {
+        async ({ intervalMs, setIntervalMs }) => {
           const r = await fetch(`${relayUrl}/oauth/token`, {
             method: "POST",
             headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -599,6 +600,7 @@ export function registerRelayCommands(program: Command): void {
           if (r.status === 400) {
             const body = await r.json() as { error: string };
             if (body.error === "authorization_pending") return null;
+            if (body.error === "slow_down") { setIntervalMs(intervalMs + 5000); return null; }
             if (body.error === "access_denied") {
               console.error("\nEscalation denied. Ensure your account has admin privileges.");
               process.exit(1);
