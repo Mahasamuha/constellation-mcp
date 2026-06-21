@@ -32,6 +32,15 @@ export interface NodeConfig {
   node_token: string;
   host: string;
   max_file_size_kb: number;
+  /**
+   * The token displaced by the most recent rotation, kept until a connection using the
+   * new token is confirmed. The relay's pending-rotation window is time-bounded (see
+   * docs/architecture.md) — if the node never reconnects within it, the new token is
+   * revoked server-side while the old one stays valid. Without this field, a rotation
+   * that wrote the new token but failed to reconnect in time would leave node.yaml
+   * holding the only credential on disk, and that credential would already be dead.
+   */
+  previous_node_token?: string;
 }
 
 export function loadNodeConfig(dir: string): NodeConfig {
@@ -49,14 +58,31 @@ export function loadNodeConfig(dir: string): NodeConfig {
   if (!node_token) throw new Error("node.yaml: node_token is required");
   if (!host) throw new Error("node.yaml: host is required");
 
-  return { relay_url, node_token, host, max_file_size_kb };
+  const previous_node_token = str(parsed, "previous_node_token");
+
+  return { relay_url, node_token, host, max_file_size_kb, ...(previous_node_token ? { previous_node_token } : {}) };
 }
 
+/**
+ * Writes a newly-rotated token, preserving the token it displaces as
+ * previous_node_token until clearPreviousToken() confirms the new one works.
+ */
 export function writeNodeToken(dir: string, token: string): void {
   const path = nodeYamlPath(dir);
   const raw = readFileSync(path, "utf8");
   const parsed = yaml.load(raw) as Partial<NodeConfig>;
+  if (parsed.node_token) parsed.previous_node_token = parsed.node_token;
   parsed.node_token = token;
+  writeFileSync(path, yaml.dump(parsed), { mode: 0o600 });
+}
+
+/** Drops previous_node_token once a connection using the current token has succeeded. */
+export function clearPreviousToken(dir: string): void {
+  const path = nodeYamlPath(dir);
+  const raw = readFileSync(path, "utf8");
+  const parsed = yaml.load(raw) as Partial<NodeConfig>;
+  if (parsed.previous_node_token === undefined) return;
+  delete parsed.previous_node_token;
   writeFileSync(path, yaml.dump(parsed), { mode: 0o600 });
 }
 

@@ -1,6 +1,6 @@
 import { RelaySocket, type PathEntry, type RpcEnvelope } from "@constellation/shared";
 import type { NodeConfig } from "./config.js";
-import { writeNodeToken, buildConfigUpdatePaths } from "./config.js";
+import { writeNodeToken, clearPreviousToken, buildConfigUpdatePaths } from "./config.js";
 import { handleRpc, ShareRegistryCache } from "./rpc.js";
 
 export interface ConnectionOptions {
@@ -9,8 +9,22 @@ export interface ConnectionOptions {
   getPaths: () => PathEntry[];
 }
 
+/** Bounds how long rotateToken() waits for the relay's reply and, separately, for the
+ * resulting reconnect to succeed — comfortably under the relay's pending-rotation TTL
+ * (5 minutes, see docs/architecture.md) so a caller never hangs past the point where the
+ * rotation would have expired server-side anyway. */
+const ROTATE_TIMEOUT_MS = 30_000;
+
+interface RotationState {
+  resolve: () => void;
+  reject: (err: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
+}
+
 export class NodeConnection extends RelaySocket {
   private readonly registryCache = new ShareRegistryCache();
+  private rotationState: RotationState | null = null;
+  private awaitingRotationConfirm = false;
 
   constructor(private readonly opts: ConnectionOptions) {
     super({ logModule: "node:connection", path: "/executor/connect" });
@@ -30,9 +44,42 @@ export class NodeConnection extends RelaySocket {
     this.send({ type: "update_host", host });
   }
 
-  /** Sends a rotate_token request. */
-  sendRotateToken(): void {
-    this.send({ type: "rotate_token" });
+  /**
+   * Drives the documented node-initiated rotation handshake on this live connection:
+   * requests a new token, writes it once the relay grants it, and waits for the resulting
+   * reconnect (triggered by closing this socket) to actually succeed before resolving.
+   * Rejects if the relay refuses the request, or if confirmation doesn't arrive within
+   * ROTATE_TIMEOUT_MS.
+   */
+  rotateToken(): Promise<void> {
+    if (this.rotationState) {
+      return Promise.reject(new Error("A token rotation is already in progress"));
+    }
+    return new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.rotationState = null;
+        this.awaitingRotationConfirm = false;
+        reject(new Error("Timed out waiting for rotation to complete"));
+      }, ROTATE_TIMEOUT_MS);
+      this.rotationState = { resolve, reject, timer };
+      this.send({ type: "rotate_token" });
+    });
+  }
+
+  /** Settles any in-flight rotateToken() call with a failure — used for relay-reported
+   * errors and for cleanup if the connection is stopped mid-rotation. */
+  private failRotation(err: Error): void {
+    if (!this.rotationState) return;
+    clearTimeout(this.rotationState.timer);
+    const { reject } = this.rotationState;
+    this.rotationState = null;
+    this.awaitingRotationConfirm = false;
+    reject(err);
+  }
+
+  override stop(): void {
+    this.failRotation(new Error("Connection stopped"));
+    super.stop();
   }
 
   protected getRelayUrl(): string {
@@ -45,6 +92,16 @@ export class NodeConnection extends RelaySocket {
 
   protected onOpen(): void {
     this.sendConfigUpdate();
+    if (this.awaitingRotationConfirm) {
+      this.awaitingRotationConfirm = false;
+      clearPreviousToken(this.opts.configDir);
+      if (this.rotationState) {
+        clearTimeout(this.rotationState.timer);
+        const { resolve } = this.rotationState;
+        this.rotationState = null;
+        resolve();
+      }
+    }
   }
 
   protected onMessage(msg: Record<string, unknown>): void {
@@ -67,16 +124,27 @@ export class NodeConnection extends RelaySocket {
       const token = msg["token"];
       if (typeof token !== "string") {
         this.log.warn("Received token_rotated without a token string");
+        this.failRotation(new Error("Relay sent token_rotated without a token"));
         return;
       }
       try {
         writeNodeToken(this.opts.configDir, token);
-        this.log.info("Token rotated and written to config");
-        // Reconnect with the new token.
+        this.log.info("Token rotated and written to config — reconnecting to confirm");
+        // Reconnect with the new token; onOpen() resolves the pending rotateToken() call
+        // once this reconnect actually succeeds.
+        this.awaitingRotationConfirm = true;
         this.ws?.close();
       } catch (err) {
         this.log.error({ err }, "Failed to write rotated token to config");
+        this.failRotation(err instanceof Error ? err : new Error(String(err)));
       }
+      return;
+    }
+
+    if (type === "rotate_token_error") {
+      const err = new Error(String(msg["error"] ?? "Token rotation failed"));
+      this.log.warn({ err }, "Relay rejected rotate_token");
+      this.failRotation(err);
       return;
     }
 

@@ -1,6 +1,23 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { WebSocketServer, type WebSocket as ServerSideSocket } from "ws";
-import { RelaySocket, type RelaySocketOptions } from "./relay-socket.js";
+import { RelaySocket, type RelaySocketOptions, assertSecureRelayUrl } from "./relay-socket.js";
+
+describe("assertSecureRelayUrl", () => {
+  it("never throws for wss://, regardless of host", () => {
+    expect(() => assertSecureRelayUrl("wss://example.com:1234/connect")).not.toThrow();
+  });
+
+  it.each(["localhost", "127.0.0.1", "127.5.2.9", "[::1]"])(
+    "allows ws:// to local host %s",
+    (host) => {
+      expect(() => assertSecureRelayUrl(`ws://${host}:1234/connect`)).not.toThrow();
+    }
+  );
+
+  it("refuses ws:// to a remote host", () => {
+    expect(() => assertSecureRelayUrl("ws://example.com:1234/connect")).toThrow(/non-localhost host/);
+  });
+});
 
 // Mirrors the private constants in relay-socket.ts.
 const PING_INTERVAL_MS = 30_000;

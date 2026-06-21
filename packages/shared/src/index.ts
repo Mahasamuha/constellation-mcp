@@ -6,7 +6,7 @@ export { evaluatePermissionBlob } from "./permissions.js";
 export type { RpcError, RpcResponse, PathEntry, RpcEnvelope } from "./rpc.js";
 export { MAX_SHARE_INSTRUCTIONS_LENGTH } from "./rpc.js";
 export { FileExecutor, type ToolResult } from "./executor/index.js";
-export { RelaySocket, type RelaySocketOptions } from "./relay-socket.js";
+export { RelaySocket, type RelaySocketOptions, assertSecureRelayUrl } from "./relay-socket.js";
 export { resolveQueueTimeout } from "./queue-timeout.js";
 export { poll, sleep, confirm } from "./cli-util.js";
 export { str, num } from "./config-util.js";

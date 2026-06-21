@@ -5,7 +5,7 @@ import { readFileSync, writeFileSync, mkdirSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 import WebSocket from "ws";
 import open from "open";
-import { poll } from "@constellation/shared";
+import { poll, assertSecureRelayUrl } from "@constellation/shared";
 import { loadHubConfig, validateHubConfig } from "./config.js";
 import { getpwnam } from "./identity.js";
 import { runHub, sourceEnvFile } from "./index.js";
@@ -331,6 +331,13 @@ WantedBy=multi-user.target
       }
 
       const wsUrl = cfg.relay_url.replace(/^http/, "ws") + "/executor/connect";
+
+      try {
+        assertSecureRelayUrl(wsUrl);
+      } catch (err) {
+        console.error("Error:", (err as Error).message);
+        process.exit(1);
+      }
 
       const newToken = await new Promise<string | null>((resolve) => {
         const ws = new WebSocket(wsUrl, { headers: { Authorization: `Bearer ${token}` } });

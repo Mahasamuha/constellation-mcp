@@ -3,13 +3,16 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { Command } from "commander";
 import { promises as fs } from "node:fs";
 import { join } from "node:path";
+import type { Server } from "node:net";
 import { WebSocketServer, type WebSocket as WSClient } from "ws";
 import { registerNodeCommands } from "./cli/node.js";
 import {
   writeNodeConfig,
   writePathsConfig,
   loadPathsConfig,
+  loadNodeConfig,
 } from "./config.js";
+import { startControlServer } from "./control.js";
 import { makeTempDir, cleanTempDir } from "./test/fixtures.js";
 
 // ---------------------------------------------------------------------------
@@ -352,5 +355,77 @@ describe("node paths add/remove — relay sync ordering", () => {
 
     expect(exitCode).toBe(1);
     expect(loadPathsConfig(dir).paths.map((p) => p.share)).toEqual(["existing"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// node rotate — prefers asking a live daemon over its control channel (no
+// race, no eviction of the daemon's connection); falls back to a direct
+// relay connection only when no daemon is reachable.
+// ---------------------------------------------------------------------------
+
+describe("node rotate — live daemon reachable via control channel", () => {
+  let controlServer: Server;
+
+  afterEach(async () => {
+    await new Promise<void>((resolve) => controlServer.close(() => resolve()));
+  });
+
+  it("asks the running daemon to rotate instead of connecting to the relay directly", async () => {
+    const rotateToken = vi.fn().mockResolvedValue(undefined);
+    controlServer = startControlServer(dir, { rotateToken });
+    await new Promise<void>((resolve) => {
+      if (controlServer.listening) resolve(); else controlServer.once("listening", resolve);
+    });
+
+    // Deliberately no node.yaml in this temp dir — the fallback path (nodeControlCommand)
+    // requires one and would throw if reached, so a clean exit here is itself proof the
+    // control-channel path short-circuited before ever falling back.
+    const { exitCode, out } = await runCli(["node", "rotate"], dir);
+
+    expect(exitCode).toBe(0);
+    expect(out).toContain("the running node has reconnected with the new token");
+    expect(rotateToken).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports the daemon's rotation failure instead of falling back", async () => {
+    const rotateToken = vi.fn().mockRejectedValue(new Error("Timed out waiting for rotation to complete"));
+    controlServer = startControlServer(dir, { rotateToken });
+    await new Promise<void>((resolve) => {
+      if (controlServer.listening) resolve(); else controlServer.once("listening", resolve);
+    });
+
+    const { exitCode, err } = await runCli(["node", "rotate"], dir);
+
+    expect(exitCode).toBe(1);
+    expect(err).toContain("Timed out waiting for rotation to complete");
+  });
+});
+
+describe("node rotate — no daemon running", () => {
+  let wss: WebSocketServer;
+  let port: number;
+
+  beforeEach(async () => {
+    wss = new WebSocketServer({ port: 0 });
+    await new Promise<void>((resolve) => wss.once("listening", resolve));
+    port = (wss.address() as { port: number }).port;
+  });
+
+  afterEach(async () => {
+    await new Promise<void>((resolve) => wss.close(() => resolve()));
+  });
+
+  it("falls back to a direct relay connection when no control file is present", async () => {
+    writeNodeConfig(dir, { relay_url: `http://localhost:${port}`, node_token: "tok-original", host: "test-host" });
+    wss.once("connection", (ws: WSClient) => {
+      ws.once("message", () => ws.send(JSON.stringify({ type: "token_rotated", token: "tok-rotated" })));
+    });
+
+    const { exitCode, out } = await runCli(["node", "rotate"], dir);
+
+    expect(exitCode).toBe(0);
+    expect(out).toContain("Start the node service to connect with the new token");
+    expect(loadNodeConfig(dir).node_token).toBe("tok-rotated");
   });
 });

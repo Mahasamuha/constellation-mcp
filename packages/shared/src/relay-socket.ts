@@ -15,6 +15,31 @@ export interface RelaySocketOptions {
   path: string;
 }
 
+/** True for localhost, any 127.0.0.0/8 loopback address, or ::1 (bracketed or not). */
+function isLocalHostname(hostname: string): boolean {
+  if (hostname === "localhost") return true;
+  if (hostname === "::1" || hostname === "[::1]") return true;
+  return /^127(\.\d{1,3}){3}$/.test(hostname);
+}
+
+/**
+ * Throws if `wsUrl` is a plaintext ws:// URL targeting a non-localhost host.
+ * The bearer token sent in the Authorization header must never cross the
+ * network unencrypted. Call this before constructing *any* WebSocket
+ * connection to a relay — the long-lived RelaySocket connection below and
+ * every short-lived CLI control-plane connection (token rotation, rename,
+ * sync) alike. A second, independently-constructed WebSocket that skips this
+ * check defeats the whole point of enforcing it here.
+ */
+export function assertSecureRelayUrl(wsUrl: string): void {
+  if (!wsUrl.startsWith("ws://")) return;
+  const hostname = new URL(wsUrl).hostname;
+  if (isLocalHostname(hostname)) return;
+  throw new Error(
+    `Refusing to connect: relay URL uses ws:// for a non-localhost host (${hostname}). Use wss:// to protect the access token.`
+  );
+}
+
 /**
  * Shared transport for the relay WebSocket connection.
  *
@@ -87,14 +112,12 @@ export abstract class RelaySocket {
 
     const wsUrl = this.getRelayUrl().replace(/^http/, "ws");
 
-    if (wsUrl.startsWith("ws://")) {
-      const host = new URL(wsUrl).hostname;
-      const isLocal = host === "localhost" || host === "127.0.0.1" || host === "::1";
-      if (!isLocal) {
-        this.log.error({ url: wsUrl }, "Refusing to connect: relay URL uses ws:// for a non-localhost host. Use wss:// to protect the access token.");
-        this.scheduleReconnect();
-        return;
-      }
+    try {
+      assertSecureRelayUrl(wsUrl);
+    } catch (err) {
+      this.log.error({ url: wsUrl }, (err as Error).message);
+      this.scheduleReconnect();
+      return;
     }
 
     this.log.info({ url: wsUrl }, "Connecting to relay");

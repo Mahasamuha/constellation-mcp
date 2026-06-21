@@ -1,5 +1,6 @@
 import { configDir, loadNodeConfig, loadPathsConfig } from "./config.js";
 import { NodeConnection } from "./connection.js";
+import { startControlServer } from "./control.js";
 import { createLogger } from "@constellation/shared";
 
 export function runDaemon(configDirOverride?: string): void {
@@ -14,8 +15,14 @@ export function runDaemon(configDirOverride?: string): void {
   });
 
   conn.start();
+  const controlServer = startControlServer(dir, conn);
   log.info({ host: config.host, relay: config.relay_url }, "Node started");
 
-  process.on("SIGTERM", () => { conn.stop(); process.exit(0); });
-  process.on("SIGINT",  () => { conn.stop(); process.exit(0); });
+  const shutdown = () => {
+    conn.stop();
+    controlServer.close();
+    process.exit(0);
+  };
+  process.on("SIGTERM", shutdown);
+  process.on("SIGINT", shutdown);
 }

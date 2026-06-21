@@ -15,7 +15,7 @@ import {
   pathsYamlPath,
   type NodeConfig,
 } from "../config.js";
-import { MAX_SHARE_INSTRUCTIONS_LENGTH, poll, type PathEntry } from "@constellation/shared";
+import { MAX_SHARE_INSTRUCTIONS_LENGTH, poll, assertSecureRelayUrl, type PathEntry } from "@constellation/shared";
 import {
   install,
   startService,
@@ -25,6 +25,7 @@ import {
   showLogs,
 } from "./service.js";
 import { runDaemon } from "../index.js";
+import { requestRotateViaControlChannel } from "../control.js";
 import { maskToken } from "./util.js";
 
 export function registerNodeCommands(program: Command): void {
@@ -212,13 +213,33 @@ export function registerNodeCommands(program: Command): void {
     .description("Request a new node token from the relay")
     .action(async () => {
       const dir = getConfigDir();
+
+      // Prefer asking the running daemon to rotate on its own live connection — it
+      // performs the full handshake itself and only reports success once it has
+      // actually reconnected with the new token, no race, no side effect on the
+      // daemon's connection. Opening a second WebSocket of our own here (the
+      // fallback below) would otherwise evict the daemon's live connection outright,
+      // since the relay allows only one per executor.
+      const viaControl = await requestRotateViaControlChannel(dir);
+      if (viaControl) {
+        if (viaControl.ok) {
+          console.log("Token rotated — the running node has reconnected with the new token.");
+        } else {
+          console.error("Error:", viaControl.error);
+          process.exit(1);
+        }
+        return;
+      }
+
+      // No daemon reachable — nothing to evict, but also nothing to confirm the
+      // reconnect for. Rotate directly and let the next `node start` pick it up.
       const result = await nodeControlCommand(dir, "rotate_token",
         () => ({ type: "rotate_token" }),
         "token_rotated", "rotate_token_error"
       );
       if (result && typeof result === "object" && "token" in result) {
         writeNodeToken(dir, (result as { token: string }).token);
-        console.log("Token rotated. Restart the node service to reconnect with the new token.");
+        console.log("Token rotated. Start the node service to connect with the new token.");
       }
     });
 
@@ -398,6 +419,13 @@ async function nodeControlCommand(
   const cfg = loadNodeConfig(dir);
   const paths = loadPathsConfig(dir).paths;
   const wsUrl = cfg.relay_url.replace(/^http/, "ws") + "/executor/connect";
+
+  try {
+    assertSecureRelayUrl(wsUrl);
+  } catch (err) {
+    console.error("Error:", (err as Error).message);
+    process.exit(1);
+  }
 
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(wsUrl, {
