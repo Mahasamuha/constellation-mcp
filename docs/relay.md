@@ -375,7 +375,7 @@ User management endpoints. Available in `AUTH_MODE=local` only. Return `404` in 
 
 **`POST /api/users`** — create a new local user. Body: `{ username, password }`. Password must be at least 12 characters. Returns `409` if the username is already taken.
 
-**`POST /api/users/:username/deactivate`** — deactivate a user. Blocks all future logins. Does not revoke existing sessions immediately; those expire normally.
+**`POST /api/users/:username/deactivate`** — deactivate a user. Every existing session and executor connection for that user is rejected on its very next request — not just future logins.
 
 **`POST /api/users/:username/reset-password`** — set a new password. Body: `{ password }`. Immediately invalidates all existing OAuth sessions for that user.
 

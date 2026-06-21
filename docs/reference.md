@@ -286,7 +286,7 @@ Creates a new local user. Prompts for a password (minimum 12 characters).
 
 ### `relay users remove <username>`
 
-Deactivates a local user (soft delete). Prompts for confirmation. Existing sessions expire normally; no future logins are permitted.
+Deactivates a local user (soft delete). Prompts for confirmation. Access is cut immediately — every existing session and executor connection for that user is rejected on its very next request, not just future logins.
 
 ### `relay users reset-password <username>`
 
@@ -804,7 +804,7 @@ User management endpoints. Available in `AUTH_MODE=local` only — return `404` 
 
 **`POST /api/users`** — create a new local user. Body: `{ username, password }`. Password must be at least 12 characters. Returns `409` if the username is already taken.
 
-**`POST /api/users/:username/deactivate`** — deactivate a user. Blocks all future logins and marks the user account as deactivated. Existing sessions expire normally.
+**`POST /api/users/:username/deactivate`** — deactivate a user. Marks the user account as deactivated; every existing session and executor connection for that user is rejected on its very next request, not just future logins.
 
 **`POST /api/users/:username/reset-password`** — set a new password. Body: `{ password }`. Immediately invalidates all existing OAuth sessions for that user.
 
