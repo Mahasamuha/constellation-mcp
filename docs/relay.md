@@ -71,7 +71,7 @@ This maps onto how humans and agents tend to work with files differently: a huma
 
 ## Management API
 
-All `/api/*` endpoints (except `/api/status`) require a valid Bearer token obtained via `constellation relay login` (OAuth device code flow). The token is an OAuth access token tied to a user session — there is no separate API key or scope requirement.
+All `/api/*` endpoints require a valid Bearer token obtained via `constellation relay login` (OAuth device code flow). The token is an OAuth access token tied to a user session — there is no separate API key or scope requirement.
 
 **Admin-gated endpoints** additionally require an active admin elevation window, obtained via `constellation relay elevate`. Without elevation those endpoints return `403 ESCALATION_REQUIRED`.
 
@@ -100,7 +100,8 @@ All list endpoints support `limit` (1–1000, default 100) and `offset` (default
 
 ### `GET /api/status`
 
-Relay health check. No auth required.
+Process uptime and version. Requires a Bearer token like every other `/api/*` endpoint
+— it is not a liveness check (that's `/healthz`, unauthenticated, outside `/api/*`).
 
 **Response `200`**
 ```json

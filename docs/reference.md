@@ -624,7 +624,7 @@ Delete a file or directory. If the target is a directory and `recursive` is abse
 
 ## Management API
 
-All `/api/*` endpoints (except `/api/status`) require a valid Bearer token obtained via `constellation relay login`. The token is an OAuth access token tied to a user session — there is no separate API key or scope requirement.
+All `/api/*` endpoints require a valid Bearer token obtained via `constellation relay login`. The token is an OAuth access token tied to a user session — there is no separate API key or scope requirement.
 
 Admin-only endpoints additionally require the session to be elevated (see `relay elevate`). Requests without admin privileges receive `403 ESCALATION_REQUIRED`.
 
@@ -648,7 +648,8 @@ List endpoints support pagination via `limit` (default 100, max 1000) and `offse
 
 ### `GET /api/status`
 
-Relay health check. No auth required.
+Process uptime and version. Requires a Bearer token like every other `/api/*` endpoint
+— it is not a liveness check (that's `/healthz`, unauthenticated, outside `/api/*`).
 
 **Response `200`**
 ```json
