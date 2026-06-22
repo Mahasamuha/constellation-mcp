@@ -1,7 +1,7 @@
 import { Command } from "commander";
 import { hostname } from "node:os";
 import { execFileSync } from "node:child_process";
-import { readFileSync, writeFileSync, mkdirSync, statSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, statSync, statfsSync } from "node:fs";
 import { dirname } from "node:path";
 import WebSocket from "ws";
 import open from "open";
@@ -19,6 +19,38 @@ const DEFAULT_HUB_CONFIG = "/etc/constellation/hub.yaml";
 
 function defaultConfigPath(): string {
   return process.env["CONSTELLATION_HUB_CONFIG"] ?? DEFAULT_HUB_CONFIG;
+}
+
+/**
+ * Disk-space stats for the filesystem holding the audit log's directory.
+ * `writeAuditEntry` (audit.ts) fails open on ENOSPC/EACCES rather than blocking tool
+ * calls, so this is the one signal an operator has for catching a filling disk before
+ * audit coverage silently drops. Checks `dirname(auditLogPath)` specifically — not
+ * some other convenient path — since that's the mount whose exhaustion actually
+ * triggers the failure; on many production hosts /var/log is its own partition,
+ * separate from the rest of the filesystem. Returns null (rather than throwing) if
+ * the directory doesn't exist yet or can't be statted, since this is an informational
+ * field that shouldn't fail the whole status command.
+ */
+function auditLogDiskStatus(auditLogPath: string): { dir: string; free_bytes: number; total_bytes: number } | null {
+  const dir = dirname(auditLogPath);
+  try {
+    const stats = statfsSync(dir);
+    return { dir, free_bytes: stats.bavail * stats.bsize, total_bytes: stats.blocks * stats.bsize };
+  } catch {
+    return null;
+  }
+}
+
+function formatBytes(bytes: number): string {
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit++;
+  }
+  return `${value.toFixed(1)} ${units[unit]}`;
 }
 
 export function registerHubCommands(program: Command): void {
@@ -219,10 +251,13 @@ export function registerHubCommands(program: Command): void {
         process.exit(1);
       }
 
+      const disk = auditLogDiskStatus(cfg.audit_log);
+
       const out = {
         hub_name: cfg.hub_name,
         relay_url: cfg.relay_url,
         shares: cfg.shares.map((s) => ({ name: s.name, path: s.path, default_access: s.permissions.default })),
+        audit_log: { path: cfg.audit_log, disk },
       };
 
       if (opts.json) {
@@ -234,6 +269,12 @@ export function registerHubCommands(program: Command): void {
         for (const s of out.shares) {
           console.log(`  ${s.name} → ${s.path} [${s.default_access}]`);
         }
+        console.log(`Audit log: ${out.audit_log.path}`);
+        console.log(
+          disk
+            ? `  Disk (${disk.dir}): ${formatBytes(disk.free_bytes)} free / ${formatBytes(disk.total_bytes)} total`
+            : `  Disk: unavailable (directory may not exist yet)`
+        );
       }
     });
 

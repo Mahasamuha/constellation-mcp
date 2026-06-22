@@ -150,3 +150,10 @@ to configure either way, since the relay never writes its own log file.
 This is different from the hub's audit log, which *is* a real file on the
 hub's own disk and does need `logrotate` or similar — see
 [hub.md's Audit log section](hub.md#audit-log) for that.
+
+Audit writes fail open on a full or unwritable disk — a tool call still
+succeeds even if its audit entry couldn't be written — so a filling disk
+won't surface as an error anywhere on its own. `constellation hub status
+--json` reports free/total bytes for the filesystem holding the audit log
+(`audit_log.disk`); poll that from whatever you use for host-level alerting
+if you want one before the disk actually fills.

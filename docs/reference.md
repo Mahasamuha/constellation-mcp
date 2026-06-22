@@ -137,7 +137,10 @@ Starts the hub daemon.
 constellation hub status [--config-file <path>]
 ```
 
-Prints hub name, relay URL, and share list from the config file.
+Prints hub name, relay URL, share list, and the audit log's path with free/total
+disk space on the filesystem holding it (`null` in `--json` output if that directory
+doesn't exist yet) — `writeAuditEntry` fails open on a full disk rather than blocking
+tool calls, so this is the signal to catch it before audit coverage silently drops.
 
 ### `hub install`
 
