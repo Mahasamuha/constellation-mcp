@@ -72,14 +72,16 @@ export function languageForPath(path: string): string | null {
   return EXTENSION_LANGUAGE[name.slice(dot + 1).toLowerCase()] ?? null;
 }
 
-const HTML_ESCAPES: Record<string, string> = {
-  "&": "&amp;",
-  "<": "&lt;",
-  ">": "&gt;",
-  '"': "&quot;",
-  "'": "&#39;",
-};
-
-export function escapeHtml(text: string): string {
-  return text.replace(/[&<>"']/g, (c) => HTML_ESCAPES[c]!);
+/**
+ * Highlights `text` for `path`'s language, or — if no grammar is registered for
+ * that language — just HTML-escapes it. Both branches go through Prism.highlight():
+ * the no-grammar case passes an empty grammar object, which makes tokenize() a
+ * no-op and falls through to Prism's own internal escaping. That keeps this to
+ * exactly one escaping codepath rather than two that could silently diverge.
+ */
+export function highlightForPath(text: string, path: string | null): { html: string; language: string } {
+  const language = path ? languageForPath(path) : null;
+  const grammar = language ? Prism.languages[language] : undefined;
+  if (!language || !grammar) return { html: Prism.highlight(text, {}, "none"), language: "none" };
+  return { html: Prism.highlight(text, grammar, language), language };
 }

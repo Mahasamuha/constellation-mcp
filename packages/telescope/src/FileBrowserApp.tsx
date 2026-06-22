@@ -1,6 +1,6 @@
 import { createContext, use, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useApp, useHostStyleVariables, type App } from "@modelcontextprotocol/ext-apps/react";
-import { Prism, escapeHtml, languageForPath } from "./prism";
+import { highlightForPath } from "./prism";
 
 type DisplayMode = "inline" | "fullscreen" | "pip";
 
@@ -682,10 +682,7 @@ function FileEditor() {
 
   const highlighted = useMemo(() => {
     if (fileContent == null) return null;
-    const language = selectedPath ? languageForPath(selectedPath) : null;
-    const grammar = language ? Prism.languages[language] : undefined;
-    if (!language || !grammar) return { html: escapeHtml(fileContent), language: "none" };
-    return { html: Prism.highlight(fileContent, grammar, language), language };
+    return highlightForPath(fileContent, selectedPath);
   }, [fileContent, selectedPath]);
 
   // Refreshing re-fetches from the agent host, so a click puts the button on a
