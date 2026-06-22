@@ -1,7 +1,17 @@
 # ADR 0001: Do Not Share RpcEnvelope Across Node and Relay
 
-**Status:** Accepted  
+**Status:** Superseded by [ADR 0018](0018-share-rpcenvelope-via-inheritance.md)  
 **Date:** 2026-06-06
+
+> **Superseded (2026-06-21):** A production-readiness audit flagged that the two
+> independent definitions had already drifted — both carried an open
+> `[key: string]: unknown` index signature to absorb tool call arguments spread flat
+> alongside envelope routing fields, which meant a tool argument could collide with and
+> silently overwrite a field like `absolute_root`. Fixing that (nesting tool arguments
+> under their own `params` field) removed the index signature entirely and left the
+> envelope's own fields few, named, and stable — which changed the cost side of this
+> ADR's "Subtype approach... the indirection buys little" rejection below. See ADR 0018
+> for the full reasoning; this document is kept as-is for the historical record.
 
 ## Context
 
