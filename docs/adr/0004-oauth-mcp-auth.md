@@ -26,6 +26,11 @@ The relay implements OAuth 2.0 per the MCP auth specification:
   - `relay:manage` — issues a management API session for `constellation relay`
     commands (the scope itself is unchanged; ADR 0007 removed only the
     separate authorization check that used to gate on it)
+  - `agent:escalate` — elevates the requester's existing session to admin-level
+    access (`constellation relay elevate`); requires the *approving* user to
+    already hold the admin role
+  - `agent:register:shared` — creates a shared (non-user-bound) executor token
+    for `constellation hub register`; requires admin approval
 - The relay acts as an OAuth 2.0 authorization server to MCP clients and as an
   OIDC client to an upstream identity provider (Google, Azure AD, Authentik, or any
   OIDC-compliant provider).
