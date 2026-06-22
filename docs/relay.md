@@ -108,7 +108,7 @@ Process uptime and version. Requires a Bearer token like every other `/api/*` en
 {
   "status": "ok",
   "uptime_seconds": 3724,
-  "version": "0.5.0"
+  "version": "<version>"
 }
 ```
 

@@ -656,7 +656,7 @@ Process uptime and version. Requires a Bearer token like every other `/api/*` en
 
 **Response `200`**
 ```json
-{ "status": "ok", "uptime_seconds": 3724, "version": "0.2.3" }
+{ "status": "ok", "uptime_seconds": 3724, "version": "<version>" }
 ```
 
 ---
