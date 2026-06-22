@@ -404,3 +404,53 @@ describe("timeout", () => {
     );
   });
 });
+
+// An executor (a user's own node, or an admin's hub) is a separate process this relay
+// doesn't control. These lock in that its RPC error fields are cleaned at the single
+// point they're received, regardless of what the executor actually sent.
+describe("executor error sanitization", () => {
+  it("strips control characters (incl. ANSI escapes and newlines) from message/code/path", async () => {
+    stubShare();
+    mockDispatchRpc.mockResolvedValue({
+      request_id: "",
+      error: {
+        message: "line one\nline two\x1b[31mred\x1b[0m",
+        code: "DEST_EXISTS\n[fake]",
+        path: "a/b\x00c",
+      },
+    });
+
+    const result = await routeToolCall(uid(), "copy", "projects", {});
+    expect(result).toMatchObject({
+      error: {
+        message: "line oneline two[31mred[0m",
+        code: "DEST_EXISTS[fake]",
+        path: "a/bc",
+      },
+    });
+  });
+
+  it("caps an oversized field instead of passing it through in full", async () => {
+    stubShare();
+    mockDispatchRpc.mockResolvedValue({
+      request_id: "",
+      error: { message: "x".repeat(1000) },
+    });
+
+    const result = await routeToolCall(uid(), "read_file", "projects", {});
+    const message = (result as { error: { message: string } }).error.message;
+    expect(message.length).toBe(501); // 500 chars + the truncation marker
+    expect(message.endsWith("…")).toBe(true);
+  });
+
+  it("tolerates a non-string message instead of throwing", async () => {
+    stubShare();
+    mockDispatchRpc.mockResolvedValue({
+      request_id: "",
+      error: { message: 12345 as unknown as string },
+    });
+
+    const result = await routeToolCall(uid(), "read_file", "projects", {});
+    expect(result).toMatchObject({ error: { message: "12345" } });
+  });
+});

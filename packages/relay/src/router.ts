@@ -26,6 +26,35 @@ export interface RouterError {
   message: string;
 }
 
+// An executor (a user's own node, or an admin's hub) is a separate process this relay
+// doesn't control — nothing guarantees its RPC error fields only ever contain what
+// FileExecutor's own buildError() constructs. A node/hub could be a non-standard
+// implementation, or a future bug could let raw exception detail (an absolute path,
+// another user's username from a hub's identity-resolution error) escape past
+// whatever sanitization the executor does on its own side. Cap length and strip
+// control characters here too — independently of the executor — since this is the
+// single point an executor's error first enters relay-owned territory: every
+// downstream consumer (toolError → the MCP client, the activity log exposed via
+// /api/activity, structured logs) inherits the cleaned value rather than each having
+// to remember to sanitize it themselves.
+const MAX_EXECUTOR_ERROR_FIELD_LENGTH = 500;
+
+function cleanExecutorErrorField(value: unknown, maxLength: number): string {
+  const str = typeof value === "string" ? value : String(value);
+  // eslint-disable-next-line no-control-regex -- deliberately stripping control chars (incl. ANSI/terminal escapes, newlines)
+  const stripped = str.replace(/[\x00-\x1F\x7F]/g, "");
+  return stripped.length > maxLength ? `${stripped.slice(0, maxLength)}…` : stripped;
+}
+
+function sanitizeExecutorError(error: RpcError): RpcError {
+  return {
+    ...error,
+    message: cleanExecutorErrorField(error.message, MAX_EXECUTOR_ERROR_FIELD_LENGTH),
+    ...(error.code !== undefined ? { code: cleanExecutorErrorField(error.code, 64) } : {}),
+    ...(error.path !== undefined ? { path: cleanExecutorErrorField(error.path, MAX_EXECUTOR_ERROR_FIELD_LENGTH) } : {}),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Rate limiting — per-user sliding window
 //
@@ -344,9 +373,10 @@ export async function routeToolCall(
   try {
     const response = await dispatchRpc(executorId, envelope);
     const durationMs = Date.now() - startTime;
+    const error = response.error ? sanitizeExecutorError(response.error) : undefined;
 
-    if (response.error) {
-      log.info({ userId, executorId, tool, requestId, error: response.error }, "RPC returned error");
+    if (error) {
+      log.info({ userId, executorId, tool, requestId, error }, "RPC returned error");
       logEvent({
         userId,
         eventType: "tool_call",
@@ -355,15 +385,15 @@ export async function routeToolCall(
         share,
         requestId,
         durationMs,
-        errorCode: response.error.code ?? "rpc_error",
-        errorMessage: response.error.message,
+        errorCode: error.code ?? "rpc_error",
+        errorMessage: error.message,
       });
     } else {
       log.info({ userId, executorId, tool, requestId }, "RPC completed");
       logEvent({ userId, eventType: "tool_call", host: executorHost, tool, share, requestId, durationMs });
     }
 
-    return { result: response.result, error: response.error };
+    return { result: response.result, error };
   } catch (err) {
     if (err instanceof Error && err.message === "executor_disconnected") {
       log.warn({ userId, executorId, tool, requestId }, "RPC failed — executor disconnected");
