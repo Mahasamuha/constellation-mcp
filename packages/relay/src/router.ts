@@ -336,7 +336,7 @@ export async function routeToolCall(
     absolute_root: absoluteRoot,
     user_oidc_sub: userOidcSub ?? null,
     user_claims: filteredClaims,
-    ...effectiveParams,
+    params: effectiveParams,
   };
 
   log.info({ userId, executorId, tool, share, requestId }, "Dispatching RPC");

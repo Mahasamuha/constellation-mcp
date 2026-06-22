@@ -22,8 +22,12 @@ export interface RpcResponse {
 export interface RpcEnvelope {
   request_id: string;
   tool: string;
+  share: string;
   absolute_root: string;
-  [key: string]: unknown;
+  /** The MCP tool call's own arguments — kept separate from envelope routing
+   * metadata above so a tool argument can never collide with (and silently
+   * overwrite) a field like `absolute_root` or `share`. */
+  params: Record<string, unknown>;
 }
 
 export interface PathEntry {

@@ -3,7 +3,7 @@ import { WebSocket, WebSocketServer } from "ws";
 import { prisma } from "./db.js";
 import { ExecutorTokenType } from "./generated/prisma/client.js";
 import { logEvent } from "./activity.js";
-import { hashToken, generateToken, createLogger, type RpcError, type RpcResponse } from "@constellation/shared";
+import { hashToken, generateToken, createLogger, type RpcError, type RpcResponse, type RpcEnvelope as BaseRpcEnvelope } from "@constellation/shared";
 import { config } from "./config.js";
 import {
   type ConnectedExecutor,
@@ -22,13 +22,11 @@ const log = createLogger("hub");
 // Types
 // ---------------------------------------------------------------------------
 
-export interface RpcEnvelope {
-  request_id: string;
-  tool: string;
-  absolute_root: string;
+/** Relay's view of the envelope adds the caller identity fields it forwards to
+ * executors — node ignores them, hub uses them for OS-identity resolution. */
+export interface RpcEnvelope extends BaseRpcEnvelope {
   user_oidc_sub: string | null;
   user_claims: Record<string, unknown>;
-  [key: string]: unknown;
 }
 
 interface ConfigUpdateMessage {

@@ -10,6 +10,14 @@ import { SubnodePool, isDispatchError } from "./subnode.js";
 
 const log = createLogger("hub");
 
+/** Relay forwards these on every envelope it dispatches, for OS-identity resolution
+ * below — defined locally (mirroring relay's own RpcEnvelope extension) rather than
+ * imported from @constellation/relay, which hub has no reason to depend on. */
+interface IncomingRpcEnvelope extends RpcEnvelope {
+  user_oidc_sub: string | null;
+  user_claims: Record<string, unknown>;
+}
+
 // ---------------------------------------------------------------------------
 // Env file sourcing
 // ---------------------------------------------------------------------------
@@ -131,7 +139,7 @@ class HubSocket extends RelaySocket {
         this.send({ request_id: msg["request_id"], error: { message: "HUB_SHUTTING_DOWN — retry after 45 seconds" } });
         return;
       }
-      this.handleRpc(msg as RpcEnvelope)
+      this.handleRpc(msg as unknown as IncomingRpcEnvelope)
         .then((response) => this.send(response))
         .catch((err) => {
           this.log.error({ err }, "Unhandled error in RPC handler");
@@ -181,13 +189,9 @@ class HubSocket extends RelaySocket {
     this.log.warn({ type }, "Unknown message from relay — dropping");
   }
 
-  private async handleRpc(envelope: RpcEnvelope): Promise<object> {
-    const { request_id, tool } = envelope;
-    const userOidcSub = typeof envelope["user_oidc_sub"] === "string" ? envelope["user_oidc_sub"] : null;
-    const userClaims = (envelope["user_claims"] !== null && typeof envelope["user_claims"] === "object"
-      ? envelope["user_claims"]
-      : {}) as Record<string, unknown>;
-    const share = typeof envelope["share"] === "string" ? envelope["share"] : guessShare(envelope.absolute_root, this.shareRegistry);
+  private async handleRpc(envelope: IncomingRpcEnvelope): Promise<object> {
+    const { request_id, tool, params, user_oidc_sub: userOidcSub, user_claims: userClaims } = envelope;
+    const share = envelope.share || guessShare(envelope.absolute_root, this.shareRegistry);
 
     // Resolve OS identity
     const identity = await resolveIdentity(userClaims, userOidcSub, this.cfg.identity);
@@ -214,13 +218,6 @@ class HubSocket extends RelaySocket {
     if (!permission.permitted) {
       return this.permissionDenied(request_id, tool, permission.share, userOidcSub, identity.username, permission.reason);
     }
-
-    // Build tool params from the envelope, excluding all relay-routing fields.
-    // Named exclusion keeps this explicit — new routing fields must be listed here.
-    const ROUTING_FIELDS = new Set(["request_id", "tool", "absolute_root", "user_oidc_sub", "user_claims", "share"]);
-    const params: Record<string, unknown> = Object.fromEntries(
-      Object.entries(envelope).filter(([k]) => !ROUTING_FIELDS.has(k))
-    );
 
     // Dispatch to subnode
     const dispatchResult = await this.pool.dispatch(identity, tool, share, params, request_id);
@@ -407,8 +404,8 @@ export function resolveDstShare(
   registry: Record<string, string>
 ): string | null {
   if (tool !== "copy" && tool !== "move") return null;
-  if (typeof envelope["dst_share"] === "string") return envelope["dst_share"];
-  if (typeof envelope["dst_root"] === "string") return guessShare(envelope["dst_root"], registry) || null;
+  if (typeof envelope.params["dst_share"] === "string") return envelope.params["dst_share"];
+  if (typeof envelope.params["dst_root"] === "string") return guessShare(envelope.params["dst_root"], registry) || null;
   return null;
 }
 

@@ -44,7 +44,7 @@ export async function handleRpc(
   config: NodeConfig,
   registryCache: ShareRegistryCache
 ): Promise<RpcResponse> {
-  const { request_id, tool, absolute_root } = envelope;
+  const { request_id, tool, absolute_root, params } = envelope;
 
   const allowed = paths.find((p) => p.path === absolute_root);
   if (!allowed) {
@@ -60,7 +60,7 @@ export async function handleRpc(
   }
 
   const executor = new FileExecutor(shareRegistry, config.max_file_size_kb);
-  const result = await executor.execute(tool, allowed.share, envelope);
+  const result = await executor.execute(tool, allowed.share, params);
 
   if (result.isError) {
     return { request_id, error: result.content as RpcError };

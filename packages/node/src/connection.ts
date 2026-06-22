@@ -109,7 +109,7 @@ export class NodeConnection extends RelaySocket {
     if (typeof msg["request_id"] === "string" && typeof msg["tool"] === "string") {
       const config = this.opts.getConfig();
       const paths = this.opts.getPaths();
-      handleRpc(msg as RpcEnvelope, paths, config, this.registryCache)
+      handleRpc(msg as unknown as RpcEnvelope, paths, config, this.registryCache)
         .then((response) => this.send(response))
         .catch((err) => {
           this.log.error({ err }, "Unhandled error in RPC handler");

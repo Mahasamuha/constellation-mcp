@@ -2,12 +2,13 @@ import { describe, it, expect } from "vitest";
 import { resolveDstShare } from "./index.js";
 import type { RpcEnvelope } from "@constellation/shared";
 
-function envelope(overrides: Partial<RpcEnvelope> = {}): RpcEnvelope {
+function envelope(params: Record<string, unknown> = {}, tool = "copy"): RpcEnvelope {
   return {
     request_id: "req-1",
-    tool: "copy",
+    tool,
+    share: "docs",
     absolute_root: "/srv/docs",
-    ...overrides,
+    params,
   };
 }
 
@@ -15,7 +16,7 @@ const registry = { docs: "/srv/docs", other: "/srv/other" };
 
 describe("resolveDstShare", () => {
   it("returns null for non copy/move tools, even if dst_share is present", () => {
-    expect(resolveDstShare(envelope({ tool: "read_file", dst_share: "other" }), "read_file", registry)).toBeNull();
+    expect(resolveDstShare(envelope({ dst_share: "other" }, "read_file"), "read_file", registry)).toBeNull();
   });
 
   it("returns null when neither dst_share nor dst_root is present", () => {
