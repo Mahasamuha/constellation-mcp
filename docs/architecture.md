@@ -64,6 +64,8 @@ MCP clients authenticate via the **Authorization Code flow** (with mandatory PKC
 The node CLI and relay CLI authenticate via the **Device Code flow** (RFC 8628). Scope determines which flow is served:
 - `agent:register` — creates a node registration and returns a node token
 - `relay:manage` — issues a management API session for `constellation relay` commands
+- `agent:escalate` — elevates the requester's existing session to admin-level access for `ADMIN_SESSION_DURATION` (`constellation relay elevate`); requires the *approving* user to already hold the admin role
+- `agent:register:shared` — creates a shared (non-user-bound) executor token for `constellation hub register`; requires admin approval
 
 Tokens are 32-byte cryptographically random values stored as SHA-256 hashes. They are never logged in plaintext.
 
@@ -83,7 +85,7 @@ When an MCP client calls a tool, the relay:
 2. Resolves the `share` (and optional `host`) to a target `executor_id` and `absolute_root` path
 3. Applies relay-side deny filters (glob or regex patterns)
 4. Looks up the live WebSocket for that executor
-5. Forwards an RPC envelope: `{ request_id, tool, absolute_root, ...tool_params }`
+5. Forwards an RPC envelope: `{ request_id, tool, absolute_root, params: tool_params }`
 6. Waits up to `RPC_TIMEOUT_MS` (default 30s) for a response
 7. Returns the result or a structured error to the MCP client
 

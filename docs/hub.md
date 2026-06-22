@@ -123,7 +123,7 @@ MCP client
   → POST /mcp (Bearer token)
     → Relay authenticates session → retrieves userId, oidcSub, lastKnownClaims
     → Relay resolves share → checks HubShare registry (optimistic permission check)
-    → Relay builds RPC envelope: { tool, share, absolute_root, user_oidc_sub, user_claims, ...params }
+    → Relay builds RPC envelope: { tool, share, absolute_root, user_oidc_sub, user_claims, params }
     → Relay forwards RPC via WebSocket to hub
       → Hub resolves OS identity (3-tier chain)
       → Hub checks permissions (share-level access against admin config)

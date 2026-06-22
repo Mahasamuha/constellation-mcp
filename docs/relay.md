@@ -20,8 +20,8 @@ flowchart TD
     Client -->|"HTTPS + OAuth Bearer · POST /mcp"| Auth
     Auth --> Tool
     Tool --> Router
-    Router -->|"dispatchRpc · { tool, absolute_root, ...params }"| Node
-    Router -->|"dispatchRpc · { tool, absolute_root, share, user_oidc_sub, user_claims, ...params }"| Hub
+    Router -->|"dispatchRpc · { tool, absolute_root, params }"| Node
+    Router -->|"dispatchRpc · { tool, absolute_root, share, user_oidc_sub, user_claims, params }"| Hub
     Node -->|"RPC response (or timeout)"| RouterR
     Hub -->|"RPC response (or timeout)"| RouterR
     RouterR -->|"MCP tool response"| ClientR
@@ -475,7 +475,7 @@ PKCE (`S256`) is **required**. The relay rejects `/oauth/authorize` requests tha
 
 ### Device Code Flow (node init + relay login)
 
-Used by `constellation node init` (scope `agent:register`), `constellation relay login` (scope `relay:manage`), and `constellation hub register` (scope `agent:register:shared`).
+Used by `constellation node init` (scope `agent:register`), `constellation relay login` (scope `relay:manage`), `constellation relay elevate` (scope `agent:escalate`), and `constellation hub register` (scope `agent:register:shared`).
 
 ```mermaid
 sequenceDiagram
@@ -502,8 +502,9 @@ sequenceDiagram
 - `agent:register` — on approval, the relay creates an `Executor` row and an `ExecutorToken`, then returns `{ access_token, token_type: "agent", host }`.
 - `agent:register:shared` — creates a shared (non-user-bound) `ExecutorToken`; requires admin approval.
 - `relay:manage` — issues a standard OAuth session tied to a static first-party client.
+- `agent:escalate` — sets `adminUntil` on the requester's existing session (no new token is issued) and returns `204`; requires the *approving* user to already hold the admin role.
 
-Device codes expire after 15 minutes. The polling interval is 5 seconds. Responses follow RFC 8628: `authorization_pending`, `access_denied`, `expired_token`.
+Device codes expire after 15 minutes. The polling interval is 5 seconds. Responses follow RFC 8628: `authorization_pending`, `slow_down`, `access_denied`, `expired_token`.
 
 ### Refresh Token Flow
 
@@ -607,8 +608,9 @@ When an MCP client calls a tool, the relay forwards it to the executor as an RPC
 {
   "request_id": "<16-byte hex>",
   "tool": "<tool-name>",
+  "share": "projects",
   "absolute_root": "/home/user/projects",
-  "<param>": "<value>"
+  "params": { "<param>": "<value>" }
 }
 ```
 
@@ -617,11 +619,11 @@ For hubs the envelope also includes identity fields:
 {
   "request_id": "...",
   "tool": "...",
-  "absolute_root": "...",
   "share": "projects",
+  "absolute_root": "...",
   "user_oidc_sub": "auth0|abc123",
   "user_claims": { "constellation_username": "alice" },
-  "<param>": "<value>"
+  "params": { "<param>": "<value>" }
 }
 ```
 

@@ -351,6 +351,30 @@ These limits are applied by the node regardless of relay settings.
 | `copy` / `move` | Fails if the destination already exists. Cross-device `move` falls back to copy + delete automatically. |
 | `delete` (directory) | Without `recursive: true`, returns a dry-run summary (`size_bytes`, `file_count`, `requires_confirmation: true`). Re-call with `recursive: true` to proceed. |
 
+### Tool call errors
+
+A tool call can fail before it ever reaches a node or hub — share/host resolution, path
+filters, and rate limiting all happen at the relay first. These aren't returned as a
+structured error code over MCP; like any other tool error, the client just sees the
+message text below as the call's result. The codes are how the relay's own code and
+logs refer to each case (`packages/relay/src/router.ts`'s `RouterError`) — listed here
+as labels for cross-referencing, not as something you'll see directly.
+
+| Code | Trigger | Message you'll see |
+|---|---|---|
+| `share_not_found` | No share with that name is registered to you (or, for hub shares, visible to you) | `No share '<share>' found` |
+| `host_not_found` | `host` param given, but no host with that name exists for you | `No host '<host>' found` |
+| `ambiguous` | A hub share name is visible to you on more than one host | `Share '<share>' is available on multiple hosts you have access to: <hosts>. Specify host to disambiguate.` |
+| `cross_host` | `copy`/`move` with `dst_share` resolving to a different host than the source share | `'<share>' is on '<host>' and '<dst_share>' is on '<dst_host>' — cross-host move/copy is not supported` |
+| `path_filtered` | The resolved path matches a relay-side [path filter](relay.md#path-filters) | `Path blocked by relay filter: <share>/<relative_path>` |
+| `executor_offline` | The share's executor isn't currently connected (checked before dispatch, or disconnected before responding) | `'<share>' is on '<host>', which was last seen <relative time, or 'never'>` |
+| `timeout` | The executor was connected but didn't respond within `RPC_TIMEOUT_MS` | `No response from '<host>' within <N>s` |
+| `rate_limited` | Per-user rate limit exceeded for this tool, checked before dispatch | `Rate limit exceeded. Please slow down.` |
+
+`executor_offline`, `timeout`, and `rate_limited` also show up as `error_code` /
+`event_type` values in [`GET /api/activity`](#get-apiactivity). The other five aren't
+logged to the activity feed at all — they're returned directly to the failing call only.
+
 ---
 
 ### `list_hosts`
