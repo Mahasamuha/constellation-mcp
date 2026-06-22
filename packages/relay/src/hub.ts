@@ -1,7 +1,7 @@
 import { IncomingMessage, Server } from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
 import { prisma } from "./db.js";
-import { ExecutorTokenType } from "./generated/prisma/client.js";
+import { ExecutorTokenType, Prisma } from "./generated/prisma/client.js";
 import { logEvent } from "./activity.js";
 import { hashToken, generateToken, createLogger, type RpcError, type RpcResponse, type RpcEnvelope as BaseRpcEnvelope } from "@constellation/shared";
 import { config } from "./config.js";
@@ -454,13 +454,11 @@ async function handleConfigUpdate(conn: ConnectedExecutor, msg: ConfigUpdateMess
   send(conn.ws, { type: "config_update_ok" });
 }
 
-async function handleUpdateHost(conn: ConnectedExecutor, msg: UpdateHostMessage): Promise<void> {
+export async function handleUpdateHost(conn: ConnectedExecutor, msg: UpdateHostMessage): Promise<void> {
   if (conn.tokenType === ExecutorTokenType.HUB) {
     send(conn.ws, { type: "update_host_error", error: "Hubs use a fixed host (machine ID); update_host is not supported" });
     return;
   }
-  // After HUB guard: userId is guaranteed non-null for NODE connections.
-  const userId = conn.userId!;
   const newHost = typeof msg.host === "string" ? msg.host.trim() : "";
 
   if (!newHost) {
@@ -473,16 +471,20 @@ async function handleUpdateHost(conn: ConnectedExecutor, msg: UpdateHostMessage)
     return;
   }
 
-  const conflict = await prisma.executor.findFirst({
-    where: { userId, host: newHost, NOT: { id: conn.executorId } },
-  });
-
-  if (conflict) {
-    send(conn.ws, { type: "update_host_error", error: `Host name "${newHost}" is already registered` });
-    return;
+  // No separate conflict check beforehand — the write doesn't depend on the row's
+  // current host, so there's nothing for a check-then-write race to act on. Attempt
+  // the write directly and let the (user_id, host) partial unique index reject a
+  // conflict atomically, in the same statement, instead of a SELECT-then-UPDATE pair
+  // two concurrent renames could both pass.
+  try {
+    await prisma.executor.update({ where: { id: conn.executorId }, data: { host: newHost } });
+  } catch (err) {
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {
+      send(conn.ws, { type: "update_host_error", error: `Host name "${newHost}" is already registered` });
+      return;
+    }
+    throw err;
   }
-
-  await prisma.executor.update({ where: { id: conn.executorId }, data: { host: newHost } });
   conn.host = newHost;
 
   log.info({ executorId: conn.executorId, newHost }, "Executor host updated");
