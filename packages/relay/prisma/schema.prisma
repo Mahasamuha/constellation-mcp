@@ -177,8 +177,13 @@ model AuthCode {
   userId              String   @map("user_id")
   clientId            String   @map("client_id")
   redirectUri         String   @map("redirect_uri")
-  codeChallenge       String?  @map("code_challenge")
-  codeChallengeMethod String?  @map("code_challenge_method")
+  // Non-nullable: PKCE is required for every AuthCode this app issues (see
+  // /oauth/authorize's code_challenge check) — making the column itself unable to
+  // store a missing challenge means a future code path that creates an AuthCode
+  // without going through /oauth/authorize fails at the database layer instead of
+  // silently skipping PKCE verification at the token endpoint.
+  codeChallenge       String   @map("code_challenge")
+  codeChallengeMethod String   @default("S256") @map("code_challenge_method")
   expiresAt           DateTime @map("expires_at")
   createdAt           DateTime @default(now()) @map("created_at")
 

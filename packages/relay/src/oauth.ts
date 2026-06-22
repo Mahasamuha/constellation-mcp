@@ -156,7 +156,7 @@ oauthRouter.get("/oauth/authorize", async (req: Request, res: Response) => {
     res.cookie(`login_pending_${pendingId}`, JSON.stringify({
       clientId: client_id,
       redirectUri: redirect_uri,
-      downstreamCodeChallenge: req.query["code_challenge"],
+      downstreamCodeChallenge: code_challenge,
       downstreamCodeChallengeMethod: req.query["code_challenge_method"],
       downstreamState: req.query["state"],
     }), {
@@ -219,7 +219,11 @@ oauthRouter.get("/auth/login", (req: Request, res: Response) => {
 interface LoginPending {
   clientId: string;
   redirectUri: string;
-  downstreamCodeChallenge?: string;
+  // Required, not optional: /oauth/authorize already rejects a missing code_challenge
+  // before this object is ever constructed (see below). Keeping it required here means
+  // a future caller of issueAuthCode() can't pass this through unset by accident — it
+  // has to either supply a real value or deliberately work around the type.
+  downstreamCodeChallenge: string;
   downstreamCodeChallengeMethod?: string;
   downstreamState?: string;
 }
@@ -275,7 +279,8 @@ interface PendingOidc {
   codeVerifier?: string;
   clientId: string;
   redirectUri: string;
-  downstreamCodeChallenge?: string;
+  // Required for the same reason as LoginPending's field above.
+  downstreamCodeChallenge: string;
   downstreamCodeChallengeMethod?: string;
   downstreamState?: string;
 }
@@ -399,22 +404,23 @@ async function handleAuthorizationCodeGrant(
     return;
   }
 
-  // Verify PKCE if the authorization request included a code_challenge.
-  if (entry.codeChallenge) {
-    if (!code_verifier) {
-      res.status(400).json({ error: "invalid_grant", error_description: "code_verifier required" });
-      return;
-    }
-    const method = entry.codeChallengeMethod ?? "S256";
-    if (method !== "S256") {
-      res.status(400).json({ error: "invalid_grant", error_description: "Unsupported code_challenge_method" });
-      return;
-    }
-    const challenge = createHash("sha256").update(code_verifier).digest("base64url");
-    if (challenge !== entry.codeChallenge) {
-      res.status(400).json({ error: "invalid_grant", error_description: "code_verifier mismatch" });
-      return;
-    }
+  // PKCE is mandatory for every AuthCode — code_challenge is required at
+  // /oauth/authorize, and the column itself is NOT NULL — so this runs
+  // unconditionally rather than only "if present". A future code path that
+  // creates an AuthCode without going through /oauth/authorize fails at the
+  // database layer; it can't reach here with a missing challenge.
+  if (!code_verifier) {
+    res.status(400).json({ error: "invalid_grant", error_description: "code_verifier required" });
+    return;
+  }
+  if (entry.codeChallengeMethod !== "S256") {
+    res.status(400).json({ error: "invalid_grant", error_description: "Unsupported code_challenge_method" });
+    return;
+  }
+  const challenge = createHash("sha256").update(code_verifier).digest("base64url");
+  if (challenge !== entry.codeChallenge) {
+    res.status(400).json({ error: "invalid_grant", error_description: "code_verifier mismatch" });
+    return;
   }
 
   await prisma.authCode.delete({ where: { codeHash } });
@@ -560,8 +566,8 @@ async function issueAuthCode(pending: LoginPending, userId: string, res: Respons
       userId,
       clientId: pending.clientId,
       redirectUri: pending.redirectUri,
-      codeChallenge: pending.downstreamCodeChallenge ?? null,
-      codeChallengeMethod: pending.downstreamCodeChallengeMethod ?? null,
+      codeChallenge: pending.downstreamCodeChallenge,
+      codeChallengeMethod: pending.downstreamCodeChallengeMethod ?? "S256",
       expiresAt: new Date(Date.now() + 10 * 60 * 1000),
     },
   });

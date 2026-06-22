@@ -21,6 +21,29 @@ export const deviceRouter: IRouter = Router();
 
 export type DeviceScope = "agent:register" | "relay:manage" | "agent:escalate" | "agent:register:shared";
 
+/**
+ * Single source of truth for "does this user hold the ADMIN role" — used by every
+ * consent-flow scope that requires admin approval (agent:escalate,
+ * agent:register:shared), so a future admin-gated scope reuses this check instead of
+ * re-deriving it inline and risking a copy-paste mistake.
+ */
+async function isAdmin(userId: string): Promise<boolean> {
+  const user = await prisma.user.findUnique({ where: { id: userId }, select: { role: true } });
+  return user?.role === RelayRole.ADMIN;
+}
+
+/**
+ * Forces every DeviceScope dispatch (consent approval, grant issuance) to be an
+ * exhaustive switch: TypeScript only allows passing a `never`-typed value here, which
+ * only holds if every member of the DeviceScope union already has its own `case`. A
+ * scope added to the union without a corresponding case fails to compile, instead of
+ * silently falling into whichever dispatch's `default`/`else` branch happened to be
+ * the most permissive.
+ */
+function unhandledScope(scope: never): never {
+  throw new Error(`Unhandled DeviceScope: ${String(scope)}`);
+}
+
 /** Removes expired device code rows. Called on new issuance and periodically from index.ts. */
 export async function pruneDeviceCodes(): Promise<void> {
   await prisma.deviceCode.deleteMany({ where: { expiresAt: { lt: new Date() } } });
@@ -316,64 +339,68 @@ deviceRouter.post("/activate/confirm", async (req: Request, res: Response) => {
     return;
   }
 
-  if (entry.scope === "agent:register") {
-    const resolvedHost = (host_name ?? "").trim();
-    if (!resolvedHost || resolvedHost.length > 63) {
-      const errorMsg = !resolvedHost ? "Host name is required." : "Host name must be 63 characters or fewer.";
-      const freshCsrf = generateToken();
-      res.cookie("csrf_activate", freshCsrf, {
-        httpOnly: true,
-        secure: config.secureCookies,
-        sameSite: "strict",
-        maxAge: 15 * 60 * 1000,
-      });
-      res.send(consentPage(entry.userCode, entry.scope as DeviceScope, entry.hostName, errorMsg, freshCsrf));
-      return;
+  const scope = entry.scope as DeviceScope;
+  switch (scope) {
+    case "agent:register": {
+      const resolvedHost = (host_name ?? "").trim();
+      if (!resolvedHost || resolvedHost.length > 63) {
+        const errorMsg = !resolvedHost ? "Host name is required." : "Host name must be 63 characters or fewer.";
+        const freshCsrf = generateToken();
+        res.cookie("csrf_activate", freshCsrf, {
+          httpOnly: true,
+          secure: config.secureCookies,
+          sameSite: "strict",
+          maxAge: 15 * 60 * 1000,
+        });
+        res.send(consentPage(entry.userCode, scope, entry.hostName, errorMsg, freshCsrf));
+        return;
+      }
+      await prisma.deviceCode.update({ ...byEntry, data: { hostName: resolvedHost, userId: verifiedUserId, status: "approved" } });
+      break;
     }
-    await prisma.deviceCode.update({ ...byEntry, data: { hostName: resolvedHost, userId: verifiedUserId, status: "approved" } });
-  } else if (entry.scope === "agent:escalate") {
-    // Role check: must be ADMIN — never reveal whether the user lacks the role.
-    const user = await prisma.user.findUnique({
-      where: { id: verifiedUserId },
-      select: { role: true },
-    });
-    if (!user || user.role !== RelayRole.ADMIN) {
-      res.clearCookie("csrf_activate");
-      // Deny silently — same UX as a normal deny, no oracle about role status.
-      await prisma.deviceCode.update({ ...byEntry, data: { status: "denied" } });
-      res.send(activateDonePage("Access denied. You can close this tab."));
-      return;
+    case "agent:escalate": {
+      // Role check: must be ADMIN — never reveal whether the user lacks the role.
+      if (!(await isAdmin(verifiedUserId))) {
+        res.clearCookie("csrf_activate");
+        // Deny silently — same UX as a normal deny, no oracle about role status.
+        await prisma.deviceCode.update({ ...byEntry, data: { status: "denied" } });
+        res.send(activateDonePage("Access denied. You can close this tab."));
+        return;
+      }
+      // Verify the target session belongs to the approving user before elevating.
+      const targetSession = entry.elevateSessionId
+        ? await prisma.oauthSession.findFirst({
+            where: { id: entry.elevateSessionId, userId: verifiedUserId },
+            select: { id: true },
+          })
+        : null;
+      if (!targetSession) {
+        res.clearCookie("csrf_activate");
+        await prisma.deviceCode.update({ ...byEntry, data: { status: "denied" } });
+        res.send(activateDonePage("Access denied. You can close this tab."));
+        return;
+      }
+      await prisma.deviceCode.update({ ...byEntry, data: { userId: verifiedUserId, status: "approved" } });
+      break;
     }
-    // Verify the target session belongs to the approving user before elevating.
-    const targetSession = entry.elevateSessionId
-      ? await prisma.oauthSession.findFirst({
-          where: { id: entry.elevateSessionId, userId: verifiedUserId },
-          select: { id: true },
-        })
-      : null;
-    if (!targetSession) {
-      res.clearCookie("csrf_activate");
-      await prisma.deviceCode.update({ ...byEntry, data: { status: "denied" } });
-      res.send(activateDonePage("Access denied. You can close this tab."));
-      return;
+    case "agent:register:shared": {
+      // Role check: ADMIN only — never reveal whether the user lacks the role.
+      if (!(await isAdmin(verifiedUserId))) {
+        res.clearCookie("csrf_activate");
+        await prisma.deviceCode.update({ ...byEntry, data: { status: "denied" } });
+        res.send(activateDonePage("Access denied. You can close this tab."));
+        return;
+      }
+      // Record the approving admin's userId for audit trail.
+      await prisma.deviceCode.update({ ...byEntry, data: { userId: verifiedUserId, status: "approved" } });
+      break;
     }
-    await prisma.deviceCode.update({ ...byEntry, data: { userId: verifiedUserId, status: "approved" } });
-  } else if (entry.scope === "agent:register:shared") {
-    // Role check: ADMIN only — never reveal whether the user lacks the role.
-    const user = await prisma.user.findUnique({
-      where: { id: verifiedUserId },
-      select: { role: true },
-    });
-    if (!user || user.role !== RelayRole.ADMIN) {
-      res.clearCookie("csrf_activate");
-      await prisma.deviceCode.update({ ...byEntry, data: { status: "denied" } });
-      res.send(activateDonePage("Access denied. You can close this tab."));
-      return;
+    case "relay:manage": {
+      await prisma.deviceCode.update({ ...byEntry, data: { userId: verifiedUserId, status: "approved" } });
+      break;
     }
-    // Record the approving admin's userId for audit trail.
-    await prisma.deviceCode.update({ ...byEntry, data: { userId: verifiedUserId, status: "approved" } });
-  } else {
-    await prisma.deviceCode.update({ ...byEntry, data: { userId: verifiedUserId, status: "approved" } });
+    default:
+      unhandledScope(scope);
   }
 
   res.clearCookie("csrf_activate");
@@ -435,138 +462,143 @@ export async function handleDeviceCodeGrant(
   // Consume the entry.
   await prisma.deviceCode.delete(byCode(device_code));
 
-  if (entry.scope === "agent:escalate") {
-    // Set adminUntil on the target session. The target session was verified at
-    // approval time; re-verify here that it still belongs to the same user.
-    const targetSessionId = entry.elevateSessionId;
-    if (!targetSessionId) {
-      log.error({ deviceCodeHash: entry.deviceCodeHash }, "agent:escalate entry missing elevateSessionId");
-      res.status(500).json({ error: "server_error" });
+  const scope = entry.scope as DeviceScope;
+  switch (scope) {
+    case "agent:escalate": {
+      // Set adminUntil on the target session. The target session was verified at
+      // approval time; re-verify here that it still belongs to the same user.
+      const targetSessionId = entry.elevateSessionId;
+      if (!targetSessionId) {
+        log.error({ deviceCodeHash: entry.deviceCodeHash }, "agent:escalate entry missing elevateSessionId");
+        res.status(500).json({ error: "server_error" });
+        return;
+      }
+      const targetSession = await prisma.oauthSession.findFirst({
+        where: { id: targetSessionId, userId },
+        select: { id: true, expiresAt: true },
+      });
+      if (!targetSession || targetSession.expiresAt < new Date()) {
+        res.status(400).json({ error: "access_denied", error_description: "Target session is no longer valid" });
+        return;
+      }
+      const adminUntil = new Date(Date.now() + config.adminSessionDurationMs);
+      await prisma.oauthSession.update({
+        where: { id: targetSessionId },
+        data: { adminUntil },
+      });
+      log.info({ userId, targetSessionId, adminUntil }, "Session elevated to admin");
+      res.status(204).end();
       return;
     }
-    const targetSession = await prisma.oauthSession.findFirst({
-      where: { id: targetSessionId, userId },
-      select: { id: true, expiresAt: true },
-    });
-    if (!targetSession || targetSession.expiresAt < new Date()) {
-      res.status(400).json({ error: "access_denied", error_description: "Target session is no longer valid" });
+    case "agent:register:shared": {
+      const token = generateToken();
+      const tokenHash = hashToken(token);
+
+      await prisma.$transaction(async (tx) => {
+        // Revoke any existing active HUB token for this host.
+        const existingExecutor = await tx.executor.findFirst({
+          where: {
+            userId: null,
+            host: entry.hostName!,
+            executorToken: { tokenType: ExecutorTokenType.HUB, revokedAt: null },
+          },
+          select: { executorTokenId: true, id: true },
+        });
+        if (existingExecutor) {
+          await tx.executorToken.update({
+            where: { id: existingExecutor.executorTokenId },
+            data: { revokedAt: new Date() },
+          });
+        }
+
+        const executorToken = await tx.executorToken.create({
+          data: {
+            userId: null,
+            tokenType: ExecutorTokenType.HUB,
+            tokenHash,
+            approvedByUserId: userId,
+          },
+          select: { id: true },
+        });
+
+        if (existingExecutor) {
+          await tx.executor.update({
+            where: { id: existingExecutor.id },
+            data: { executorTokenId: executorToken.id, lastHeartbeatAt: null, lastDisconnectReason: null },
+          });
+        } else {
+          await tx.executor.create({
+            data: { userId: null, executorTokenId: executorToken.id, host: entry.hostName! },
+          });
+        }
+      });
+
+      log.info({ approvedByUserId: userId, host: entry.hostName }, "Hub registered via device flow");
+
+      res.json({
+        access_token: token,
+        token_type: "agent",
+        host: entry.hostName,
+      });
       return;
     }
-    const adminUntil = new Date(Date.now() + config.adminSessionDurationMs);
-    await prisma.oauthSession.update({
-      where: { id: targetSessionId },
-      data: { adminUntil },
-    });
-    log.info({ userId, targetSessionId, adminUntil }, "Session elevated to admin");
-    res.status(204).end();
-    return;
-  }
+    case "agent:register": {
+      const token = generateToken();
+      const tokenHash = hashToken(token);
 
-  if (entry.scope === "agent:register:shared") {
-    const token = generateToken();
-    const tokenHash = hashToken(token);
-
-    await prisma.$transaction(async (tx) => {
-      // Revoke any existing active HUB token for this host.
-      const existingExecutor = await tx.executor.findFirst({
-        where: {
-          userId: null,
-          host: entry.hostName!,
-          executorToken: { tokenType: ExecutorTokenType.HUB, revokedAt: null },
-        },
-        select: { executorTokenId: true, id: true },
-      });
-      if (existingExecutor) {
-        await tx.executorToken.update({
-          where: { id: existingExecutor.executorTokenId },
-          data: { revokedAt: new Date() },
+      await prisma.$transaction(async (tx) => {
+        // The userId_host compound unique was replaced by partial unique indexes
+        // (executors_user_id_host_key) which Prisma cannot express natively. Use
+        // findFirst + create/update instead of upsert.
+        const existingExecutor = await tx.executor.findFirst({
+          where: { userId, host: entry.hostName! },
+          select: { id: true, executorTokenId: true },
         });
-      }
 
-      const executorToken = await tx.executorToken.create({
-        data: {
-          userId: null,
-          tokenType: ExecutorTokenType.HUB,
-          tokenHash,
-          approvedByUserId: userId,
-        },
-        select: { id: true },
+        // Revoke the existing token if re-registering the same host.
+        if (existingExecutor) {
+          await tx.executorToken.update({
+            where: { id: existingExecutor.executorTokenId },
+            data: { revokedAt: new Date() },
+          });
+        }
+
+        const executorToken = await tx.executorToken.create({
+          data: { userId, tokenHash },
+          select: { id: true },
+        });
+
+        if (existingExecutor) {
+          await tx.executor.update({
+            where: { id: existingExecutor.id },
+            data: { executorTokenId: executorToken.id, lastHeartbeatAt: null, lastDisconnectReason: null },
+          });
+        } else {
+          await tx.executor.create({
+            data: { userId, executorTokenId: executorToken.id, host: entry.hostName! },
+          });
+        }
       });
 
-      if (existingExecutor) {
-        await tx.executor.update({
-          where: { id: existingExecutor.id },
-          data: { executorTokenId: executorToken.id, lastHeartbeatAt: null, lastDisconnectReason: null },
-        });
-      } else {
-        await tx.executor.create({
-          data: { userId: null, executorTokenId: executorToken.id, host: entry.hostName! },
-        });
-      }
-    });
+      log.info({ userId, host: entry.hostName }, "Executor registered via device flow");
 
-    log.info({ approvedByUserId: userId, host: entry.hostName }, "Hub registered via device flow");
-
-    res.json({
-      access_token: token,
-      token_type: "agent",
-      host: entry.hostName,
-    });
-    return;
-  }
-
-  if (entry.scope === "agent:register") {
-    const token = generateToken();
-    const tokenHash = hashToken(token);
-
-    await prisma.$transaction(async (tx) => {
-      // The userId_host compound unique was replaced by partial unique indexes
-      // (executors_user_id_host_key) which Prisma cannot express natively. Use
-      // findFirst + create/update instead of upsert.
-      const existingExecutor = await tx.executor.findFirst({
-        where: { userId, host: entry.hostName! },
-        select: { id: true, executorTokenId: true },
+      res.json({
+        access_token: token,
+        token_type: "agent",
+        host: entry.hostName,
       });
+      return;
+    }
+    case "relay:manage": {
+      const clientId = await ensureRelayClient();
+      const tokens = await issueOAuthSession(userId, clientId);
 
-      // Revoke the existing token if re-registering the same host.
-      if (existingExecutor) {
-        await tx.executorToken.update({
-          where: { id: existingExecutor.executorTokenId },
-          data: { revokedAt: new Date() },
-        });
-      }
-
-      const executorToken = await tx.executorToken.create({
-        data: { userId, tokenHash },
-        select: { id: true },
-      });
-
-      if (existingExecutor) {
-        await tx.executor.update({
-          where: { id: existingExecutor.id },
-          data: { executorTokenId: executorToken.id, lastHeartbeatAt: null, lastDisconnectReason: null },
-        });
-      } else {
-        await tx.executor.create({
-          data: { userId, executorTokenId: executorToken.id, host: entry.hostName! },
-        });
-      }
-    });
-
-    log.info({ userId, host: entry.hostName }, "Executor registered via device flow");
-
-    res.json({
-      access_token: token,
-      token_type: "agent",
-      host: entry.hostName,
-    });
-  } else {
-    // relay:manage scope — issue a standard OAuth session for the CLI
-    const clientId = await ensureRelayClient();
-    const tokens = await issueOAuthSession(userId, clientId);
-
-    log.info({ userId }, "CLI session issued via device flow");
-    sendTokenResponse(res, tokens);
+      log.info({ userId }, "CLI session issued via device flow");
+      sendTokenResponse(res, tokens);
+      return;
+    }
+    default:
+      unhandledScope(scope);
   }
 }
 
