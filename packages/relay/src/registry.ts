@@ -6,10 +6,10 @@ import type { RpcResponse } from "@constellation/shared";
 // Connection registry
 //
 // Single point of access to in-memory connection state. Isolated here so a
-// future move to a shared backing store (see TODO_DEFERRED.md's "Horizontal
-// Scaling" section for the migration design; ADR 0012 covers the accepted v1
-// decision to stay in-memory) only requires changes in this module, not at
-// every call site.
+// future move to a shared backing store (the migration design is tracked in
+// the project's private deferred-work backlog, not part of this repo; ADR
+// 0012 covers the accepted v1 decision to stay in-memory) only requires
+// changes in this module, not at every call site.
 // ---------------------------------------------------------------------------
 
 export interface ConnectedExecutor {
@@ -55,9 +55,10 @@ export function allConnections(): IterableIterator<[string, ConnectedExecutor]> 
 // RPC registry
 //
 // Tracks in-flight requests awaiting a response from an executor. Isolated for
-// the same reason as the connection registry — see TODO_DEFERRED.md, which
-// notes pendingRpcs would need to move to Redis streams (or similar) alongside
-// the connection map in a multi-instance deployment (see also ADR 0012).
+// the same reason as the connection registry — pendingRpcs would need to move
+// to Redis streams (or similar) alongside the connection map in a
+// multi-instance deployment; tracked in the project's private deferred-work
+// backlog, not part of this repo (see also ADR 0012).
 // ---------------------------------------------------------------------------
 
 interface PendingRpc {
