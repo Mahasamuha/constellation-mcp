@@ -44,6 +44,14 @@ interface SessionEntry {
   has_refresh_token: boolean;
 }
 
+interface LocalUserEntry {
+  id: string;
+  username: string;
+  is_active: boolean;
+  created_at: string;
+  last_login_at: string | null;
+}
+
 interface HubShareEntry {
   executor_id: string;
   executor_host: string;
@@ -54,6 +62,20 @@ interface HubShareEntry {
     overrides?: Array<{ oidc_sub: string; access: string }>;
   };
   updated_at: string;
+}
+
+/** Every `GET /api/*` list endpoint paginates (default 100, max 1000 rows per page)
+ * and returns this shape — see docs/reference.md's pagination section. */
+interface PaginatedResponse<T> {
+  data: T[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+interface ListOpts {
+  limit: string;
+  offset: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -158,13 +180,33 @@ async function apiFetch(
 
 async function apiGet<T>(session: RelaySession, path: string): Promise<T> {
   const res = await apiFetch(session, path);
-  if (!res.ok) die(res);
+  if (!res.ok) await die(res);
   return res.json() as Promise<T>;
+}
+
+/** Builds a `list` command's query string from its --limit/--offset options plus
+ * any command-specific filters, omitting anything not actually set. */
+function buildListQuery(opts: ListOpts, extra: Record<string, string | undefined> = {}): string {
+  const params = new URLSearchParams();
+  for (const [k, v] of Object.entries(extra)) if (v) params.set(k, v);
+  if (opts.limit) params.set("limit", opts.limit);
+  if (opts.offset) params.set("offset", opts.offset);
+  const qs = params.toString();
+  return qs ? `?${qs}` : "";
+}
+
+/** Warns when the server paginated and more rows exist beyond what's shown — to
+ * stderr, so --json output stays valid, pipeable JSON either way. */
+function warnIfMore(res: PaginatedResponse<unknown>): void {
+  const shown = res.offset + res.data.length;
+  if (shown < res.total) {
+    console.error(`Showing ${res.data.length} of ${res.total} total (offset ${res.offset}) — use --offset ${shown} to see more.`);
+  }
 }
 
 async function apiDelete(session: RelaySession, path: string): Promise<void> {
   const res = await apiFetch(session, path, { method: "DELETE" });
-  if (!res.ok) die(res);
+  if (!res.ok) await die(res);
 }
 
 async function apiPost<T>(
@@ -176,13 +218,14 @@ async function apiPost<T>(
     method: "POST",
     body: JSON.stringify(body),
   });
-  if (!res.ok) die(res);
+  if (!res.ok) await die(res);
   if (res.status === 204) return undefined as T;
   return res.json() as Promise<T>;
 }
 
-function die(res: Response): never {
-  res.json().then((body: unknown) => {
+export async function die(res: Response): Promise<never> {
+  try {
+    const body: unknown = await res.json();
     if (
       typeof body === "object" && body !== null &&
       (body as Record<string, unknown>)["error"] === "ESCALATION_REQUIRED"
@@ -192,8 +235,10 @@ function die(res: Response): never {
     } else {
       console.error(`API error ${res.status}: ${JSON.stringify(body)}`);
     }
-  }).catch(() => { console.error(`API error ${res.status}`); });
-  process.exit(1);
+  } catch {
+    console.error(`API error ${res.status}`);
+  }
+  return process.exit(1);
 }
 
 // ---------------------------------------------------------------------------
@@ -335,16 +380,20 @@ export function registerRelayCommands(program: Command): void {
   executors
     .command("list")
     .description("List all registered executors")
+    .option("--limit <n>", "Max rows to return (server caps at 1000)", "100")
+    .option("--offset <n>", "Rows to skip", "0")
     .option("--json", "Output as JSON")
-    .action(async (opts: { json?: boolean }) => {
+    .action(async (opts: ListOpts & { json?: boolean }) => {
       const session = await getValidSession(cfgDir);
-      const res = await apiGet<{ data: ExecutorEntry[] }>(session, "/api/executors");
-      if (opts.json) { console.log(JSON.stringify(res.data, null, 2)); return; }
+      const qs = buildListQuery(opts);
+      const res = await apiGet<PaginatedResponse<ExecutorEntry>>(session, `/api/executors${qs}`);
+      if (opts.json) { console.log(JSON.stringify(res.data, null, 2)); warnIfMore(res); return; }
       for (const a of res.data) {
         console.log(`${a.host} (${a.id})`);
         console.log(`  Status: ${a.online ? "online" : "offline"}${a.last_heartbeat_at ? `  last seen ${a.last_heartbeat_at}` : ""}`);
         for (const s of a.shares) console.log(`  ${s.share} → ${s.reported_path}`);
       }
+      warnIfMore(res);
     });
 
   executors
@@ -369,15 +418,18 @@ export function registerRelayCommands(program: Command): void {
     .command("list")
     .description("List path shares")
     .option("--executor <id>", "Filter by executor ID")
+    .option("--limit <n>", "Max rows to return (server caps at 1000)", "100")
+    .option("--offset <n>", "Rows to skip", "0")
     .option("--json", "Output as JSON")
-    .action(async (opts: { executor?: string; json?: boolean }) => {
+    .action(async (opts: ListOpts & { executor?: string; json?: boolean }) => {
       const session = await getValidSession(cfgDir);
-      const qs = opts.executor ? `?executor_id=${encodeURIComponent(opts.executor)}` : "";
-      const res = await apiGet<{ data: ShareEntry[] }>(session, `/api/shares${qs}`);
-      if (opts.json) { console.log(JSON.stringify(res.data, null, 2)); return; }
+      const qs = buildListQuery(opts, { executor_id: opts.executor });
+      const res = await apiGet<PaginatedResponse<ShareEntry>>(session, `/api/shares${qs}`);
+      if (opts.json) { console.log(JSON.stringify(res.data, null, 2)); warnIfMore(res); return; }
       for (const s of res.data) {
         console.log(`${s.share}  (${s.host})  →  ${s.reported_path}`);
       }
+      warnIfMore(res);
     });
 
   // -------------------------------------------------------------------------
@@ -389,15 +441,19 @@ export function registerRelayCommands(program: Command): void {
   filters
     .command("list")
     .description("List active deny filters")
+    .option("--limit <n>", "Max rows to return (server caps at 1000)", "100")
+    .option("--offset <n>", "Rows to skip", "0")
     .option("--json", "Output as JSON")
-    .action(async (opts: { json?: boolean }) => {
+    .action(async (opts: ListOpts & { json?: boolean }) => {
       const session = await getValidSession(cfgDir);
-      const res = await apiGet<{ data: FilterEntry[] }>(session, "/api/filters");
-      if (opts.json) { console.log(JSON.stringify(res.data, null, 2)); return; }
+      const qs = buildListQuery(opts);
+      const res = await apiGet<PaginatedResponse<FilterEntry>>(session, `/api/filters${qs}`);
+      if (opts.json) { console.log(JSON.stringify(res.data, null, 2)); warnIfMore(res); return; }
       for (const f of res.data) {
         const scope = f.scope_executor_id ? ` [executor: ${f.scope_executor_id}]` : "";
         console.log(`${f.id}  ${f.pattern_type}:${f.pattern}${scope}  (${f.created_at})`);
       }
+      warnIfMore(res);
     });
 
   filters
@@ -439,14 +495,18 @@ export function registerRelayCommands(program: Command): void {
   sessions
     .command("list")
     .description("List active MCP client sessions")
+    .option("--limit <n>", "Max rows to return (server caps at 1000)", "100")
+    .option("--offset <n>", "Rows to skip", "0")
     .option("--json", "Output as JSON")
-    .action(async (opts: { json?: boolean }) => {
+    .action(async (opts: ListOpts & { json?: boolean }) => {
       const session = await getValidSession(cfgDir);
-      const res = await apiGet<{ data: SessionEntry[] }>(session, "/api/sessions");
-      if (opts.json) { console.log(JSON.stringify(res.data, null, 2)); return; }
+      const qs = buildListQuery(opts);
+      const res = await apiGet<PaginatedResponse<SessionEntry>>(session, `/api/sessions${qs}`);
+      if (opts.json) { console.log(JSON.stringify(res.data, null, 2)); warnIfMore(res); return; }
       for (const s of res.data) {
         console.log(`${s.id}  client:${s.mcp_client_id}  issued:${s.issued_at}  expires:${s.expires_at}${s.has_refresh_token ? "  [refresh]" : ""}`);
       }
+      warnIfMore(res);
     });
 
   sessions
@@ -470,19 +530,20 @@ export function registerRelayCommands(program: Command): void {
   users
     .command("list")
     .description("List all local users")
+    .option("--limit <n>", "Max rows to return (server caps at 1000)", "100")
+    .option("--offset <n>", "Rows to skip", "0")
     .option("--json", "Output as JSON")
-    .action(async (opts: { json?: boolean }) => {
+    .action(async (opts: ListOpts & { json?: boolean }) => {
       const session = await getValidSession(cfgDir);
-      const res = await apiGet<{ data: Array<{
-        id: string; username: string; is_active: boolean;
-        created_at: string; last_login_at: string | null;
-      }> }>(session, "/api/users");
-      if (opts.json) { console.log(JSON.stringify(res.data, null, 2)); return; }
+      const qs = buildListQuery(opts);
+      const res = await apiGet<PaginatedResponse<LocalUserEntry>>(session, `/api/users${qs}`);
+      if (opts.json) { console.log(JSON.stringify(res.data, null, 2)); warnIfMore(res); return; }
       for (const u of res.data) {
         const status = u.is_active ? "active" : "deactivated";
         const last = u.last_login_at ? `  last login: ${u.last_login_at}` : "";
         console.log(`${u.username}  [${status}]${last}`);
       }
+      warnIfMore(res);
     });
 
   users
@@ -682,15 +743,17 @@ export function registerRelayCommands(program: Command): void {
     .command("list")
     .description("List all hub shares synced to the relay")
     .option("--executor <id>", "Filter to a specific hub by ID")
+    .option("--limit <n>", "Max rows to return (server caps at 1000)", "100")
+    .option("--offset <n>", "Rows to skip", "0")
     .option("--json", "Output as JSON")
-    .action(async (opts: { executor?: string; json?: boolean }) => {
+    .action(async (opts: ListOpts & { executor?: string; json?: boolean }) => {
       const session = await getValidSession(cfgDir);
-      const qs = opts.executor ? `?executor=${encodeURIComponent(opts.executor)}` : "";
-      const data = await apiGet<{ data: HubShareEntry[] }>(session, `/api/admin/hub-shares${qs}`);
-      if (opts.json) { console.log(JSON.stringify(data.data, null, 2)); return; }
+      const qs = buildListQuery(opts, { executor: opts.executor });
+      const data = await apiGet<PaginatedResponse<HubShareEntry>>(session, `/api/admin/hub-shares${qs}`);
+      if (opts.json) { console.log(JSON.stringify(data.data, null, 2)); warnIfMore(data); return; }
 
       if (data.data.length === 0) {
-        console.log("No hub shares found.");
+        console.log(data.total > 0 ? `No hub shares at this offset (${data.total} total — try --offset 0).` : "No hub shares found.");
         return;
       }
 
@@ -706,6 +769,7 @@ export function registerRelayCommands(program: Command): void {
           : "";
         console.log(`  ${s.share}  →  ${s.reported_path}  [default: ${s.permission_blob.default}]${overrideStr}`);
       }
+      warnIfMore(data);
     });
 
   // -------------------------------------------------------------------------

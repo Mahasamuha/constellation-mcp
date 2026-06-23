@@ -247,21 +247,21 @@ Deletes `relay-session.yaml`. Does not revoke the token on the relay.
 
 Shows relay health, uptime, and version.
 
-### `relay executors list [--json]`
+### `relay executors list [--limit <n>] [--offset <n>] [--json]`
 
-Lists all executors registered to your account with their online status and shares.
+Lists all executors registered to your account with their online status and shares. Paginated like the underlying API (see "Management API" below) — defaults to `--limit 100 --offset 0`; if more rows exist than fit on the current page, a "Showing N of total" note is printed to stderr (so `--json` output stays valid, pipeable JSON either way).
 
 ### `relay executors revoke <executor-id>`
 
 Revokes the executor's token. The executor goes offline immediately and cannot reconnect until re-initialized. Prompts for confirmation.
 
-### `relay shares list [--executor <id>] [--json]`
+### `relay shares list [--executor <id>] [--limit <n>] [--offset <n>] [--json]`
 
-Lists path shares across all executors, optionally filtered to a specific executor ID.
+Lists path shares across all executors, optionally filtered to a specific executor ID. Paginated — see `relay executors list` above.
 
-### `relay filters list [--json]`
+### `relay filters list [--limit <n>] [--offset <n>] [--json]`
 
-Lists active relay-side path deny filters.
+Lists active relay-side path deny filters. Paginated — see `relay executors list` above.
 
 ### `relay filters add <pattern> [--type glob|regex] [--executor <id>]`
 
@@ -271,17 +271,17 @@ Adds a deny filter. `--type` defaults to `glob`. `--executor` scopes it to a spe
 
 Removes a deny filter by ID.
 
-### `relay sessions list [--json]`
+### `relay sessions list [--limit <n>] [--offset <n>] [--json]`
 
-Lists active MCP client OAuth sessions (non-expired only).
+Lists active MCP client OAuth sessions (non-expired only). Paginated — see `relay executors list` above.
 
 ### `relay sessions revoke <session-id>`
 
 Immediately invalidates an MCP client session (both access and refresh tokens).
 
-### `relay users list [--json]`
+### `relay users list [--limit <n>] [--offset <n>] [--json]`
 
-Lists all local user accounts. Only available when the relay is running in `AUTH_MODE=local`.
+Lists all local user accounts. Only available when the relay is running in `AUTH_MODE=local`. Paginated — see `relay executors list` above.
 
 ### `relay users add <username>`
 
@@ -323,9 +323,9 @@ constellation relay --relay <url> user demote <identifier> [--admin-token <token
 
 Revokes admin role from a user. Same auth requirements as `relay user promote`.
 
-### `relay hub-shares list [--executor <id>] [--json]`
+### `relay hub-shares list [--executor <id>] [--limit <n>] [--offset <n>] [--json]`
 
-Lists all hub shares synced to the relay. Requires an elevated admin session (`relay elevate` first). `--executor` filters to a specific hub by ID.
+Lists all hub shares synced to the relay. Requires an elevated admin session (`relay elevate` first). `--executor` filters to a specific hub by ID. Paginated — see `relay executors list` above.
 
 ### `relay token create --shared`
 

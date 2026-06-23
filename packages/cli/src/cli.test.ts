@@ -4,7 +4,7 @@ declare const __PKG_VERSION__: string;
 import { Command } from "commander";
 import { existsSync } from "node:fs";
 import { registerNodeCommands } from "@constellation/node/cli";
-import { registerRelayCommands } from "./cli/relay.js";
+import { registerRelayCommands, die } from "./cli/relay.js";
 import { registerHubCommands } from "@constellation/hub/cli";
 import { writeRelaySession, relaySessionPath, loadRelaySession } from "@constellation/node/config";
 import { makeTempDir, cleanTempDir } from "./test/fixtures.js";
@@ -251,6 +251,103 @@ describe("relay status — valid session", () => {
     expect(exitCode).toBe(1);
     expect(err).toContain("requires admin privileges");
     expect(err).toContain("constellation relay elevate");
+  });
+});
+
+describe("die()", () => {
+  it("prints the error body before exiting, not after", async () => {
+    // process.exit really does terminate the process before any pending
+    // microtask runs — a throw-based mock (as the runCli() harness above
+    // uses) would mask a die() that fires off res.json() without awaiting
+    // it, since the unwind gives that pending promise a chance to flush.
+    // Mocking exit as a plain no-op and asserting call order instead pins
+    // down the actual ordering guarantee.
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
+
+    const res = new Response(JSON.stringify({ error: "ESCALATION_REQUIRED" }), { status: 403 });
+    await die(res);
+
+    expect(errorSpy).toHaveBeenCalled();
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(errorSpy.mock.invocationCallOrder[0]).toBeLessThan(exitSpy.mock.invocationCallOrder[0]);
+
+    errorSpy.mockRestore();
+    exitSpy.mockRestore();
+  });
+
+  it("falls back to a generic message when the body isn't JSON", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
+
+    const res = new Response("not json", { status: 500 });
+    await die(res);
+
+    expect(errorSpy).toHaveBeenCalledWith("API error 500");
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(errorSpy.mock.invocationCallOrder[0]).toBeLessThan(exitSpy.mock.invocationCallOrder[0]);
+
+    errorSpy.mockRestore();
+    exitSpy.mockRestore();
+  });
+});
+
+describe("relay executors list — pagination", () => {
+  beforeEach(() => {
+    writeRelaySession(dir, {
+      relay_url: "https://relay.example.com",
+      access_token: "tok_valid",
+      access_token_expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("defaults to limit=100&offset=0 and prints nothing extra when everything fits on one page", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      expect(url).toBe("https://relay.example.com/api/executors?limit=100&offset=0");
+      return new Response(JSON.stringify({ data: [], total: 0, limit: 100, offset: 0 }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { exitCode, err } = await runCli(["relay", "executors", "list"], dir);
+
+    expect(exitCode).toBe(0);
+    expect(err).toBe("");
+  });
+
+  it("forwards --limit/--offset to the request", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      expect(url).toBe("https://relay.example.com/api/executors?limit=5&offset=10");
+      return new Response(JSON.stringify({ data: [], total: 10, limit: 5, offset: 10 }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await runCli(["relay", "executors", "list", "--limit", "5", "--offset", "10"], dir);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("warns on stderr (not stdout) when more rows exist beyond the current page, in both human and --json output", async () => {
+    const page = {
+      data: [{ id: "e1", host: "h1", online: true, last_heartbeat_at: null, shares: [] }],
+      total: 250,
+      limit: 100,
+      offset: 0,
+    };
+
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(page), { status: 200 })));
+    const human = await runCli(["relay", "executors", "list"], dir);
+    expect(human.err).toContain("Showing 1 of 250 total");
+    expect(human.err).toContain("--offset 1");
+    expect(human.out).not.toContain("Showing");
+
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(page), { status: 200 })));
+    const json = await runCli(["relay", "executors", "list", "--json"], dir);
+    expect(json.err).toContain("Showing 1 of 250 total");
+    expect(() => JSON.parse(json.out)).not.toThrow();
   });
 });
 
