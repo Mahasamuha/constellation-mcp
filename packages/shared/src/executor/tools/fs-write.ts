@@ -3,6 +3,7 @@ import {
   constants as fsConstants,
 } from "node:fs";
 import { join, dirname } from "node:path";
+import { openNoFollow } from "./safe-open.js";
 
 // ---------------------------------------------------------------------------
 // write_file
@@ -15,10 +16,13 @@ export interface WriteFileParams {
 
 export async function writeFile(absolutePath: string, params: WriteFileParams): Promise<void> {
   await fs.mkdir(dirname(absolutePath), { recursive: true });
-  if (params.mode === "append") {
-    await fs.appendFile(absolutePath, params.content, "utf8");
-  } else {
-    await fs.writeFile(absolutePath, params.content, "utf8");
+  const flags = fsConstants.O_WRONLY | fsConstants.O_CREAT |
+    (params.mode === "append" ? fsConstants.O_APPEND : fsConstants.O_TRUNC);
+  const handle = await openNoFollow(absolutePath, flags);
+  try {
+    await handle.writeFile(params.content, "utf8");
+  } finally {
+    await handle.close();
   }
 }
 

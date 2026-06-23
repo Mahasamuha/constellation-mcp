@@ -1,5 +1,6 @@
-import { promises as fs } from "node:fs";
+import { constants as fsConstants } from "node:fs";
 import { createPatch } from "diff";
+import { openNoFollow } from "./safe-open.js";
 
 // ---------------------------------------------------------------------------
 // edit_file
@@ -25,34 +26,45 @@ export interface EditFileResult {
  * host's filesystem layout.
  */
 export async function editFile(absolutePath: string, displayPath: string, params: EditFileParams): Promise<EditFileResult> {
-  const original = await fs.readFile(absolutePath, "utf8");
-  let content = original;
+  // dry_run only ever reads — open read-only for it so a preview against a
+  // read-only-permissioned file still works, matching pre-existing behavior.
+  const handle = await openNoFollow(absolutePath, params.dry_run ? fsConstants.O_RDONLY : fsConstants.O_RDWR);
+  try {
+    const original = await handle.readFile("utf8");
+    let content = original;
 
-  for (let i = 0; i < params.edits.length; i++) {
-    const edit = params.edits[i]!;
-    const count = countOccurrences(content, edit.old_text);
-    if (count === 0) {
-      throw Object.assign(
-        new Error(`No match found for edit ${i} — fetch current file content and retry`),
-        { code: "EDIT_NO_MATCH", edit_index: i, match_count: 0 }
-      );
+    for (let i = 0; i < params.edits.length; i++) {
+      const edit = params.edits[i]!;
+      const count = countOccurrences(content, edit.old_text);
+      if (count === 0) {
+        throw Object.assign(
+          new Error(`No match found for edit ${i} — fetch current file content and retry`),
+          { code: "EDIT_NO_MATCH", edit_index: i, match_count: 0 }
+        );
+      }
+      if (count > 1) {
+        throw Object.assign(
+          new Error(`${count} matches found for edit ${i} — expand old_text to include more surrounding context`),
+          { code: "EDIT_AMBIGUOUS", edit_index: i, match_count: count }
+        );
+      }
+      content = content.replace(edit.old_text, () => edit.new_text);
     }
-    if (count > 1) {
-      throw Object.assign(
-        new Error(`${count} matches found for edit ${i} — expand old_text to include more surrounding context`),
-        { code: "EDIT_AMBIGUOUS", edit_index: i, match_count: count }
-      );
+
+    const diff = createPatch(displayPath, original, content);
+
+    if (!params.dry_run) {
+      // truncate then write at an explicit position 0 — handle.writeFile()
+      // without O_APPEND writes from the *current* position, which is EOF
+      // of the original content after the read above, not necessarily 0.
+      await handle.truncate(0);
+      await handle.write(content, 0, "utf8");
     }
-    content = content.replace(edit.old_text, () => edit.new_text);
+
+    return { diff };
+  } finally {
+    await handle.close();
   }
-
-  const diff = createPatch(displayPath, original, content);
-
-  if (!params.dry_run) {
-    await fs.writeFile(absolutePath, content, "utf8");
-  }
-
-  return { diff };
 }
 
 function countOccurrences(haystack: string, needle: string): number {

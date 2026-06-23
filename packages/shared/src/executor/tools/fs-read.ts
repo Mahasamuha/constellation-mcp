@@ -1,9 +1,10 @@
 import {
   promises as fs,
-  createReadStream,
+  constants as fsConstants,
 } from "node:fs";
 import { createInterface } from "node:readline";
 import { join, relative } from "node:path";
+import { openNoFollow } from "./safe-open.js";
 
 // ---------------------------------------------------------------------------
 // list_directory
@@ -131,53 +132,58 @@ export async function readFile(
   absolutePath: string,
   params: ReadFileParams
 ): Promise<ReadFileResult> {
-  const stat = await fs.stat(absolutePath);
-  const capBytes = params.max_file_size_kb * 1024;
-  const isRangeRead = params.start_line !== undefined || params.end_line !== undefined;
+  const handle = await openNoFollow(absolutePath, fsConstants.O_RDONLY);
+  try {
+    const stat = await handle.stat();
+    const capBytes = params.max_file_size_kb * 1024;
+    const isRangeRead = params.start_line !== undefined || params.end_line !== undefined;
 
-  if (!isRangeRead && stat.size > capBytes) {
-    throw Object.assign(
-      new Error(`File is ${(stat.size / 1024 / 1024).toFixed(1)}MB; max is ${params.max_file_size_kb}KB — use start_line/end_line to read in chunks`),
-      { code: "FILE_TOO_LARGE", read_size_kb: Math.round(stat.size / 1024), max_file_size_kb: params.max_file_size_kb }
-    );
-  }
-
-  if (isRangeRead && stat.size > capBytes) {
-    return readRangeStreamed(absolutePath, params, capBytes);
-  }
-
-  const raw = await fs.readFile(absolutePath, "utf8");
-  const lines = raw.split("\n");
-  const totalLines = lines.length;
-
-  if (isRangeRead) {
-    const start = Math.max(0, (params.start_line ?? 1) - 1);
-    const end = params.end_line !== undefined ? params.end_line : totalLines;
-    const slice = lines.slice(start, end).join("\n");
-    const sliceBytes = Buffer.byteLength(slice, "utf8");
-    if (sliceBytes > capBytes) {
+    if (!isRangeRead && stat.size > capBytes) {
       throw Object.assign(
-        new Error(`Requested range exceeds ${params.max_file_size_kb}KB — reduce the line range`),
-        { code: "READ_TOO_LARGE", read_size_kb: Math.round(sliceBytes / 1024), max_file_size_kb: params.max_file_size_kb }
+        new Error(`File is ${(stat.size / 1024 / 1024).toFixed(1)}MB; max is ${params.max_file_size_kb}KB — use start_line/end_line to read in chunks`),
+        { code: "FILE_TOO_LARGE", read_size_kb: Math.round(stat.size / 1024), max_file_size_kb: params.max_file_size_kb }
       );
     }
-    return { content: slice, total_lines: totalLines };
-  }
 
-  return { content: raw, total_lines: totalLines };
+    if (isRangeRead && stat.size > capBytes) {
+      return await readRangeStreamed(handle, params, capBytes);
+    }
+
+    const raw = await handle.readFile("utf8");
+    const lines = raw.split("\n");
+    const totalLines = lines.length;
+
+    if (isRangeRead) {
+      const start = Math.max(0, (params.start_line ?? 1) - 1);
+      const end = params.end_line !== undefined ? params.end_line : totalLines;
+      const slice = lines.slice(start, end).join("\n");
+      const sliceBytes = Buffer.byteLength(slice, "utf8");
+      if (sliceBytes > capBytes) {
+        throw Object.assign(
+          new Error(`Requested range exceeds ${params.max_file_size_kb}KB — reduce the line range`),
+          { code: "READ_TOO_LARGE", read_size_kb: Math.round(sliceBytes / 1024), max_file_size_kb: params.max_file_size_kb }
+        );
+      }
+      return { content: slice, total_lines: totalLines };
+    }
+
+    return { content: raw, total_lines: totalLines };
+  } finally {
+    await handle.close();
+  }
 }
 
 // Streams a file line-by-line to extract a range without loading the whole file.
 // Always reads to EOF so total_lines is accurate for pagination.
 async function readRangeStreamed(
-  filePath: string,
+  handle: fs.FileHandle,
   params: ReadFileParams,
   capBytes: number
 ): Promise<ReadFileResult> {
   const startLine = Math.max(0, (params.start_line ?? 1) - 1);
   const endLine = params.end_line;
 
-  const rl = createInterface({ input: createReadStream(filePath), crlfDelay: Infinity });
+  const rl = createInterface({ input: handle.createReadStream(), crlfDelay: Infinity });
   const rangeLines: string[] = [];
   let lineNum = 0;
   let totalLines = 0;

@@ -275,6 +275,18 @@ describe("readFile", () => {
 
     expect(err.code).toBe("READ_TOO_LARGE");
   });
+
+  // Simulates the window between an earlier realpath-based validation and this
+  // call: a symlink now sits at the exact path the caller was told was safe.
+  it("rejects reading through a symlink planted at the target path", async () => {
+    await fs.writeFile(join(root, "real.txt"), "secret elsewhere", "utf8");
+    const target = join(root, "target.txt");
+    await fs.symlink(join(root, "real.txt"), target);
+
+    const err = await readFile(target, { max_file_size_kb: 100 }).catch((e) => e);
+
+    expect(err.code).toBe("ELOOP");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -369,6 +381,26 @@ describe("writeFile", () => {
     await writeFile(join(root, "deep", "nested", "file.txt"), { content: "x" });
     expect(await fs.readFile(join(root, "deep", "nested", "file.txt"), "utf8")).toBe("x");
   });
+
+  // Simulates the window between an earlier realpath-based validation and this
+  // call: a symlink now sits at the exact path the caller was told was safe.
+  it("rejects (overwrite) writing through a symlink planted at the target path", async () => {
+    const target = join(root, "target.txt");
+    await fs.symlink(join(root, "..", "outside-target.txt"), target);
+
+    const err = await writeFile(target, { content: "pwned" }).catch((e) => e);
+
+    expect(err.code).toBe("ELOOP");
+  });
+
+  it("rejects (append) writing through a symlink planted at the target path", async () => {
+    const target = join(root, "target.txt");
+    await fs.symlink(join(root, "..", "outside-target.txt"), target);
+
+    const err = await writeFile(target, { content: "pwned", mode: "append" }).catch((e) => e);
+
+    expect(err.code).toBe("ELOOP");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -447,6 +479,21 @@ describe("editFile", () => {
     });
     expect(typeof result.diff).toBe("string");
     expect(result.diff.length).toBeGreaterThan(0);
+  });
+
+  // Simulates the window between an earlier realpath-based validation and this
+  // call: a symlink now sits at the exact path the caller was told was safe.
+  it("rejects editing through a symlink planted at the target path", async () => {
+    await fs.writeFile(join(root, "real.txt"), "hello world", "utf8");
+    const target = join(root, "target.txt");
+    await fs.symlink(join(root, "real.txt"), target);
+
+    const err = await editFile(target, "target.txt", {
+      edits: [{ old_text: "hello", new_text: "goodbye" }],
+    }).catch((e) => e);
+
+    expect(err.code).toBe("ELOOP");
+    expect(await fs.readFile(join(root, "real.txt"), "utf8")).toBe("hello world");
   });
 });
 
