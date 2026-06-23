@@ -1,11 +1,12 @@
 import { createServer, createConnection, type Server, type Socket } from "node:net";
 import { readFileSync, writeFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
-import { createLogger, generateToken, safeEqual } from "@constellation/shared";
+import { createLogger } from "./logger.js";
+import { generateToken, safeEqual } from "./tokens.js";
 
-const log = createLogger("node:control");
+const log = createLogger("control-channel");
 
-/** The slice of NodeConnection's surface the control server actually drives. */
+/** The slice of a daemon connection's surface the control server actually drives. */
 export interface RotatableConnection {
   rotateToken(): Promise<void>;
 }
@@ -24,18 +25,19 @@ function controlFilePath(dir: string): string {
 }
 
 /**
- * Starts a loopback-only control channel the CLI can use to ask the *running* daemon to
- * act on its live relay connection — today, just token rotation — instead of the CLI
- * opening a second WebSocket of its own. A second connection authenticated with the same
- * (not-yet-rotated) token would otherwise evict the daemon's connection outright, since
- * the relay allows only one live connection per executor.
+ * Starts a loopback-only control channel a CLI invocation can use to ask the *running*
+ * daemon to act on its live relay connection — today, just token rotation — instead of
+ * the CLI opening a second WebSocket of its own. A second connection authenticated with
+ * the same (not-yet-rotated) token would otherwise evict the daemon's connection outright,
+ * since the relay allows only one live connection per executor. Shared by both `node` and
+ * `hub`, which each run exactly this kind of single long-lived daemon process.
  *
- * The bound port and a per-process random auth token are written to a 0600 file in
- * configDir, the same trust model already used for node.yaml/paths.yaml: any local
- * process that can read that file already has full access to the live node token, so
- * gating this channel on the same file permission adds no new exposure. The auth token
- * exists only to stop a *different* local user from finding the port via a loopback scan
- * and triggering a rotation without being able to read the file at all.
+ * The bound port and a per-process random auth token are written to a 0600 file in `dir`,
+ * the same trust model already used for the daemon's own credential files: any local
+ * process that can read that file already has full access to the live token, so gating
+ * this channel on the same file permission adds no new exposure. The auth token exists
+ * only to stop a *different* local user from finding the port via a loopback scan and
+ * triggering a rotation without being able to read the file at all.
  */
 export function startControlServer(dir: string, conn: RotatableConnection): Server {
   const auth = generateToken();

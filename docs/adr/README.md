@@ -20,3 +20,4 @@
 | [0016](0016-shared-queue-timeout.md) | Queue Timeout Utility Lives in `@constellation/shared`, Not Hub | Accepted |
 | [0017](0017-ambiguous-share-resolution.md) | Ambiguous Share Resolution Returns an Error Instead of Requiring `host` | Accepted |
 | [0018](0018-share-rpcenvelope-via-inheritance.md) | Share RpcEnvelope via Inheritance; Nest Tool Params | Accepted |
+| [0019](0019-hub-live-token-rotation.md) | Hub Token Rotation Is Live, Not Restart-Bound | Accepted |

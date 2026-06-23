@@ -12,14 +12,13 @@ import {
   loadPathsConfig,
   loadNodeConfig,
 } from "./config.js";
-import { startControlServer } from "./control.js";
 import { makeTempDir, cleanTempDir } from "./test/fixtures.js";
 
 vi.mock("@constellation/shared", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@constellation/shared")>();
   return { ...actual, confirm: vi.fn() };
 });
-import { confirm as mockedConfirm } from "@constellation/shared";
+import { confirm as mockedConfirm, startControlServer } from "@constellation/shared";
 
 // ---------------------------------------------------------------------------
 // Helpers

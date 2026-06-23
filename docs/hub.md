@@ -410,10 +410,15 @@ sudo systemctl restart constellation-hub
 
 ```sh
 constellation hub rotate-token --config-file /etc/constellation/hub.yaml
-sudo systemctl restart constellation-hub
 ```
 
-The command connects to the relay via WebSocket, requests a new token, and writes it to `env_file`. The hub must be restarted to reconnect with the new token.
+If the hub is currently running, this asks the live daemon to rotate on its own connection — it persists the new token to `env_file` and reconnects immediately. **No restart needed**, and no service interruption: the daemon never drops its connection to the relay.
+
+If no hub is running (or it's unreachable), the command falls back to requesting a new token directly and writing it to `env_file`; in that case, start (or restart) the hub to connect with it:
+
+```sh
+sudo systemctl restart constellation-hub
+```
 
 ### Revoke a hub
 

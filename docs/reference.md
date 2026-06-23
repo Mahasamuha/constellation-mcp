@@ -169,7 +169,7 @@ Stops the systemd unit (calls `systemctl stop`). If the hub is not managed by sy
 constellation hub rotate-token [--config-file <path>]
 ```
 
-Rotates the hub token via a WebSocket connection and writes the new token to the `env_file` specified in the config. Restart the hub afterwards to reconnect.
+If the hub is currently running, asks it to rotate on its own live connection — persists the new token to `env_file` and reconnects immediately, no restart needed. Otherwise rotates via a direct WebSocket connection and writes the new token to `env_file`; restart the hub afterwards to connect with it.
 
 ---
 

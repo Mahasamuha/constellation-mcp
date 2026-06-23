@@ -1,7 +1,6 @@
 import { configDir, loadNodeConfig, loadPathsConfig } from "./config.js";
 import { NodeConnection } from "./connection.js";
-import { startControlServer } from "./control.js";
-import { createLogger } from "@constellation/shared";
+import { createLogger, startControlServer } from "@constellation/shared";
 
 export function runDaemon(configDirOverride?: string): void {
   const log = createLogger("node");

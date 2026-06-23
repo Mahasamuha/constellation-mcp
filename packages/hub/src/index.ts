@@ -1,7 +1,15 @@
 import { checkSharePath } from "./paths.js";
 import { readFileSync, writeFileSync, statSync } from "node:fs";
+import { dirname } from "node:path";
 import { userInfo } from "node:os";
-import { createLogger, MAX_SHARE_INSTRUCTIONS_LENGTH, RelaySocket, type RpcEnvelope } from "@constellation/shared";
+import {
+  createLogger,
+  MAX_SHARE_INSTRUCTIONS_LENGTH,
+  RelaySocket,
+  startControlServer,
+  type RpcEnvelope,
+  type RotatableConnection,
+} from "@constellation/shared";
 import { loadHubConfig, validateHubConfig, type HubConfig } from "./config.js";
 import { resolveIdentity, isIdentityError } from "./identity.js";
 import { checkRpcPermission, buildPermissionBlob } from "./permissions.js";
@@ -16,6 +24,18 @@ const log = createLogger("hub");
 interface IncomingRpcEnvelope extends RpcEnvelope {
   user_oidc_sub: string | null;
   user_claims: Record<string, unknown>;
+}
+
+/** Bounds how long rotateToken() waits for the relay's reply and, separately, for the
+ * resulting reconnect to succeed — comfortably under the relay's pending-rotation TTL
+ * (5 minutes) so a caller never hangs past the point where the rotation would have
+ * expired server-side anyway. Mirrors node/src/connection.ts's identical constant. */
+const ROTATE_TIMEOUT_MS = 30_000;
+
+interface RotationState {
+  resolve: () => void;
+  reject: (err: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
 }
 
 // ---------------------------------------------------------------------------
@@ -108,12 +128,14 @@ function buildHubShareSyncPayload(cfg: HubConfig, shareRegistry: Record<string, 
  * identity, permission checks, subnode dispatch, audit logging, and
  * graceful drain-on-shutdown.
  */
-class HubSocket extends RelaySocket {
+export class HubSocket extends RelaySocket implements RotatableConnection {
   private shuttingDown = false;
+  private rotationState: RotationState | null = null;
+  private awaitingRotationConfirm = false;
 
   constructor(
     private readonly cfg: HubConfig,
-    private readonly hubToken: string,
+    private hubToken: string,
     private readonly shareRegistry: Record<string, string>,
     private readonly pool: SubnodePool
   ) {
@@ -128,9 +150,62 @@ class HubSocket extends RelaySocket {
     return this.hubToken;
   }
 
+  /**
+   * Drives the same daemon-initiated rotation handshake `node` uses: requests a new
+   * token on this live connection, persists it to env_file and adopts it in place once
+   * the relay grants it, and waits for the resulting reconnect (triggered by closing
+   * this socket) to actually succeed before resolving. Unlike node, hub's token is
+   * deliberately kept out of the main config object (see docs/hub.md's "subnode workers
+   * never inherit the parent's environment" note) — env_file is where it's persisted
+   * across a future cold start, but this in-memory field is updated immediately so the
+   * very next reconnect uses it, with no restart required.
+   */
+  rotateToken(): Promise<void> {
+    if (!this.cfg.env_file) {
+      return Promise.reject(new Error("No env_file configured — cannot persist a rotated token across a restart"));
+    }
+    if (this.rotationState) {
+      return Promise.reject(new Error("A token rotation is already in progress"));
+    }
+    return new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.rotationState = null;
+        this.awaitingRotationConfirm = false;
+        reject(new Error("Timed out waiting for rotation to complete"));
+      }, ROTATE_TIMEOUT_MS);
+      this.rotationState = { resolve, reject, timer };
+      this.send({ type: "rotate_token" });
+    });
+  }
+
+  /** Settles any in-flight rotateToken() call with a failure — used for relay-reported
+   * errors and for cleanup if the connection is stopped mid-rotation. */
+  private failRotation(err: Error): void {
+    if (!this.rotationState) return;
+    clearTimeout(this.rotationState.timer);
+    const { reject } = this.rotationState;
+    this.rotationState = null;
+    this.awaitingRotationConfirm = false;
+    reject(err);
+  }
+
+  override stop(): void {
+    this.failRotation(new Error("Connection stopped"));
+    super.stop();
+  }
+
   protected onOpen(): void {
     this.log.info({ hubName: this.cfg.hub_name }, "Connected to relay");
     this.send(buildHubShareSyncPayload(this.cfg, this.shareRegistry));
+    if (this.awaitingRotationConfirm) {
+      this.awaitingRotationConfirm = false;
+      if (this.rotationState) {
+        clearTimeout(this.rotationState.timer);
+        const { resolve } = this.rotationState;
+        this.rotationState = null;
+        resolve();
+      }
+    }
   }
 
   protected onMessage(msg: Record<string, unknown>): void {
@@ -154,20 +229,36 @@ class HubSocket extends RelaySocket {
       const token = msg["token"];
       if (typeof token !== "string") {
         this.log.warn("Received token_rotated without a token string");
+        this.failRotation(new Error("Relay sent token_rotated without a token"));
         return;
       }
-      // Write the new token to the env file
-      if (this.cfg.env_file) {
-        try {
-          writeTokenToEnvFile(this.cfg.env_file, token);
-          this.log.info("Rotated token written to env_file. Restart the hub to reconnect.");
-        } catch (err) {
-          this.log.error({ err }, "Failed to write rotated token to env_file");
-        }
-      } else {
-        this.log.warn("Token rotated but no env_file configured — new token not persisted. Restart hub manually with the new token.");
+      if (!this.cfg.env_file) {
+        // rotateToken() already refuses to start a rotation without env_file configured,
+        // so this should be unreachable in practice — defensive only.
+        this.log.error("Received token_rotated but no env_file is configured to persist it");
+        this.failRotation(new Error("No env_file configured to persist the rotated token"));
+        return;
       }
+      try {
+        writeTokenToEnvFile(this.cfg.env_file, token);
+      } catch (err) {
+        this.log.error({ err }, "Failed to write rotated token to env_file");
+        this.failRotation(err instanceof Error ? err : new Error(String(err)));
+        return;
+      }
+      this.hubToken = token;
+      this.log.info("Token rotated and persisted to env_file — reconnecting to confirm");
+      // Reconnect with the new token; onOpen() resolves the pending rotateToken() call
+      // once this reconnect actually succeeds.
+      this.awaitingRotationConfirm = true;
       this.ws?.close();
+      return;
+    }
+
+    if (type === "rotate_token_error") {
+      const err = new Error(String(msg["error"] ?? "Token rotation failed"));
+      this.log.warn({ err }, "Relay rejected rotate_token");
+      this.failRotation(err);
       return;
     }
 
@@ -366,12 +457,19 @@ export async function runHub(configPath: string): Promise<void> {
   const pool = new SubnodePool(cfg, shareRegistry);
   const socket = new HubSocket(cfg, hubToken, shareRegistry, pool);
 
-  process.on("SIGTERM", () => {
+  // Lives alongside the audit log — that directory is always present (audit_log is a
+  // required field) and already writable by the service user, so no new systemd
+  // ReadWritePaths grant is needed just for this. The rotated token itself is still
+  // persisted to env_file's own directory (see HubSocket's token_rotated handler);
+  // `hub install` grants write access there separately, only when env_file is set.
+  const controlServer = startControlServer(dirname(cfg.audit_log), socket);
+
+  const shutdown = () => {
+    controlServer.close();
     socket.shutdown().then(() => process.exit(0)).catch(() => process.exit(1));
-  });
-  process.on("SIGINT", () => {
-    socket.shutdown().then(() => process.exit(0)).catch(() => process.exit(1));
-  });
+  };
+  process.on("SIGTERM", shutdown);
+  process.on("SIGINT", shutdown);
 
   socket.start();
   log.info({ hubName: cfg.hub_name, shares: Object.keys(shareRegistry) }, "Hub started");

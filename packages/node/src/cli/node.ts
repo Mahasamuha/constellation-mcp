@@ -15,7 +15,14 @@ import {
   pathsYamlPath,
   type NodeConfig,
 } from "../config.js";
-import { MAX_SHARE_INSTRUCTIONS_LENGTH, poll, confirm, assertSecureRelayUrl, type PathEntry } from "@constellation/shared";
+import {
+  MAX_SHARE_INSTRUCTIONS_LENGTH,
+  poll,
+  confirm,
+  assertSecureRelayUrl,
+  requestRotateViaControlChannel,
+  type PathEntry,
+} from "@constellation/shared";
 import {
   install,
   startService,
@@ -25,7 +32,6 @@ import {
   showLogs,
 } from "./service.js";
 import { runDaemon } from "../index.js";
-import { requestRotateViaControlChannel } from "../control.js";
 import { maskToken } from "./util.js";
 
 export function registerNodeCommands(program: Command): void {

@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { createConnection, type Server } from "node:net";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { startControlServer, requestRotateViaControlChannel, type RotatableConnection } from "./control.js";
+import { startControlServer, requestRotateViaControlChannel, type RotatableConnection } from "./control-channel.js";
 import { makeTempDir, cleanTempDir } from "./test/fixtures.js";
 
 let dir: string;

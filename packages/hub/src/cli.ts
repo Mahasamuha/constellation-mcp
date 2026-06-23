@@ -5,7 +5,7 @@ import { readFileSync, writeFileSync, mkdirSync, statSync, statfsSync } from "no
 import { dirname } from "node:path";
 import WebSocket from "ws";
 import open from "open";
-import { poll, assertSecureRelayUrl } from "@constellation/shared";
+import { poll, assertSecureRelayUrl, requestRotateViaControlChannel } from "@constellation/shared";
 import { loadHubConfig, validateHubConfig } from "./config.js";
 import { getpwnam } from "./identity.js";
 import { runHub, sourceEnvFile } from "./index.js";
@@ -289,10 +289,22 @@ export function registerHubCommands(program: Command): void {
     .option("--unit-name <name>", "Systemd unit name", "constellation-hub")
     .option("--user <user>", "Service user to run as (must have CAP_SETUID/CAP_SETGID)", "constellation")
     .action((opts: { configFile: string; unitName: string; user: string }) => {
+      let cfg;
+      try {
+        cfg = loadHubConfig(opts.configFile);
+      } catch (err) {
+        console.error(`Error loading config: ${(err as Error).message}`);
+        process.exit(1);
+      }
+
       const isPkg = (process as typeof process & { pkg?: unknown }).pkg !== undefined;
       const execLine = isPkg
         ? `${process.execPath} hub start --config-file ${opts.configFile}`
         : `${process.execPath} ${process.argv[1]} hub start --config-file ${opts.configFile}`;
+      // The control channel's socket file lives next to the audit log (always present,
+      // already covered below) — only a live-rotated token's persistence to env_file
+      // needs a write grant of its own, and only when env_file is actually configured.
+      const readWritePaths = ["/var/log/constellation", ...(cfg.env_file ? [dirname(cfg.env_file)] : [])].join(" ");
       const unit = `[Unit]
 Description=Constellation Hub
 After=network.target nss-lookup.target
@@ -310,7 +322,7 @@ AmbientCapabilities=CAP_SETUID CAP_SETGID
 CapabilityBoundingSet=CAP_SETUID CAP_SETGID
 NoNewPrivileges=no
 ProtectSystem=strict
-ReadWritePaths=/var/log/constellation
+ReadWritePaths=${readWritePaths}
 
 [Install]
 WantedBy=multi-user.target
@@ -358,6 +370,27 @@ WantedBy=multi-user.target
         console.error(`Error loading config: ${(err as Error).message}`);
         process.exit(1);
       }
+
+      // Prefer asking the running daemon to rotate on its own live connection — it
+      // performs the full handshake itself, persists the new token to env_file, and
+      // only reports success once it has actually reconnected with it: no restart,
+      // no race. Opening a second WebSocket of our own here (the fallback below)
+      // would otherwise evict the daemon's live connection outright, since the relay
+      // allows only one per executor. Control file lives alongside the audit log —
+      // see runHub()'s startControlServer call for why.
+      const viaControl = await requestRotateViaControlChannel(dirname(cfg.audit_log));
+      if (viaControl) {
+        if (viaControl.ok) {
+          console.log("Token rotated — the running hub has reconnected with the new token. No restart needed.");
+        } else {
+          console.error("Error:", viaControl.error);
+          process.exit(1);
+        }
+        return;
+      }
+
+      // No daemon reachable — nothing to evict, but also nothing to confirm the
+      // reconnect for. Rotate directly; the next `hub start` picks up the new token.
 
       // Source env_file to get the current token
       if (cfg.env_file) {

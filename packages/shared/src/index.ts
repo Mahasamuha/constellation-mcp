@@ -10,3 +10,9 @@ export { RelaySocket, type RelaySocketOptions, assertSecureRelayUrl } from "./re
 export { resolveQueueTimeout } from "./queue-timeout.js";
 export { poll, sleep, confirm } from "./cli-util.js";
 export { str, num } from "./config-util.js";
+export {
+  startControlServer,
+  requestRotateViaControlChannel,
+  type RotatableConnection,
+  type ControlResult,
+} from "./control-channel.js";
