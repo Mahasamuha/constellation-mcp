@@ -1,5 +1,10 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { poll } from "./cli-util.js";
+import { Readable, Writable } from "node:stream";
+import { poll, confirm } from "./cli-util.js";
+
+function devNullWritable(): Writable {
+  return new Writable({ write(_chunk, _enc, cb) { cb(); } });
+}
 
 afterEach(() => {
   vi.useRealTimers();
@@ -65,5 +70,38 @@ describe("poll", () => {
 
     await vi.advanceTimersByTimeAsync(6000);
     expect(await resultPromise).toBeNull();
+  });
+});
+
+describe("confirm", () => {
+  afterEach(() => {
+    delete process.env["CONSTELLATION_ASSUME_YES"];
+  });
+
+  it("returns true without touching stdin when CONSTELLATION_ASSUME_YES is set", async () => {
+    process.env["CONSTELLATION_ASSUME_YES"] = "1";
+    const input = new Readable({ read() { throw new Error("should not be read"); } });
+
+    const result = await confirm("Proceed?", input, devNullWritable());
+
+    expect(result).toBe(true);
+  });
+
+  it("resolves true on a 'y' answer", async () => {
+    const result = await confirm("Proceed?", Readable.from(["y\n"]), devNullWritable());
+    expect(result).toBe(true);
+  });
+
+  it("resolves false on an empty/default answer", async () => {
+    const result = await confirm("Proceed?", Readable.from(["\n"]), devNullWritable());
+    expect(result).toBe(false);
+  });
+
+  // This is the node-gui regression: a GUI-spawned subprocess has no TTY, so
+  // without the bypass above, stdin closes with no answer ever given. Must
+  // resolve false (and not just hang forever) rather than silently no-op.
+  it("resolves false, not hung, when the input stream closes before any answer", async () => {
+    const result = await confirm("Proceed?", Readable.from([]), devNullWritable());
+    expect(result).toBe(false);
   });
 });

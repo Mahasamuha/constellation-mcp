@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::process::Stdio;
 use std::sync::OnceLock;
 
 static BIN: OnceLock<Result<PathBuf, String>> = OnceLock::new();
@@ -95,10 +96,22 @@ fn bin() -> Result<&'static PathBuf, String> {
     BIN.get_or_init(resolve).as_ref().map_err(|e| e.clone())
 }
 
+// Every node-gui-initiated CLI call is non-interactive by construction — there's
+// no TTY to relay a prompt to, and a GUI button click already is the user's
+// confirmation. Without this, any CLI command that grows an interactive
+// confirm() (like `node rotate`/`node paths remove` did) silently no-ops here
+// instead of acting, since the prompt's stdin read never gets an answer.
+fn command(bin: &PathBuf, args: &[&str]) -> std::process::Command {
+    let mut cmd = std::process::Command::new(bin);
+    cmd.args(args)
+        .env("CONSTELLATION_ASSUME_YES", "1")
+        .stdin(Stdio::null());
+    cmd
+}
+
 pub fn run(args: &[&str]) -> Result<(), String> {
     let bin = bin()?;
-    let out = std::process::Command::new(bin)
-        .args(args)
+    let out = command(bin, args)
         .output()
         .map_err(|e| format!("Could not run constellation: {e}"))?;
     if out.status.success() {
@@ -115,8 +128,7 @@ pub fn run(args: &[&str]) -> Result<(), String> {
 
 pub fn output(args: &[&str]) -> Result<String, String> {
     let bin = bin()?;
-    let out = std::process::Command::new(bin)
-        .args(args)
+    let out = command(bin, args)
         .output()
         .map_err(|e| format!("Could not run constellation: {e}"))?;
     if out.status.success() {

@@ -31,11 +31,32 @@ export function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-/** Prompts for a y/N confirmation. Returns true if user answers y/yes. */
-export async function confirm(prompt: string): Promise<boolean> {
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+/**
+ * Prompts for a y/N confirmation. Returns true if user answers y/yes.
+ *
+ * Skips the prompt entirely (returns true without touching stdin) if
+ * CONSTELLATION_ASSUME_YES is set — for callers like node-gui that already
+ * obtained confirmation through their own UI and spawn this CLI with no TTY
+ * to prompt on. Without that bypass, if stdin closes before an answer is
+ * given (the same non-interactive case, just without the env var set),
+ * treats it as "no" rather than leaving the prompt's promise pending
+ * forever while the action silently never happens.
+ */
+export async function confirm(
+  prompt: string,
+  input: NodeJS.ReadableStream = process.stdin,
+  output: NodeJS.WritableStream = process.stdout
+): Promise<boolean> {
+  if (process.env["CONSTELLATION_ASSUME_YES"]) return true;
+
+  const rl = readline.createInterface({ input, output });
   return new Promise((resolve) => {
+    let answered = false;
+    rl.once("close", () => {
+      if (!answered) resolve(false);
+    });
     rl.question(`${prompt} [y/N] `, (answer) => {
+      answered = true;
       rl.close();
       resolve(answer.trim().toLowerCase() === "y" || answer.trim().toLowerCase() === "yes");
     });
