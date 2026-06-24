@@ -635,4 +635,17 @@ describe("node rotate — no daemon running", () => {
     expect(connectionAttempted).not.toHaveBeenCalled();
     expect(loadNodeConfig(dir).node_token).toBe("tok-original");
   });
+
+  it("fails cleanly instead of crashing on a non-JSON response from relay", async () => {
+    writeNodeConfig(dir, { relay_url: `http://localhost:${port}`, node_token: "tok-original", host: "test-host" });
+    wss.once("connection", (ws: WSClient) => {
+      ws.once("message", () => ws.send("not json"));
+    });
+
+    const { exitCode, err } = await runCli(["node", "rotate"], dir);
+
+    expect(exitCode).toBe(1);
+    expect(err).toContain("Received an invalid (non-JSON) response from relay");
+    expect(loadNodeConfig(dir).node_token).toBe("tok-original");
+  });
 });

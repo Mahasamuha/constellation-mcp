@@ -603,7 +603,19 @@ async function nodeControlCommand(
     ws.on("open", () => ws.send(JSON.stringify(buildMsg(cfg, paths))));
 
     ws.on("message", (data: Buffer) => {
-      const msg = JSON.parse(data.toString()) as Record<string, unknown>;
+      let msg: Record<string, unknown>;
+      try {
+        msg = JSON.parse(data.toString()) as Record<string, unknown>;
+      } catch {
+        // Unlike relay-socket.ts's long-lived connection (which can just drop a bad
+        // message and keep waiting), this is a one-shot command: nothing useful comes
+        // from waiting out the rest of the timeout once we know the connection sent
+        // something invalid.
+        clearTimeout(timeout);
+        ws.close();
+        reject(new Error("Received an invalid (non-JSON) response from relay"));
+        return;
+      }
       if (msg["type"] === successType) {
         clearTimeout(timeout);
         ws.close();
