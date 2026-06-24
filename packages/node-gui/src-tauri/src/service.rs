@@ -56,6 +56,38 @@ pub async fn rotate_token(app: AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 pub fn deregister_node(app: AppHandle) -> Result<(), String> {
+    let host = config::load_node_config().host;
+    let was_active = query_status_info().service == "active";
+
+    // Stop the daemon before deleting its config — otherwise it keeps running with
+    // the token already in memory and silently reconnects, even though node-gui and
+    // the relay both now think it's gone. Only treat a stop failure as fatal if the
+    // service was actually running; a never-installed/already-stopped service can
+    // fail `node stop` for reasons that don't matter here, since nothing was running.
+    if let Err(e) = crate::cli::run(&["node", "stop"]) {
+        if was_active {
+            return Err(e);
+        }
+    }
+
+    // Best-effort: also revoke the token server-side, so the relay stops trusting it
+    // even if some other copy of the credential survives. Requires a separate
+    // OAuth-authenticated `relay login` session that not every node owner has set up
+    // — skip silently if unavailable, the same fallback get_node_relay_info uses.
+    if let Some(host) = host {
+        if let Ok(json) = crate::cli::output(&["relay", "executors", "list", "--json"]) {
+            if let Ok(executors) = serde_json::from_str::<Vec<Value>>(&json) {
+                if let Some(id) = executors
+                    .iter()
+                    .find(|e| e["host"].as_str() == Some(host.as_str()))
+                    .and_then(|e| e["id"].as_str())
+                {
+                    let _ = crate::cli::run(&["relay", "executors", "revoke", id]);
+                }
+            }
+        }
+    }
+
     let path = config::config_dir().join("node.yaml");
     if path.exists() {
         std::fs::remove_file(&path).map_err(|e| e.to_string())?;
