@@ -183,6 +183,13 @@ function toolErrorMessage(result: { isError?: boolean; content?: ReadonlyArray<{
   return result.content?.find((c) => c.type === "text")?.text ?? "Request failed.";
 }
 
+// Unlike the isError:true result path above, transport failure/timeout/connection loss
+// makes callServerTool/updateModelContext *throw* instead of resolving — every call site
+// needs to turn that into the same displayable string.
+function transportErrorMessage(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
 export function FileBrowserApp() {
   const initialInput = useRef<{ share?: string; path?: string }>({});
   // Bumped at the start of every openFile() call; a call only applies its result if
@@ -234,7 +241,20 @@ export function FileBrowserApp() {
       // that the bar is what they tap to bring the picker back.
       if (!opts.deferSidebarCollapse) setSidebarOpen(false);
       setStatus(`Loading ${relativePath}…`);
-      const result = await app.callServerTool({ name: "read_file", arguments: { share, host, relative_path: relativePath } });
+      let result;
+      try {
+        result = await app.callServerTool({ name: "read_file", arguments: { share, host, relative_path: relativePath } });
+      } catch (e) {
+        // Transport failure/timeout/connection loss throws here instead of resolving
+        // with isError:true — without this, the status bar is left at "Loading…" forever.
+        if (openFileSeq.current !== seq) return;
+        setSelectedPath(null);
+        setFileContent(null);
+        setIsLoadingFile(false);
+        setSidebarOpen(true);
+        setStatusError(transportErrorMessage(e));
+        return;
+      }
       // A newer openFile() call started while this one was in flight — its result (this
       // one) is stale and arrived out of order. Bail out before touching any state; the
       // newer call owns the loading/error/content state from here.
@@ -253,9 +273,15 @@ export function FileBrowserApp() {
       setIsLoadingFile(false);
       if (opts.deferSidebarCollapse) setSidebarOpen(false);
       setStatus("");
-      await app.updateModelContext({
-        content: [{ type: "text", text: `User has file open: ${share}/${relativePath}` }],
-      });
+      try {
+        await app.updateModelContext({
+          content: [{ type: "text", text: `User has file open: ${share}/${relativePath}` }],
+        });
+      } catch (e) {
+        // Best-effort notification to the host/model — the file genuinely is open even
+        // if this fails, so don't roll the UI back to "no file selected" over it.
+        console.error("[telescope] updateModelContext failed:", e);
+      }
     },
     [app, setStatus, setStatusError]
   );
@@ -264,28 +290,34 @@ export function FileBrowserApp() {
     async (content: string) => {
       if (!app || !selectedShare || !selectedHost || !selectedPath) return;
       setStatus(`Saving ${selectedPath}…`);
-      const written = await app.callServerTool({
-        name: "write_file",
-        arguments: { share: selectedShare, host: selectedHost, relative_path: selectedPath, content, mode: "overwrite" },
-      });
-      const writeErr = toolErrorMessage(written);
-      if (writeErr) {
-        setStatusError(writeErr);
-        return;
+      try {
+        const written = await app.callServerTool({
+          name: "write_file",
+          arguments: { share: selectedShare, host: selectedHost, relative_path: selectedPath, content, mode: "overwrite" },
+        });
+        const writeErr = toolErrorMessage(written);
+        if (writeErr) {
+          setStatusError(writeErr);
+          return;
+        }
+        // Re-read to confirm the round-trip rather than trusting the local draft.
+        const reread = await app.callServerTool({
+          name: "read_file",
+          arguments: { share: selectedShare, host: selectedHost, relative_path: selectedPath },
+        });
+        const readErr = toolErrorMessage(reread);
+        if (readErr) {
+          setStatusError(readErr);
+          return;
+        }
+        setFileContent(String(reread.structuredContent?.["content"] ?? ""));
+        setIsEditing(false);
+        setStatus(`Saved ${selectedShare}/${selectedPath} at ${new Date().toLocaleTimeString()}`);
+      } catch (e) {
+        // Transport failure/timeout/connection loss throws here instead of resolving
+        // with isError:true — without this, the status bar is left at "Saving…" forever.
+        setStatusError(transportErrorMessage(e));
       }
-      // Re-read to confirm the round-trip rather than trusting the local draft.
-      const reread = await app.callServerTool({
-        name: "read_file",
-        arguments: { share: selectedShare, host: selectedHost, relative_path: selectedPath },
-      });
-      const readErr = toolErrorMessage(reread);
-      if (readErr) {
-        setStatusError(readErr);
-        return;
-      }
-      setFileContent(String(reread.structuredContent?.["content"] ?? ""));
-      setIsEditing(false);
-      setStatus(`Saved ${selectedShare}/${selectedPath} at ${new Date().toLocaleTimeString()}`);
     },
     [app, selectedShare, selectedHost, selectedPath, setStatus, setStatusError]
   );
@@ -403,7 +435,15 @@ export function FileBrowserApp() {
     if (!app || !isConnected) return;
     void (async () => {
       setStatus("Loading shares…");
-      const result = await app.callServerTool({ name: "list_shares", arguments: {} });
+      let result;
+      try {
+        result = await app.callServerTool({ name: "list_shares", arguments: {} });
+      } catch (e) {
+        // Transport failure/timeout/connection loss throws here instead of resolving
+        // with isError:true — without this, the status bar is left at "Loading…" forever.
+        setStatusError(transportErrorMessage(e));
+        return;
+      }
       const err = toolErrorMessage(result);
       if (err) {
         setStatusError(err);
@@ -599,12 +639,22 @@ function DirectoryTree({ path }: { path: string }) {
     if (!app || !selectedShare || !selectedHost) return;
     let cancelled = false;
     void (async () => {
-      const result = await app.callServerTool({
-        name: "list_directory",
-        arguments: path
-          ? { share: selectedShare, host: selectedHost, relative_path: path }
-          : { share: selectedShare, host: selectedHost },
-      });
+      let result;
+      try {
+        result = await app.callServerTool({
+          name: "list_directory",
+          arguments: path
+            ? { share: selectedShare, host: selectedHost, relative_path: path }
+            : { share: selectedShare, host: selectedHost },
+        });
+      } catch (e) {
+        // Transport failure/timeout/connection loss throws here instead of resolving
+        // with isError:true — without this, the tree is left on its loading skeleton forever.
+        if (cancelled) return;
+        setError(transportErrorMessage(e));
+        setNodes(null);
+        return;
+      }
       if (cancelled) return;
       const err = toolErrorMessage(result);
       if (err) {
