@@ -289,12 +289,19 @@ export function FileBrowserApp() {
   const saveFile = useCallback(
     async (content: string) => {
       if (!app || !selectedShare || !selectedHost || !selectedPath) return;
+      // Snapshot the same counter openFile() bumps: if the user navigates to a different
+      // file while this write+re-read round trip is in flight, openFileSeq.current will
+      // have moved on by the time we get a result back, and we bail out before touching
+      // any state — otherwise this call's closure-captured (now-stale) share/host/path
+      // would clobber whatever the user has since navigated to.
+      const seq = openFileSeq.current;
       setStatus(`Saving ${selectedPath}…`);
       try {
         const written = await app.callServerTool({
           name: "write_file",
           arguments: { share: selectedShare, host: selectedHost, relative_path: selectedPath, content, mode: "overwrite" },
         });
+        if (openFileSeq.current !== seq) return;
         const writeErr = toolErrorMessage(written);
         if (writeErr) {
           setStatusError(writeErr);
@@ -305,6 +312,7 @@ export function FileBrowserApp() {
           name: "read_file",
           arguments: { share: selectedShare, host: selectedHost, relative_path: selectedPath },
         });
+        if (openFileSeq.current !== seq) return;
         const readErr = toolErrorMessage(reread);
         if (readErr) {
           setStatusError(readErr);
@@ -316,6 +324,7 @@ export function FileBrowserApp() {
       } catch (e) {
         // Transport failure/timeout/connection loss throws here instead of resolving
         // with isError:true — without this, the status bar is left at "Saving…" forever.
+        if (openFileSeq.current !== seq) return;
         setStatusError(transportErrorMessage(e));
       }
     },
