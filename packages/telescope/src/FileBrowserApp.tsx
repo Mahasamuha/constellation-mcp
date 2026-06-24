@@ -185,6 +185,10 @@ function toolErrorMessage(result: { isError?: boolean; content?: ReadonlyArray<{
 
 export function FileBrowserApp() {
   const initialInput = useRef<{ share?: string; path?: string }>({});
+  // Bumped at the start of every openFile() call; a call only applies its result if
+  // this still equals the value it captured when it started — otherwise a newer
+  // openFile() call has superseded it, and its (possibly out-of-order) response is stale.
+  const openFileSeq = useRef(0);
   const [shares, setShares] = useState<ShareEntry[]>([]);
   const [selectedShare, setSelectedShare] = useState<string | null>(null);
   const [selectedHost, setSelectedHost] = useState<string | null>(null);
@@ -220,6 +224,7 @@ export function FileBrowserApp() {
   const openFile = useCallback(
     async (share: string, host: string, relativePath: string, opts: { deferSidebarCollapse?: boolean } = {}) => {
       if (!app) return;
+      const seq = ++openFileSeq.current;
       setIsEditing(false);
       setIsLoadingFile(true);
       // Normally the sidebar collapses immediately, concurrent with the load
@@ -230,6 +235,10 @@ export function FileBrowserApp() {
       if (!opts.deferSidebarCollapse) setSidebarOpen(false);
       setStatus(`Loading ${relativePath}…`);
       const result = await app.callServerTool({ name: "read_file", arguments: { share, host, relative_path: relativePath } });
+      // A newer openFile() call started while this one was in flight — its result (this
+      // one) is stale and arrived out of order. Bail out before touching any state; the
+      // newer call owns the loading/error/content state from here.
+      if (openFileSeq.current !== seq) return;
       const err = toolErrorMessage(result);
       if (err) {
         setSelectedPath(null);
