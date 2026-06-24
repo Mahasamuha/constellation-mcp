@@ -11,7 +11,14 @@ export interface PollContext {
   setIntervalMs: (ms: number) => void;
 }
 
-/** Polls fn every intervalMs until it returns a non-null value or timeoutMs elapses. */
+/** Polls fn every intervalMs until it returns a non-null value or timeoutMs elapses.
+ *
+ * A throw from fn (DNS hiccup, connection reset, laptop suspend mid-poll) is treated
+ * like a null return rather than aborting the whole poll — every caller here drives a
+ * flow meant to run for minutes (device-code login/elevate), and a single transient
+ * network error shouldn't kill it. The existing deadline is still the only bound: this
+ * doesn't retry forever, it just stops *that* counting as a fatal error.
+ */
 export async function poll<T>(
   fn: (ctx: PollContext) => Promise<T | null>,
   intervalMs: number,
@@ -20,7 +27,12 @@ export async function poll<T>(
   const deadline = Date.now() + timeoutMs;
   let interval = intervalMs;
   while (Date.now() < deadline) {
-    const result = await fn({ intervalMs: interval, setIntervalMs: (ms) => { interval = ms; } });
+    let result: T | null;
+    try {
+      result = await fn({ intervalMs: interval, setIntervalMs: (ms) => { interval = ms; } });
+    } catch {
+      result = null;
+    }
     if (result !== null) return result;
     await sleep(interval);
   }

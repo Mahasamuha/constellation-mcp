@@ -46,6 +46,19 @@ describe("poll", () => {
     expect(await resultPromise).toBeNull();
   });
 
+  it("treats a thrown error from fn as a transient retry, not a fatal abort", async () => {
+    vi.useFakeTimers();
+    const fn = vi.fn()
+      .mockRejectedValueOnce(new Error("fetch failed"))
+      .mockResolvedValueOnce("recovered");
+
+    const resultPromise = poll(fn, 1000, 10000);
+    await vi.advanceTimersByTimeAsync(1000);
+
+    expect(await resultPromise).toBe("recovered");
+    expect(fn).toHaveBeenCalledTimes(2);
+  });
+
   it("applies an interval increase from setIntervalMs to this and all subsequent waits (RFC 8628 slow_down)", async () => {
     vi.useFakeTimers();
     let calls = 0;
