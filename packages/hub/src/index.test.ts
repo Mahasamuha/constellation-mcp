@@ -187,3 +187,56 @@ describe("HubSocket.rotateToken", () => {
     expect(gotMessage).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// HubSocket — malformed RPC params. onMessage casts the raw WS message to
+// IncomingRpcEnvelope after checking only that request_id/tool are strings; without a
+// guard, a non-object params throws inside resolveDstShare, which skips every
+// writeAuditEntry call in handleRpc (onMessage's catch-all replies with a clean error
+// but knows nothing about the audit log's shape).
+// ---------------------------------------------------------------------------
+
+describe("HubSocket — malformed RPC params", () => {
+  let dir: string;
+  let wss: WebSocketServer;
+  let port: number;
+  let socket: HubSocket | undefined;
+
+  beforeEach(async () => {
+    dir = await makeTempDir();
+    wss = new WebSocketServer({ port: 0 });
+    await new Promise<void>((resolve) => wss.once("listening", resolve));
+    port = (wss.address() as { port: number }).port;
+  });
+
+  afterEach(async () => {
+    socket?.stop();
+    socket = undefined;
+    await new Promise<void>((resolve) => wss.close(() => resolve()));
+    await cleanTempDir(dir);
+  });
+
+  it("rejects with a clean error and still writes an audit entry, instead of throwing inside resolveDstShare", async () => {
+    const auditLog = join(dir, "audit.jsonl");
+    const cfg = minimalHubConfig({ relay_url: `http://localhost:${port}`, audit_log: auditLog });
+    socket = new HubSocket(cfg, "tok", {}, new SubnodePool(cfg, {}));
+    socket.start();
+
+    const [conn] = await nextConnection(wss);
+    await waitForMessage(conn); // the initial hub_share_sync sent from onOpen()
+
+    conn.send(JSON.stringify({ request_id: "req-1", tool: "copy", params: null }));
+    const response = await waitForMessage(conn);
+
+    expect(response).toEqual({ request_id: "req-1", error: { message: "Malformed request: params must be an object" } });
+
+    const logged = readFileSync(auditLog, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    expect(logged).toHaveLength(1);
+    expect(logged[0]).toMatchObject({
+      request_id: "req-1",
+      tool: "copy",
+      outcome: "exec_error",
+      error: "Malformed request: params must be an object",
+    });
+  });
+});

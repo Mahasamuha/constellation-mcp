@@ -284,6 +284,28 @@ export class HubSocket extends RelaySocket implements RotatableConnection {
     const { request_id, tool, params, user_oidc_sub: userOidcSub, user_claims: userClaims } = envelope;
     const share = envelope.share || guessShare(envelope.absolute_root, this.shareRegistry);
 
+    // onMessage casts the raw WS message to IncomingRpcEnvelope after checking only that
+    // request_id/tool are strings — params isn't validated there. Without this guard, a
+    // non-object params throws deep inside resolveDstShare below, which skips every
+    // writeAuditEntry call in this function entirely (onMessage's catch-all handler logs
+    // and replies with an error, but knows nothing about the audit log's shape).
+    if (typeof params !== "object" || params === null) {
+      const message = "Malformed request: params must be an object";
+      this.log.warn({ request_id, tool, share }, message);
+      writeAuditEntry(this.cfg.audit_log, {
+        ts: new Date().toISOString(),
+        hub_name: this.cfg.hub_name,
+        request_id,
+        user_oidc_sub: userOidcSub,
+        local_username: null,
+        share,
+        tool,
+        outcome: "exec_error",
+        error: message,
+      });
+      return { request_id, error: { message } };
+    }
+
     // Resolve OS identity
     const identity = await resolveIdentity(userClaims, userOidcSub, this.cfg.identity);
 
