@@ -106,6 +106,15 @@ deviceRouter.post("/oauth/device/code", async (req: Request, res: Response) => {
     return;
   }
 
+  // Matches the cap enforced on agent:register's consent-page host_name (below) and
+  // update_host's RPC (hub.ts) — this endpoint is unauthenticated, so without a cap an
+  // approved request would permanently store an arbitrarily long (up to the 1MB body
+  // limit) Executor.host that surfaces forever in list_hosts/api/executors/the activity log.
+  if (scope === "agent:register:shared" && sharedHostName && sharedHostName.length > 63) {
+    res.status(400).json({ error: "invalid_request", error_description: "host_name must be 63 characters or fewer" });
+    return;
+  }
+
   await pruneDeviceCodes();
 
   const deviceCode = generateToken();
