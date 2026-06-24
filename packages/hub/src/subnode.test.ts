@@ -28,11 +28,15 @@ class FakeChild extends EventEmitter {
    * succeeds, matching real OS signal semantics where SIGKILL can't be caught.
    */
   ignoreSigterm = false;
+  /** The most recent "init" message sent to this worker — lets tests assert what
+   * SubnodePool actually threads through (e.g. max_file_size_kb from HubConfig). */
+  lastInit: Record<string, unknown> | null = null;
   private requests = new Map<string, () => void>();
 
   send(msg: unknown): boolean {
     const m = msg as Record<string, unknown>;
     if (m["type"] === "init") {
+      this.lastInit = m;
       queueMicrotask(() => this.emit("message", { type: "ready" }));
     } else if (m["type"] === "request") {
       const requestId = m["request_id"] as string;
@@ -116,6 +120,7 @@ function configWith(
     shares: [],
     identity: { claims: [], user_map: [], allow_preferred_username: false },
     audit_log: "/var/log/constellation/audit.jsonl",
+    max_file_size_kb: 100,
   };
 }
 
@@ -208,6 +213,19 @@ describe("SubnodePool.dispatch", () => {
     expect(isDispatchError(result)).toBe(false);
     expect(result).toEqual({ result: { ok: true }, error: undefined });
 
+    await pool.shutdown(0);
+  });
+
+  it("sends the configured max_file_size_kb to the spawned worker, not a hardcoded default", async () => {
+    const pool = new SubnodePool(makeConfig({ max_file_size_kb: 250 }), {});
+
+    const dispatchPromise = pool.dispatch(identity, "list_directory", "docs", {}, "req-1");
+    await waitUntil(() => forkedChildren[0]?.hasPending("req-1") ?? false);
+
+    expect(forkedChildren[0]!.lastInit).toMatchObject({ max_file_size_kb: 250 });
+
+    forkedChildren[0]!.respond("req-1");
+    await dispatchPromise;
     await pool.shutdown(0);
   });
 

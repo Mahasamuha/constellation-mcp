@@ -350,7 +350,7 @@ These limits are applied by the node regardless of relay settings.
 | `list_directory` | Default 2,000 nodes per call; hard cap 10,000. Set `limit` to override (capped at 10,000). Returns `truncated: true` and `truncated_by` when the limit is hit. |
 | `find_files` | 200 results. Returns `truncated: true` when hit. |
 | `grep_files` | 50 total matches or 100 KB of output, whichever comes first. Files larger than 10 MB are skipped silently. Returns `truncated: true` when hit. |
-| `read_file` | `max_file_size_kb` from `node.yaml` (default 100 KB) per call. Applies to both full reads and range reads. Use `start_line`/`end_line` to page through large files; `total_lines` in the response tells you when to stop. |
+| `read_file` | `max_file_size_kb` from `node.yaml`/`hub.yaml` (default 100 KB) per call. Applies to both full reads and range reads. Use `start_line`/`end_line` to page through large files; `total_lines` in the response tells you when to stop. |
 | `copy` / `move` | Fails if the destination already exists. Cross-device `move` falls back to copy + delete automatically. |
 | `delete` (directory) | Without `recursive: true`, returns a dry-run summary (`size_bytes`, `file_count`, `requires_confirmation: true`). Re-call with `recursive: true` to proceed. |
 
@@ -484,7 +484,7 @@ Read a file's content, optionally restricted to a line range. Returns `total_lin
 
 **Output**: `{ content, total_lines }`
 
-Files exceeding `max_file_size_kb` (node config, default 100 KB) return `FILE_TOO_LARGE`. Range reads that exceed the cap return `READ_TOO_LARGE` — narrow the range.
+Files exceeding `max_file_size_kb` (node or hub config, default 100 KB) return `FILE_TOO_LARGE`. Range reads that exceed the cap return `READ_TOO_LARGE` — narrow the range.
 
 ---
 

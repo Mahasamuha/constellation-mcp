@@ -78,6 +78,9 @@ export interface HubConfig {
   shares: ShareConfig[];
   identity: IdentityConfig;
   audit_log: string;
+  /** Per-read cap sent to every subnode worker — mirrors node.yaml's field of the same
+   * name (see docs/configuration.md). Defaults to 100, matching node's own default. */
+  max_file_size_kb: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -99,6 +102,7 @@ export function loadHubConfig(path: string): HubConfig {
   const env_file = str(parsed, "env_file") || undefined;
   const subnode_rpc_timeout_seconds = num(parsed, "subnode_rpc_timeout_seconds") ?? 30;
   const max_concurrent_subnodes = num(parsed, "max_concurrent_subnodes") ?? 0;
+  const max_file_size_kb = num(parsed, "max_file_size_kb") ?? 100;
 
   const shares = parseShares(parsed);
   const subnode_uid = parseSubnodeUid((parsed["subnode_uid"] ?? {}) as Record<string, unknown>);
@@ -118,6 +122,7 @@ export function loadHubConfig(path: string): HubConfig {
     shares,
     identity,
     audit_log,
+    max_file_size_kb,
   };
 }
 

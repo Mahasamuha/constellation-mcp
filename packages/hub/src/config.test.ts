@@ -53,6 +53,14 @@ describe("loadHubConfig", () => {
     expect(cfg.shares).toHaveLength(1);
     expect(cfg.shares[0]).toMatchObject({ name: "docs", path: "/srv/docs", permissions: { default: "read-only", overrides: [] } });
     expect(cfg.identity).toEqual({ claims: [], user_map: [], allow_preferred_username: false });
+    expect(cfg.max_file_size_kb).toBe(100);
+  });
+
+  it("respects a configured max_file_size_kb instead of the default", async () => {
+    const path = await writeConfig(`${BASE_YAML}\nmax_file_size_kb: 500\n`);
+    const cfg = loadHubConfig(path);
+
+    expect(cfg.max_file_size_kb).toBe(500);
   });
 
   it.each(["relay_url", "hub_name", "audit_log"])("rejects a config missing required field '%s'", async (field) => {
@@ -159,6 +167,7 @@ function baseConfig(overrides: Partial<HubConfig> = {}): HubConfig {
     shares: [],
     identity: { claims: [], user_map: [], allow_preferred_username: false },
     audit_log: "/var/log/constellation/audit.jsonl",
+    max_file_size_kb: 100,
     ...overrides,
   };
 }

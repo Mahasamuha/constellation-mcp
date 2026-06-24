@@ -95,6 +95,7 @@ function minimalHubConfig(overrides: Partial<HubConfig> = {}): HubConfig {
     shares: [],
     identity: { claims: [], user_map: [], allow_preferred_username: false },
     audit_log: "/var/log/constellation/audit.jsonl",
+    max_file_size_kb: 100,
     ...overrides,
   };
 }

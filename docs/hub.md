@@ -275,6 +275,9 @@ subnode_rpc_timeout_seconds: 30            # Timeout per in-flight tool call IPC
 max_concurrent_subnodes: 0                 # Global cap on distinct users with a subnode at once.
                                            # 0 = unlimited (default). Independent of subnode_workers.max,
                                            # which only caps workers per user — see "Global subnode cap" above.
+max_file_size_kb: 100                      # Per-read cap for hub-managed shares (default: 100).
+                                           # Same field/default as node.yaml's max_file_size_kb — see
+                                           # docs/configuration.md — but set independently per hub.
 
 subnode_workers:
   min: 1                                   # Always-warm workers per user (floor: 1; default: 1)
