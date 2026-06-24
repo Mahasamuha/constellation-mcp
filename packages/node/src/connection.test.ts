@@ -125,3 +125,28 @@ describe("NodeConnection.rotateToken", () => {
     first.catch(() => { /* expected */ });
   });
 });
+
+describe("NodeConnection.onMessage", () => {
+  it("responds with an error instead of crashing when config is unreadable mid-RPC", async () => {
+    configureNode("tok-original");
+    let throwOnNextRead = false;
+    conn = new NodeConnection({
+      configDir: dir,
+      getConfig: () => {
+        if (throwOnNextRead) throw new Error("ENOENT: node.yaml");
+        return loadNodeConfig(dir);
+      },
+      getPaths: () => loadPathsConfig(dir).paths,
+    });
+    conn.start();
+
+    const [serverConn] = await nextConnection(wss);
+    await waitForMessage(serverConn); // the initial config_update sent from onOpen()
+
+    throwOnNextRead = true;
+    serverConn.send(JSON.stringify({ request_id: "req-1", tool: "list_directory", params: {} }));
+
+    const response = await waitForMessage(serverConn);
+    expect(response).toEqual({ request_id: "req-1", error: { message: "Internal node error" } });
+  });
+});

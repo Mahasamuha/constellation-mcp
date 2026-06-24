@@ -107,8 +107,18 @@ export class NodeConnection extends RelaySocket {
   protected onMessage(msg: Record<string, unknown>): void {
     // RPC from relay: has request_id and tool.
     if (typeof msg["request_id"] === "string" && typeof msg["tool"] === "string") {
-      const config = this.opts.getConfig();
-      const paths = this.opts.getPaths();
+      let config: NodeConfig;
+      let paths: PathEntry[];
+      try {
+        config = this.opts.getConfig();
+        paths = this.opts.getPaths();
+      } catch (err) {
+        // node.yaml/paths.yaml is mid-edit, deleted, or malformed — fail this one RPC
+        // instead of crashing the daemon (no try/catch surrounds RelaySocket's onMessage call).
+        this.log.error({ err }, "Failed to load node config while handling RPC");
+        this.send({ request_id: msg["request_id"], error: { message: "Internal node error" } });
+        return;
+      }
       handleRpc(msg as unknown as RpcEnvelope, paths, config, this.registryCache)
         .then((response) => this.send(response))
         .catch((err) => {

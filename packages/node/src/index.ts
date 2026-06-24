@@ -24,4 +24,11 @@ export function runDaemon(configDirOverride?: string): void {
   };
   process.on("SIGTERM", shutdown);
   process.on("SIGINT", shutdown);
+
+  // Last-resort safety net for this long-running unattended process — mirrors relay's
+  // index.ts. Most config-load throws are already caught at their call sites (e.g.
+  // connection.ts's onMessage), but RelaySocket's onOpen/connect paths have no
+  // surrounding try/catch, so a throw there would otherwise be a silent, traceless crash.
+  process.on("unhandledRejection", (err) => { log.error({ err }, "Unhandled rejection"); process.exit(1); });
+  process.on("uncaughtException", (err) => { log.error({ err }, "Uncaught exception"); process.exit(1); });
 }
