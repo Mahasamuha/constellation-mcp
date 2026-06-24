@@ -8,19 +8,11 @@ import {
   deleteRelaySession,
   type RelaySession,
 } from "@constellation/node/config";
-import { poll, confirm } from "@constellation/shared";
+import { poll, confirm, type ExecutorEntry } from "@constellation/shared";
 
 // ---------------------------------------------------------------------------
 // API response types
 // ---------------------------------------------------------------------------
-
-interface ExecutorEntry {
-  id: string;
-  host: string;
-  online: boolean;
-  last_heartbeat_at: string | null;
-  shares: Array<{ share: string; reported_path: string }>;
-}
 
 interface ShareEntry {
   share: string;

@@ -6,7 +6,7 @@ import { prisma } from "./db.js";
 import { requireBearerAuth, requireAdmin, AuthenticatedRequest } from "./middleware.js";
 import { getConnection } from "./hub.js";
 import { type ActivityEventType } from "./activity.js";
-import { createLogger, generateToken, hashToken, safeEqual } from "@constellation/shared";
+import { createLogger, generateToken, hashToken, safeEqual, type ExecutorEntry } from "@constellation/shared";
 import { config } from "./config.js";
 import { createLocalUser } from "./local-auth.js";
 
@@ -82,23 +82,23 @@ apiRouter.get("/api/executors", async (req: Request, res: Response) => {
     prisma.executor.count({ where: { userId: uid } }),
   ]);
 
-  res.json({
-    data: executors.map((e) => ({
-      id: e.id,
-      host: e.host,
-      registered_at: e.registeredAt.toISOString(),
-      last_heartbeat_at: e.lastHeartbeatAt?.toISOString() ?? null,
-      last_disconnect_reason: e.lastDisconnectReason,
-      online: isOnline(e.lastHeartbeatAt),
-      connected: getConnection(e.id) !== undefined,
-      token_id: e.executorToken.id,
-      token_last_used_at: e.executorToken.lastUsedAt?.toISOString() ?? null,
-      shares: e.pathShares.map((ps) => ({ share: ps.share, reported_path: ps.reportedPath })),
-    })),
-    total,
-    limit,
-    offset,
-  });
+  // Typed against the shared ExecutorEntry contract (not just an inline literal) so a
+  // future field rename here is caught by tsc at this call site, instead of silently
+  // going unnoticed through the CLI's --json output and node-gui's Rust/frontend layers.
+  const data: ExecutorEntry[] = executors.map((e) => ({
+    id: e.id,
+    host: e.host,
+    registered_at: e.registeredAt.toISOString(),
+    last_heartbeat_at: e.lastHeartbeatAt?.toISOString() ?? null,
+    last_disconnect_reason: e.lastDisconnectReason,
+    online: isOnline(e.lastHeartbeatAt),
+    connected: getConnection(e.id) !== undefined,
+    token_id: e.executorToken.id,
+    token_last_used_at: e.executorToken.lastUsedAt?.toISOString() ?? null,
+    shares: e.pathShares.map((ps) => ({ share: ps.share, reported_path: ps.reportedPath })),
+  }));
+
+  res.json({ data, total, limit, offset });
 });
 
 // ---------------------------------------------------------------------------
