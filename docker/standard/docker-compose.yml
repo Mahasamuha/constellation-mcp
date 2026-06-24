@@ -9,6 +9,13 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    healthcheck:
+      # No curl/wget in the runtime image (wget was removed for a CVE — see the
+      # relay Dockerfile), so check via Node's own built-in fetch instead.
+      test: ["CMD", "node", "-e", "fetch('http://localhost:'+(process.env.PORT||3000)+'/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
     restart: unless-stopped
 
   postgres:
