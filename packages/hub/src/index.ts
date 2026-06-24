@@ -336,7 +336,7 @@ export class HubSocket extends RelaySocket implements RotatableConnection {
     const dispatchResult = await this.pool.dispatch(identity, tool, share, params, request_id);
 
     if (isDispatchError(dispatchResult)) {
-      this.log.warn({ request_id, tool, share, username: identity.username, error: dispatchResult.message }, "Subnode dispatch failed");
+      this.log.warn({ request_id, tool, share, username: identity.username, kind: dispatchResult.kind, error: dispatchResult.message }, "Subnode dispatch failed");
       writeAuditEntry(this.cfg.audit_log, {
         ts: new Date().toISOString(),
         hub_name: this.cfg.hub_name,
@@ -345,7 +345,7 @@ export class HubSocket extends RelaySocket implements RotatableConnection {
         local_username: identity.username,
         share,
         tool,
-        outcome: "exec_error",
+        outcome: dispatchResult.kind,
         error: dispatchResult.message,
       });
       return { request_id, error: { message: dispatchResult.message } };

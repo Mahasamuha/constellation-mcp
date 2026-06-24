@@ -450,7 +450,9 @@ Each tool call produces one JSONL entry:
 }
 ```
 
-`outcome` values: `ok` | `identity_error` | `permission_denied` | `exec_error`.
+`outcome` values: `ok` | `identity_error` | `permission_denied` | `exec_error` | `uid_blocked` | `gid_blocked` | `spawn_failed` | `timeout` | `worker_error` | `subnode_limit`.
+
+The last six are the specific ways dispatching to a subnode worker can fail — `uid_blocked`/`gid_blocked` are policy rejections (the user's OS identity is blocked by admin config), `subnode_limit`/`timeout` are capacity issues, and `spawn_failed`/`worker_error` are infrastructure failures. `exec_error` remains a generic bucket for execution-path failures that aren't a dispatch failure (e.g. a malformed request rejected before dispatch, or the underlying tool call itself returning an error after dispatch succeeded).
 
 Rotate logs with `logrotate`. The hub does not rotate logs itself.
 

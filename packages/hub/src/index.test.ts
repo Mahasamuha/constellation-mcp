@@ -1,10 +1,22 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { WebSocketServer, type WebSocket as ServerSideSocket } from "ws";
 import type { IncomingMessage } from "node:http";
+
+// resolveIdentity always shells out to `getent passwd` for a real OS user — mocked here
+// so the dispatch-error audit tests below don't depend on a specific OS user existing on
+// whatever machine runs this suite. None of the other tests in this file ever reach
+// handleRpc (rotateToken's messages are handled before that branch), so this has no
+// effect on them.
+vi.mock("./identity.js", () => ({
+  resolveIdentity: vi.fn(),
+  isIdentityError: (v: unknown): boolean => typeof v === "object" && v !== null && "kind" in v,
+}));
+
 import { resolveDstShare, HubSocket } from "./index.js";
-import { SubnodePool } from "./subnode.js";
+import { SubnodePool, type DispatchError } from "./subnode.js";
+import { resolveIdentity } from "./identity.js";
 import type { HubConfig } from "./config.js";
 import type { RpcEnvelope } from "@constellation/shared";
 import { makeTempDir, cleanTempDir } from "./test/fixtures.js";
@@ -237,6 +249,70 @@ describe("HubSocket — malformed RPC params", () => {
       tool: "copy",
       outcome: "exec_error",
       error: "Malformed request: params must be an object",
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// HubSocket — dispatch-error kind reaches the audit log. Each DispatchError kind
+// (uid_blocked, gid_blocked, spawn_failed, timeout, worker_error, subnode_limit) used to
+// collapse into the same generic "exec_error" outcome — an operator couldn't filter
+// "policy rejection" from "capacity" from "infra failure" without string-matching the
+// free-text message. The audit entry's outcome should now be the specific kind itself.
+// ---------------------------------------------------------------------------
+
+describe("HubSocket — dispatch-error kind in the audit log", () => {
+  let dir: string;
+  let wss: WebSocketServer;
+  let port: number;
+  let socket: HubSocket | undefined;
+
+  beforeEach(async () => {
+    dir = await makeTempDir();
+    wss = new WebSocketServer({ port: 0 });
+    await new Promise<void>((resolve) => wss.once("listening", resolve));
+    port = (wss.address() as { port: number }).port;
+    vi.mocked(resolveIdentity).mockResolvedValue({ username: "alice", uid: 1000, gid: 1000, home: "/home/alice" });
+  });
+
+  afterEach(async () => {
+    socket?.stop();
+    socket = undefined;
+    await new Promise<void>((resolve) => wss.close(() => resolve()));
+    await cleanTempDir(dir);
+    vi.clearAllMocks();
+  });
+
+  const kinds: DispatchError["kind"][] = [
+    "uid_blocked", "gid_blocked", "spawn_failed", "timeout", "worker_error", "subnode_limit",
+  ];
+
+  it.each(kinds)("uses %s as the audit outcome instead of the generic exec_error", async (kind) => {
+    const auditLog = join(dir, "audit.jsonl");
+    const cfg = minimalHubConfig({
+      relay_url: `http://localhost:${port}`,
+      audit_log: auditLog,
+      shares: [{ name: "docs", path: "/srv/docs", permissions: { default: "read-write", overrides: [] } }],
+    });
+    const pool = new SubnodePool(cfg, {});
+    vi.spyOn(pool, "dispatch").mockResolvedValue({ kind, message: `synthetic ${kind} failure` });
+    socket = new HubSocket(cfg, "tok", {}, pool);
+    socket.start();
+
+    const [conn] = await nextConnection(wss);
+    await waitForMessage(conn); // the initial hub_share_sync sent from onOpen()
+
+    conn.send(JSON.stringify({ request_id: "req-1", tool: "read_file", share: "docs", absolute_root: "/srv/docs", params: {} }));
+    const response = await waitForMessage(conn);
+
+    expect(response).toEqual({ request_id: "req-1", error: { message: `synthetic ${kind} failure` } });
+
+    const logged = readFileSync(auditLog, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    expect(logged).toHaveLength(1);
+    expect(logged[0]).toMatchObject({
+      request_id: "req-1",
+      outcome: kind,
+      error: `synthetic ${kind} failure`,
     });
   });
 });

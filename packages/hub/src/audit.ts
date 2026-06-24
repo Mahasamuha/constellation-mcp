@@ -1,6 +1,15 @@
 import { appendFileSync } from "node:fs";
+import type { DispatchError } from "./subnode.js";
 
-export type AuditOutcome = "ok" | "identity_error" | "permission_denied" | "exec_error";
+/**
+ * "exec_error" remains the generic bucket for execution-path failures that aren't a
+ * dispatch failure — a malformed request rejected before dispatch even runs, or the
+ * underlying tool call itself returning an error after dispatch already succeeded.
+ * A DispatchError's own kind is included directly (not collapsed into "exec_error")
+ * so an operator can filter/alert on "policy rejection" vs. "capacity" vs.
+ * "infra failure" without string-matching the free-text error message.
+ */
+export type AuditOutcome = "ok" | "identity_error" | "permission_denied" | "exec_error" | DispatchError["kind"];
 
 export interface AuditEntry {
   ts: string;
