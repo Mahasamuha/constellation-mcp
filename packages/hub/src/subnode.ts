@@ -65,6 +65,10 @@ interface QueuedRequest {
   resolve: (r: DispatchResult | DispatchError) => void;
   /** Date.now() + resolveQueueTimeoutMs(cfg), set at enqueue time. */
   deadline: number;
+  /** Independently expires this entry at `deadline` even if no worker ever
+   * completes a request to trigger onRequestComplete's opportunistic check —
+   * see expireQueued. */
+  timer: ReturnType<typeof setTimeout>;
 }
 
 interface Subnode {
@@ -372,13 +376,18 @@ export class SubnodePool {
         return;
       }
 
-      // At capacity — queue, bounded by the resolved queue timeout
+      // At capacity — queue, bounded by the resolved queue timeout. The timer
+      // here is what makes that bound actually fire on schedule — see
+      // expireQueued; onRequestComplete's own deadline check alone only runs
+      // opportunistically, when some other request happens to complete.
       const queueTimeoutMs = resolveQueueTimeoutMs(this.cfg);
-      subnode.queue.push({
+      const entry: QueuedRequest = {
         tool, share, params, requestId,
         resolve: resultResolve,
         deadline: Date.now() + queueTimeoutMs,
-      });
+        timer: setTimeout(() => this.expireQueued(subnode, entry), queueTimeoutMs),
+      };
+      subnode.queue.push(entry);
     }).catch((e: unknown) => {
       // An unexpected throw inside the lock callback would permanently poison
       // subnode.lock — all future dispatches for this user would chain onto a
@@ -510,12 +519,28 @@ export class SubnodePool {
   }
 
   /**
+   * Expires a single queued entry independently of any worker completing a
+   * request — the timer is started at enqueue time (see assignAndSend) and
+   * fires at exactly `deadline`. The indexOf check makes this safely race
+   * with onRequestComplete dispatching (or itself expiring) the same entry
+   * first: whichever one removes it from the queue wins, the other is a
+   * no-op.
+   */
+  private expireQueued(subnode: Subnode, entry: QueuedRequest): void {
+    const idx = subnode.queue.indexOf(entry);
+    if (idx === -1) return;
+    subnode.queue.splice(idx, 1);
+    entry.resolve({ kind: "timeout", message: "Request timed out waiting for a free worker" });
+  }
+
+  /**
    * Called when a worker finishes a request. Drains the subnode queue first
    * (skipping expired entries), then resets the idle timer if nothing is waiting.
    */
   private onRequestComplete(subnode: Subnode, worker: Worker): void {
     while (subnode.queue.length > 0) {
       const entry = subnode.queue.shift()!;
+      clearTimeout(entry.timer);
       if (Date.now() > entry.deadline) {
         entry.resolve({ kind: "timeout", message: "Request timed out waiting for a free worker" });
         continue;
@@ -619,6 +644,7 @@ export class SubnodePool {
       // Reject any stranded queued requests — the next dispatch will spawn fresh.
       if (subnode.queue.length > 0) {
         for (const qr of subnode.queue) {
+          clearTimeout(qr.timer);
           qr.resolve({ kind: "worker_error", message: "All workers terminated before this request could be processed" });
         }
         subnode.queue = [];
@@ -673,6 +699,7 @@ export class SubnodePool {
     // Reject all queued requests immediately.
     for (const subnode of this.subnodes.values()) {
       for (const qr of subnode.queue) {
+        clearTimeout(qr.timer);
         qr.resolve({ kind: "worker_error", message: "HUB_SHUTTING_DOWN — retry after 45 seconds" });
       }
       subnode.queue = [];

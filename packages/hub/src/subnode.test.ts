@@ -336,6 +336,40 @@ describe("SubnodePool.dispatch", () => {
     expect((r2 as { kind: string }).kind).toBe("timeout");
   });
 
+  // Regression test for the queue-sweep fix: a queued request used to only ever
+  // time out as a side effect of some other request completing (onRequestComplete's
+  // opportunistic deadline check) — if the worker holding the only slot never
+  // finished anything, the queue timeout never actually fired on schedule.
+  it("expires a queued request on its own timer, with no other request ever completing to trigger it", async () => {
+    const pool = new SubnodePool(
+      makeConfig({
+        subnode_rpc_timeout_seconds: 1,
+        subnode_workers: workersConfig({ min: 1, max: 1, queue_timeout: 0.02 }), // 20ms
+      }),
+      {}
+    );
+
+    const d1 = pool.dispatch(identity, "list_directory", "docs", {}, "req-1");
+    const d2 = pool.dispatch(identity, "list_directory", "docs", {}, "req-2");
+
+    await waitUntil(() => forkedChildren[0]?.hasPending("req-1") ?? false);
+
+    // req-1 is never responded to here — simulates a worker stuck on a long-but-
+    // in-budget operation. Nothing ever calls onRequestComplete, so req-2 must
+    // expire on its own timer rather than hang forever.
+    const r2 = await d2;
+    expect(isDispatchError(r2)).toBe(true);
+    expect((r2 as { kind: string }).kind).toBe("timeout");
+
+    // req-1 is untouched — confirms req-2's own timer fired, not some side effect
+    // of req-1 having completed.
+    expect(forkedChildren[0]!.hasPending("req-1")).toBe(true);
+
+    forkedChildren[0]!.respond("req-1");
+    await d1;
+    await pool.shutdown(0);
+  });
+
   it("warm worker gets warm_idle_seconds timer; burst worker gets burst_idle_seconds timer", async () => {
     const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
 
