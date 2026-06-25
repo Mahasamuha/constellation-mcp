@@ -181,4 +181,58 @@ describe("FileBrowserApp", () => {
     expect(screen.queryByText(/re-read of A/)).toBeNull();
     expect(screen.queryByText(/original A/)).toBeNull();
   });
+
+  // Regression test for the unsaved-changes guard: navigating away mid-edit used to
+  // silently discard whatever was typed into the (uncontrolled) textarea, with no
+  // warning at all.
+  it("blocks navigating to a different file mid-edit and pulses Save/Cancel instead", async () => {
+    mockApp.callServerTool.mockImplementation(({ name, arguments: args }: { name: string; arguments?: Record<string, unknown> }) => {
+      if (name === "list_shares") return Promise.resolve(SHARE);
+      if (name === "list_directory") return Promise.resolve(TWO_FILES);
+      if (name === "read_file") {
+        const path = args!["relative_path"] as string;
+        return Promise.resolve(ok({ content: path === "a.txt" ? "original A" : "content of B" }));
+      }
+      throw new Error(`unexpected tool call: ${name}`);
+    });
+
+    await renderWithShareSelected();
+    fireEvent.click(screen.getByText("a.txt"));
+    await screen.findByText(/original A/);
+    fireEvent.click(screen.getByLabelText("Edit"));
+
+    fireEvent.click(screen.getByText("b.txt"));
+    await flush();
+
+    // Still editing A — the click was blocked rather than routed to openFile.
+    expect(screen.getByLabelText("Save")).toBeTruthy();
+    expect(screen.queryByText(/content of B/)).toBeNull();
+    expect(screen.getByLabelText("Save").className).toContain("pulse");
+    expect(screen.getByLabelText("Cancel").className).toContain("pulse");
+  });
+
+  it("blocks switching shares mid-edit", async () => {
+    const twoShares = ok({ shares: [{ share: "docs", host: "h1" }, { share: "other", host: "h1" }] });
+    mockApp.callServerTool.mockImplementation(({ name, arguments: args }: { name: string; arguments?: Record<string, unknown> }) => {
+      if (name === "list_shares") return Promise.resolve(twoShares);
+      if (name === "list_directory") return Promise.resolve(TWO_FILES);
+      if (name === "read_file") {
+        const path = args!["relative_path"] as string;
+        return Promise.resolve(ok({ content: path === "a.txt" ? "original A" : "content of B" }));
+      }
+      throw new Error(`unexpected tool call: ${name}`);
+    });
+
+    await renderWithShareSelected();
+    fireEvent.click(screen.getByText("a.txt"));
+    await screen.findByText(/original A/);
+    fireEvent.click(screen.getByLabelText("Edit"));
+
+    fireEvent.change(screen.getByLabelText("Share"), { target: { value: "other::h1" } });
+    await flush();
+
+    // Still on "docs" — the change was blocked rather than routed to handleShareChange.
+    expect((screen.getByLabelText("Share") as HTMLSelectElement).value).toBe("docs::h1");
+    expect(screen.getByLabelText("Save").className).toContain("pulse");
+  });
 });

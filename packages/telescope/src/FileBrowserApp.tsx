@@ -122,6 +122,14 @@ interface BrowserContextValue {
   fileContent: string | null;
   isLoadingFile: boolean;
   isEditing: boolean;
+  /** True only for the write+re-read round trip after Save is clicked — at that
+   * point the draft has already been handed off, so navigation guards must not
+   * treat it as still-unsaved even though isEditing hasn't flipped false yet. */
+  isSaving: boolean;
+  /** Bumped each time navigation is blocked by an in-progress edit, so the
+   * Save/Cancel buttons can pulse to explain why the click did nothing. */
+  editBlockedPulse: number;
+  triggerEditBlockedPulse: () => void;
   status: StatusMessage;
   sidebarOpen: boolean;
   wordWrap: boolean;
@@ -203,6 +211,9 @@ export function FileBrowserApp() {
   const [fileContent, setFileContent] = useState<string | null>(null);
   const [isLoadingFile, setIsLoadingFile] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [editBlockedPulse, setEditBlockedPulse] = useState(0);
+  const triggerEditBlockedPulse = useCallback(() => setEditBlockedPulse((n) => n + 1), []);
   const [status, setStatusMessage] = useState<StatusMessage>({ text: "Connecting…", isError: false });
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [wordWrap, setWordWrap] = useState(false);
@@ -295,6 +306,11 @@ export function FileBrowserApp() {
       // any state — otherwise this call's closure-captured (now-stale) share/host/path
       // would clobber whatever the user has since navigated to.
       const seq = openFileSeq.current;
+      // The draft is handed off to the tool call right here — from this point on
+      // there's nothing left to lose, so isSaving lets the navigation guards (see
+      // handleShareChange/TreeNode) stop treating this as still-unsaved even though
+      // isEditing itself only flips false once the round trip below completes.
+      setIsSaving(true);
       setStatus(`Saving ${selectedPath}…`);
       try {
         const written = await app.callServerTool({
@@ -326,6 +342,8 @@ export function FileBrowserApp() {
         // with isError:true — without this, the status bar is left at "Saving…" forever.
         if (openFileSeq.current !== seq) return;
         setStatusError(transportErrorMessage(e));
+      } finally {
+        setIsSaving(false);
       }
     },
     [app, selectedShare, selectedHost, selectedPath, setStatus, setStatusError]
@@ -347,6 +365,15 @@ export function FileBrowserApp() {
 
   const handleShareChange = useCallback(
     (value: string) => {
+      // Switching shares mid-edit would silently discard the draft in the uncontrolled
+      // textarea (see openFile/selectShare's unconditional setIsEditing(false)) — block
+      // it and let the Save/Cancel buttons pulse instead, rather than swap underneath
+      // the user with no warning. Not while isSaving though — the draft's already
+      // been handed off to saveFile by then, so there's nothing left to lose.
+      if (isEditing && !isSaving) {
+        triggerEditBlockedPulse();
+        return;
+      }
       const match = shares.find((s) => shareKey(s.share, s.host) === value);
       if (match) {
         selectShare(match.share, match.host);
@@ -360,7 +387,7 @@ export function FileBrowserApp() {
         setStatus("Select a share to begin.");
       }
     },
-    [shares, selectShare, setStatus]
+    [shares, selectShare, setStatus, isEditing, isSaving, triggerEditBlockedPulse]
   );
 
   const toggleSidebar = useCallback(() => setSidebarOpen((open) => !open), []);
@@ -483,6 +510,9 @@ export function FileBrowserApp() {
       fileContent,
       isLoadingFile,
       isEditing,
+      isSaving,
+      editBlockedPulse,
+      triggerEditBlockedPulse,
       status,
       sidebarOpen,
       wordWrap,
@@ -509,6 +539,9 @@ export function FileBrowserApp() {
       fileContent,
       isLoadingFile,
       isEditing,
+      isSaving,
+      editBlockedPulse,
+      triggerEditBlockedPulse,
       status,
       sidebarOpen,
       wordWrap,
@@ -543,6 +576,8 @@ function FileBrowserLayout() {
     sidebarOpen,
     toggleSidebar,
     handleShareChange,
+    isEditing,
+    isSaving,
     status,
     displayMode,
     availableDisplayModes,
@@ -562,6 +597,8 @@ function FileBrowserLayout() {
       <header className="header">
         <select
           aria-label="Share"
+          aria-disabled={isEditing && !isSaving}
+          className={isEditing && !isSaving ? "blocked" : ""}
           value={selectedShare && selectedHost ? shareKey(selectedShare, selectedHost) : ""}
           onChange={(e) => handleShareChange(e.target.value)}
         >
@@ -710,10 +747,11 @@ function DirectoryTree({ path }: { path: string }) {
 }
 
 function TreeNode({ node }: { node: DirNode }) {
-  const { selectedShare, selectedHost, selectedPath, openFile } = useBrowserContext();
+  const { selectedShare, selectedHost, selectedPath, openFile, isEditing, isSaving, triggerEditBlockedPulse } = useBrowserContext();
   const [expanded, setExpanded] = useState(false);
   const isDir = node.type === "directory";
-  const classes = ["node", isDir ? "dir" : "file", expanded && "expanded", selectedPath === node.path && "selected"]
+  const blocked = !isDir && isEditing && !isSaving;
+  const classes = ["node", isDir ? "dir" : "file", expanded && "expanded", selectedPath === node.path && "selected", blocked && "blocked"]
     .filter(Boolean)
     .join(" ");
 
@@ -721,7 +759,15 @@ function TreeNode({ node }: { node: DirNode }) {
     <li>
       <div
         className={classes}
-        onClick={() => (isDir ? setExpanded((e) => !e) : void openFile(selectedShare!, selectedHost!, node.path))}
+        aria-disabled={blocked}
+        onClick={() => {
+          if (isDir) { setExpanded((e) => !e); return; }
+          // Opening a different file mid-edit would silently discard the draft in the
+          // uncontrolled textarea — block it and let Save/Cancel pulse instead. Not
+          // while isSaving though — see saveFile's comment on why that's safe.
+          if (isEditing && !isSaving) { triggerEditBlockedPulse(); return; }
+          void openFile(selectedShare!, selectedHost!, node.path);
+        }}
       >
         <span className="node-icon">{isDir && (expanded ? <FolderOpenIcon /> : <FolderClosedIcon />)}</span>
         {nodeName(node.path)}
@@ -739,6 +785,7 @@ function FileEditor() {
     selectedHost,
     selectedPath,
     isEditing,
+    editBlockedPulse,
     startEditing,
     cancelEditing,
     saveFile,
@@ -747,6 +794,19 @@ function FileEditor() {
     toggleWordWrap,
   } = useBrowserContext();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Save/Cancel pulse to explain a click that did nothing — only for *subsequent*
+  // increments, not the one already current when this component mounted/last
+  // rendered, so entering edit mode itself never falsely pulses.
+  const [pulsing, setPulsing] = useState(false);
+  const prevEditBlockedPulse = useRef(editBlockedPulse);
+  useEffect(() => {
+    if (editBlockedPulse === prevEditBlockedPulse.current) return;
+    prevEditBlockedPulse.current = editBlockedPulse;
+    setPulsing(true);
+    const t = window.setTimeout(() => setPulsing(false), 900);
+    return () => window.clearTimeout(t);
+  }, [editBlockedPulse]);
 
   const highlighted = useMemo(() => {
     if (fileContent == null) return null;
@@ -793,14 +853,14 @@ function FileEditor() {
           <>
             <button
               type="button"
-              className="save"
+              className={`save${pulsing ? " pulse" : ""}`}
               title="Save"
               aria-label="Save"
               onClick={() => void saveFile(textareaRef.current?.value ?? "")}
             >
               <SaveIcon />
             </button>
-            <button type="button" title="Cancel" aria-label="Cancel" onClick={cancelEditing}>
+            <button type="button" className={pulsing ? "pulse" : ""} title="Cancel" aria-label="Cancel" onClick={cancelEditing}>
               <CancelIcon />
             </button>
           </>
