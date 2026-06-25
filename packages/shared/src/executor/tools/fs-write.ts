@@ -75,7 +75,7 @@ async function dirStats(dir: string): Promise<{ size: number; count: number }> {
       size += sub.size;
       count += sub.count;
     } else {
-      const s = await fs.stat(full);
+      const s = await fs.lstat(full);
       size += s.size;
       count++;
     }
