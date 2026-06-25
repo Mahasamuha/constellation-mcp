@@ -420,7 +420,13 @@ WantedBy=multi-user.target
 
         ws.on("open", () => ws.send(JSON.stringify({ type: "rotate_token" })));
         ws.on("message", (data: Buffer) => {
-          const msg = JSON.parse(data.toString()) as Record<string, unknown>;
+          let msg: Record<string, unknown>;
+          try {
+            msg = JSON.parse(data.toString()) as Record<string, unknown>;
+          } catch {
+            console.error("Received non-JSON message from relay");
+            return;
+          }
           if (msg["type"] === "token_rotated" && typeof msg["token"] === "string") {
             clearTimeout(timeout);
             ws.close();
