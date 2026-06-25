@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::OnceLock;
 
-static BIN: OnceLock<Result<PathBuf, String>> = OnceLock::new();
+static BIN: OnceLock<PathBuf> = OnceLock::new();
 
 fn resolve() -> Result<PathBuf, String> {
     // Login-shell lookup: sources ~/.profile so NVM/volta/fnm/custom npm prefixes
@@ -92,8 +92,23 @@ fn resolve() -> Result<PathBuf, String> {
     Err("constellation CLI not found. Download and install it from https://github.com/Mahasamuha/constellation-mcp/releases/latest".to_string())
 }
 
+// Caches only a successful resolution into `cache` — once found, the value is stable
+// for the process's lifetime. A failed `resolve` is deliberately *not* cached: it's
+// re-tried on every call until it succeeds once.
+fn get_or_try_init<T>(cache: &OnceLock<T>, resolve: impl FnOnce() -> Result<T, String>) -> Result<&T, String> {
+    if let Some(v) = cache.get() {
+        return Ok(v);
+    }
+    let v = resolve()?;
+    Ok(cache.get_or_init(|| v))
+}
+
+// Re-probing on every failed call is cheap (a couple of subprocess spawns), and means
+// a GUI that autostarted before the CLI was installed/on PATH self-heals on the very
+// next action — or the next 5s tray poll (see lib.rs's refresh_tray loop) — instead of
+// needing a full quit-and-relaunch to pick up a since-installed CLI.
 fn bin() -> Result<&'static PathBuf, String> {
-    BIN.get_or_init(resolve).as_ref().map_err(|e| e.clone())
+    get_or_try_init(&BIN, resolve)
 }
 
 // Every node-gui-initiated CLI call is non-interactive by construction — there's
@@ -140,5 +155,33 @@ pub fn output(args: &[&str]) -> Result<String, String> {
         } else {
             stderr
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+
+    #[test]
+    fn caches_success_but_retries_failure() {
+        let cache: OnceLock<u32> = OnceLock::new();
+        let calls = Cell::new(0);
+        let try_resolve = |should_fail: bool| {
+            get_or_try_init(&cache, || {
+                calls.set(calls.get() + 1);
+                if should_fail { Err("not found".to_string()) } else { Ok(42) }
+            })
+        };
+
+        assert_eq!(try_resolve(true), Err("not found".to_string()));
+        assert_eq!(try_resolve(true), Err("not found".to_string()));
+        assert_eq!(calls.get(), 2, "a failed resolution must not be cached — retried every call");
+
+        assert_eq!(try_resolve(false), Ok(&42));
+        assert_eq!(calls.get(), 3);
+
+        assert_eq!(try_resolve(true), Ok(&42), "a cached success must win even if asked to fail again");
+        assert_eq!(calls.get(), 3, "a successful resolution must be cached — never retried");
     }
 }
