@@ -28,7 +28,7 @@ services:
     image: postgres:16
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_PASSWORD: replace-with-a-strong-password
       POSTGRES_DB: constellation
     volumes:
       - pgdata:/var/lib/postgresql/data
