@@ -475,6 +475,13 @@ export async function handleDeviceCodeGrant(
   const scope = entry.scope as DeviceScope;
   switch (scope) {
     case "agent:escalate": {
+      // Role was checked at approval time, but that can be minutes stale by redemption
+      // (bounded by the device code's 15-min TTL) — re-check here so a same-window
+      // demotion doesn't still grant admin off the stale approval.
+      if (!(await isAdmin(userId))) {
+        res.status(400).json({ error: "access_denied", error_description: "Approving user no longer has admin privileges" });
+        return;
+      }
       // Set adminUntil on the target session. The target session was verified at
       // approval time; re-verify here that it still belongs to the same user.
       const targetSessionId = entry.elevateSessionId;
@@ -501,6 +508,11 @@ export async function handleDeviceCodeGrant(
       return;
     }
     case "agent:register:shared": {
+      // Same staleness window as agent:escalate above — re-check admin role here too.
+      if (!(await isAdmin(userId))) {
+        res.status(400).json({ error: "access_denied", error_description: "Approving user no longer has admin privileges" });
+        return;
+      }
       const token = generateToken();
       const tokenHash = hashToken(token);
 

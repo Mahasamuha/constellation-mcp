@@ -25,6 +25,7 @@ vi.mock("./db.js", () => ({
     executor: { findFirst: vi.fn(), update: vi.fn(), create: vi.fn() },
     executorToken: { update: vi.fn(), create: vi.fn() },
     oauthClient: { upsert: vi.fn() },
+    user: { findUnique: vi.fn() },
     $transaction: vi.fn(async (cb: (tx: unknown) => unknown) => cb(mockTx())),
   },
 }));
@@ -50,6 +51,7 @@ const db = prisma as unknown as {
   oauthSession: { findFirst: ReturnType<typeof vi.fn>; update: ReturnType<typeof vi.fn> };
   executor: { findFirst: ReturnType<typeof vi.fn>; update: ReturnType<typeof vi.fn>; create: ReturnType<typeof vi.fn> };
   executorToken: { update: ReturnType<typeof vi.fn>; create: ReturnType<typeof vi.fn> };
+  user: { findUnique: ReturnType<typeof vi.fn> };
 };
 
 function mockRes() {
@@ -68,6 +70,7 @@ const FUTURE = new Date(Date.now() + 60_000);
 beforeEach(() => {
   vi.clearAllMocks();
   db.executorToken.create.mockResolvedValue({ id: "token-1" });
+  db.user.findUnique.mockResolvedValue({ role: "ADMIN" });
 });
 
 describe("handleDeviceCodeGrant — scope dispatch", () => {
@@ -86,6 +89,22 @@ describe("handleDeviceCodeGrant — scope dispatch", () => {
       data: { adminUntil: expect.any(Date) },
     });
     expect(res.statusCode).toBe(204);
+  });
+
+  it("agent:escalate returns access_denied when the approver's admin role was revoked since approval", async () => {
+    db.deviceCode.findUnique.mockResolvedValue({
+      deviceCodeHash: "h", expiresAt: FUTURE, status: "approved", userId: "user-1",
+      scope: "agent:escalate", elevateSessionId: "sess-1", hostName: null,
+    });
+    db.user.findUnique.mockResolvedValue({ role: "USER" });
+
+    const res = mockRes();
+    await handleDeviceCodeGrant({ device_code: "dc" }, res as never);
+
+    expect(db.oauthSession.findFirst).not.toHaveBeenCalled();
+    expect(db.oauthSession.update).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(400);
+    expect(res.body).toMatchObject({ error: "access_denied" });
   });
 
   it("agent:escalate returns access_denied when the target session is gone", async () => {
@@ -117,6 +136,21 @@ describe("handleDeviceCodeGrant — scope dispatch", () => {
       data: expect.objectContaining({ userId: null, tokenType: "HUB", approvedByUserId: "approver-1" }),
     }));
     expect(res.body).toMatchObject({ token_type: "agent", host: "shared-host" });
+  });
+
+  it("agent:register:shared returns access_denied when the approver's admin role was revoked since approval", async () => {
+    db.deviceCode.findUnique.mockResolvedValue({
+      deviceCodeHash: "h", expiresAt: FUTURE, status: "approved", userId: "approver-1",
+      scope: "agent:register:shared", elevateSessionId: null, hostName: "shared-host",
+    });
+    db.user.findUnique.mockResolvedValue({ role: "USER" });
+
+    const res = mockRes();
+    await handleDeviceCodeGrant({ device_code: "dc" }, res as never);
+
+    expect(db.executorToken.create).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(400);
+    expect(res.body).toMatchObject({ error: "access_denied" });
   });
 
   it("agent:register creates a user-bound executor token", async () => {
