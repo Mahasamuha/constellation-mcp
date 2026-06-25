@@ -23,7 +23,7 @@ function defaultConfigPath(): string {
 
 /**
  * Disk-space stats for the filesystem holding the audit log's directory.
- * `writeAuditEntry` (audit.ts) fails open on ENOSPC/EACCES rather than blocking tool
+ * `AuditWriter` (audit.ts) fails open on ENOSPC/EACCES rather than blocking tool
  * calls, so this is the one signal an operator has for catching a filling disk before
  * audit coverage silently drops. Checks `dirname(auditLogPath)` specifically — not
  * some other convenient path — since that's the mount whose exhaustion actually

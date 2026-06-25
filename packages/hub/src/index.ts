@@ -13,7 +13,7 @@ import {
 import { loadHubConfig, validateHubConfig, type HubConfig } from "./config.js";
 import { resolveIdentity, isIdentityError } from "./identity.js";
 import { checkRpcPermission, buildPermissionBlob } from "./permissions.js";
-import { writeAuditEntry } from "./audit.js";
+import { AuditWriter } from "./audit.js";
 import { SubnodePool, isDispatchError } from "./subnode.js";
 
 const log = createLogger("hub");
@@ -132,6 +132,7 @@ export class HubSocket extends RelaySocket implements RotatableConnection {
   private shuttingDown = false;
   private rotationState: RotationState | null = null;
   private awaitingRotationConfirm = false;
+  private readonly audit: AuditWriter;
 
   constructor(
     private readonly cfg: HubConfig,
@@ -140,6 +141,7 @@ export class HubSocket extends RelaySocket implements RotatableConnection {
     private readonly pool: SubnodePool
   ) {
     super({ logModule: "hub", path: "/executor/connect" });
+    this.audit = new AuditWriter(cfg.audit_log);
   }
 
   protected getRelayUrl(): string {
@@ -287,12 +289,12 @@ export class HubSocket extends RelaySocket implements RotatableConnection {
     // onMessage casts the raw WS message to IncomingRpcEnvelope after checking only that
     // request_id/tool are strings — params isn't validated there. Without this guard, a
     // non-object params throws deep inside resolveDstShare below, which skips every
-    // writeAuditEntry call in this function entirely (onMessage's catch-all handler logs
+    // this.audit.write call in this function entirely (onMessage's catch-all handler logs
     // and replies with an error, but knows nothing about the audit log's shape).
     if (typeof params !== "object" || params === null) {
       const message = "Malformed request: params must be an object";
       this.log.warn({ request_id, tool, share }, message);
-      writeAuditEntry(this.cfg.audit_log, {
+      this.audit.write({
         ts: new Date().toISOString(),
         hub_name: this.cfg.hub_name,
         request_id,
@@ -311,7 +313,7 @@ export class HubSocket extends RelaySocket implements RotatableConnection {
 
     if (isIdentityError(identity)) {
       this.log.warn({ request_id, tool, share, error: identity.message }, "Identity resolution failed");
-      writeAuditEntry(this.cfg.audit_log, {
+      this.audit.write({
         ts: new Date().toISOString(),
         hub_name: this.cfg.hub_name,
         request_id,
@@ -337,7 +339,7 @@ export class HubSocket extends RelaySocket implements RotatableConnection {
 
     if (isDispatchError(dispatchResult)) {
       this.log.warn({ request_id, tool, share, username: identity.username, kind: dispatchResult.kind, error: dispatchResult.message }, "Subnode dispatch failed");
-      writeAuditEntry(this.cfg.audit_log, {
+      this.audit.write({
         ts: new Date().toISOString(),
         hub_name: this.cfg.hub_name,
         request_id,
@@ -358,7 +360,7 @@ export class HubSocket extends RelaySocket implements RotatableConnection {
           : String(dispatchResult.error))
       : null;
 
-    writeAuditEntry(this.cfg.audit_log, {
+    this.audit.write({
       ts: new Date().toISOString(),
       hub_name: this.cfg.hub_name,
       request_id,
@@ -386,7 +388,7 @@ export class HubSocket extends RelaySocket implements RotatableConnection {
     reason: string
   ): object {
     this.log.info({ request_id, tool, share, username, reason }, "Permission denied");
-    writeAuditEntry(this.cfg.audit_log, {
+    this.audit.write({
       ts: new Date().toISOString(),
       hub_name: this.cfg.hub_name,
       request_id,
@@ -409,6 +411,11 @@ export class HubSocket extends RelaySocket implements RotatableConnection {
     this.stop();
 
     await this.pool.shutdown(30_000);
+    // Draining above only guarantees every audit entry was enqueued (write() doesn't
+    // wait for the disk write itself) — flush so none are still in flight when this
+    // process exits, then close its file handle.
+    await this.audit.flush();
+    await this.audit.close();
     this.log.info("Shutdown complete");
   }
 }

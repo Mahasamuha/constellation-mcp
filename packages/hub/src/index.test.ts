@@ -243,6 +243,9 @@ describe("HubSocket — malformed RPC params", () => {
 
     expect(response).toEqual({ request_id: "req-1", error: { message: "Malformed request: params must be an object" } });
 
+    // The audit write is now async/fire-and-forget (see AuditWriter) — it's enqueued
+    // before the response is sent, but not necessarily landed on disk yet.
+    await pollUntil(() => existsSync(auditLog) && readFileSync(auditLog, "utf8").trim().length > 0);
     const logged = readFileSync(auditLog, "utf8").trim().split("\n").map((line) => JSON.parse(line));
     expect(logged).toHaveLength(1);
     expect(logged[0]).toMatchObject({
@@ -308,6 +311,9 @@ describe("HubSocket — dispatch-error kind in the audit log", () => {
 
     expect(response).toEqual({ request_id: "req-1", error: { message: `synthetic ${kind} failure` } });
 
+    // The audit write is now async/fire-and-forget (see AuditWriter) — it's enqueued
+    // before the response is sent, but not necessarily landed on disk yet.
+    await pollUntil(() => existsSync(auditLog) && readFileSync(auditLog, "utf8").trim().length > 0);
     const logged = readFileSync(auditLog, "utf8").trim().split("\n").map((line) => JSON.parse(line));
     expect(logged).toHaveLength(1);
     expect(logged[0]).toMatchObject({
