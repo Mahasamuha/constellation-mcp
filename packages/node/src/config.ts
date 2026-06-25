@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, renameSync, mkdirSync, unlinkSync } from "node:fs";
+import { readFileSync, writeFileSync, renameSync, mkdirSync, unlinkSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { homedir, platform } from "node:os";
 import yaml from "js-yaml";
@@ -34,6 +34,37 @@ function atomicWriteFileSync(path: string, data: string, options: { mode: number
   const tmpPath = `${path}.tmp-${process.pid}-${Date.now()}`;
   writeFileSync(tmpPath, data, options);
   renameSync(tmpPath, path);
+}
+
+/**
+ * Wraps a synchronous loader with an mtime-gated cache: the (comparatively
+ * expensive) read+parse only re-runs when `path`'s mtime has actually changed
+ * since the last call. Built for the daemon's per-RPC config/paths reload
+ * (see node/src/index.ts) — node.yaml/paths.yaml only actually change on an
+ * explicit `node rotate`/`node paths add|remove`, not between one RPC and the
+ * next, so most calls only pay for a stat() instead of a full read+parse.
+ *
+ * If `path` can't be stat'd (deleted, permissions), falls through to `load()`
+ * on every call instead of caching a stat failure — `load()` already has its
+ * own handling for a missing/unreadable file (loadNodeConfig throws,
+ * loadPathsConfig returns an empty list), and this preserves that exactly.
+ */
+export function cachedByMtime<T>(path: string, load: () => T): () => T {
+  let cachedMtimeMs: number | null = null;
+  let cachedValue: T;
+  return () => {
+    let mtimeMs: number | null = null;
+    try {
+      mtimeMs = statSync(path).mtimeMs;
+    } catch {
+      // Fall through — see doc comment above.
+    }
+    if (mtimeMs === null || mtimeMs !== cachedMtimeMs) {
+      cachedValue = load();
+      cachedMtimeMs = mtimeMs;
+    }
+    return cachedValue;
+  };
 }
 
 // ---------------------------------------------------------------------------

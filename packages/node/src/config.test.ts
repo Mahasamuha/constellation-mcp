@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { readdirSync } from "node:fs";
-import { writeNodeConfig, writeNodeToken, clearPreviousToken, loadNodeConfig } from "./config.js";
+import { readdirSync, utimesSync } from "node:fs";
+import { join } from "node:path";
+import { writeNodeConfig, writeNodeToken, clearPreviousToken, loadNodeConfig, nodeYamlPath, cachedByMtime } from "./config.js";
 import { makeTempDir, cleanTempDir } from "./test/fixtures.js";
 
 let dir: string;
@@ -53,5 +54,43 @@ describe("atomic writes", () => {
     writeNodeToken(dir, "tok-rotated");
 
     expect(readdirSync(dir)).toEqual(["node.yaml"]);
+  });
+});
+
+// Regression test for the per-RPC reload fix: the daemon's hot path needs every
+// RPC to see a config change made via `node rotate`/`node paths add|remove`, but
+// without redoing the actual read+parse when nothing has changed in between.
+describe("cachedByMtime", () => {
+  it("only reloads when the file's mtime has changed", () => {
+    let calls = 0;
+    const cached = cachedByMtime(nodeYamlPath(dir), () => {
+      calls++;
+      return loadNodeConfig(dir);
+    });
+
+    utimesSync(nodeYamlPath(dir), new Date(1000), new Date(1000));
+    expect(cached().node_token).toBe("tok-original");
+    expect(cached().node_token).toBe("tok-original");
+    expect(calls).toBe(1);
+
+    writeNodeToken(dir, "tok-rotated");
+    utimesSync(nodeYamlPath(dir), new Date(2000), new Date(2000));
+    expect(cached().node_token).toBe("tok-rotated");
+    expect(calls).toBe(2);
+
+    expect(cached().node_token).toBe("tok-rotated");
+    expect(calls).toBe(2);
+  });
+
+  it("falls through to load() on every call when the file can't be stat'd", () => {
+    let calls = 0;
+    const cached = cachedByMtime(join(dir, "does-not-exist.yaml"), () => {
+      calls++;
+      return "value";
+    });
+
+    expect(cached()).toBe("value");
+    expect(cached()).toBe("value");
+    expect(calls).toBe(2);
   });
 });

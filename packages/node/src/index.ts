@@ -1,4 +1,4 @@
-import { configDir, loadNodeConfig, loadPathsConfig } from "./config.js";
+import { configDir, loadNodeConfig, loadPathsConfig, nodeYamlPath, pathsYamlPath, cachedByMtime } from "./config.js";
 import { NodeConnection } from "./connection.js";
 import { createLogger, startControlServer } from "@constellation/shared";
 
@@ -9,8 +9,11 @@ export function runDaemon(configDirOverride?: string): void {
 
   const conn = new NodeConnection({
     configDir: dir,
-    getConfig: () => loadNodeConfig(dir),
-    getPaths: () => loadPathsConfig(dir).paths,
+    // mtime-gated: every RPC needs current config/paths, but node.yaml/paths.yaml
+    // only actually change on an explicit `node rotate`/`node paths add|remove` —
+    // see cachedByMtime's doc comment for why a blind per-RPC reread was a problem.
+    getConfig: cachedByMtime(nodeYamlPath(dir), () => loadNodeConfig(dir)),
+    getPaths: cachedByMtime(pathsYamlPath(dir), () => loadPathsConfig(dir).paths),
   });
 
   conn.start();
