@@ -191,9 +191,9 @@ export class HubSocket extends RelaySocket implements RotatableConnection {
     reject(err);
   }
 
-  override stop(): void {
+  override async stop(): Promise<void> {
     this.failRotation(new Error("Connection stopped"));
-    super.stop();
+    await super.stop();
   }
 
   protected onOpen(): void {
@@ -408,7 +408,7 @@ export class HubSocket extends RelaySocket implements RotatableConnection {
     this.shuttingDown = true;
 
     this.log.info("Shutting down — draining in-flight RPCs (up to 30s)");
-    this.stop();
+    await this.stop();
 
     await this.pool.shutdown(30_000);
     // Draining above only guarantees every audit entry was enqueued (write() doesn't

@@ -7,6 +7,10 @@ const JITTER_FACTOR = 0.2;
 const MAX_DELAY_MS = 60_000;
 const PING_INTERVAL_MS = 30_000;
 const PING_TIMEOUT_MS = 10_000;
+/** Bounds how long stop() waits for the close handshake to actually complete before
+ * giving up and returning anyway — shorter than PING_TIMEOUT_MS, since this is just
+ * waiting on a clean close, not detecting a wedged connection. */
+const STOP_CLOSE_TIMEOUT_MS = 5_000;
 
 export interface RelaySocketOptions {
   /** Module name passed to createLogger, e.g. "node:connection" or "hub". */
@@ -75,12 +79,27 @@ export abstract class RelaySocket {
     this.connect();
   }
 
-  stop(): void {
+  /**
+   * Stops reconnecting and closes the live socket, resolving once the close handshake
+   * actually completes (bounded by STOP_CLOSE_TIMEOUT_MS) instead of just firing the
+   * close frame and returning immediately. Callers that need a clean shutdown — the
+   * relay seeing a real close instead of an abrupt drop, control.json/other cleanup
+   * tied to "the connection is fully gone" — should await this before exiting.
+   */
+  async stop(): Promise<void> {
     this.stopped = true;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.clearPingTimers();
-    this.ws?.close();
+
+    const ws = this.ws;
     this.ws = null;
+    if (!ws || ws.readyState === WebSocket.CLOSED) return;
+
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, STOP_CLOSE_TIMEOUT_MS);
+      ws.once("close", () => { clearTimeout(timer); resolve(); });
+      ws.close();
+    });
   }
 
   protected send(msg: object): void {

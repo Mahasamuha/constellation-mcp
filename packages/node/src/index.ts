@@ -20,9 +20,17 @@ export function runDaemon(configDirOverride?: string): void {
   const controlServer = startControlServer(dir, conn);
   log.info({ host: config.host, relay: config.relay_url }, "Node started");
 
-  const shutdown = () => {
-    conn.stop();
-    controlServer.close();
+  let shuttingDown = false;
+  const shutdown = async () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+
+    // Awaited so the relay sees a real close instead of an abrupt drop, and
+    // control.json (removed on the server's "close" event — see
+    // control-channel.ts) is actually gone before the process exits, rather
+    // than process.exit() cutting both off mid-flight.
+    await conn.stop();
+    await new Promise<void>((resolve) => controlServer.close(() => resolve()));
     process.exit(0);
   };
   process.on("SIGTERM", shutdown);

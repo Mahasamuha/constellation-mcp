@@ -77,9 +77,9 @@ export class NodeConnection extends RelaySocket {
     reject(err);
   }
 
-  override stop(): void {
+  override async stop(): Promise<void> {
     this.failRotation(new Error("Connection stopped"));
-    super.stop();
+    await super.stop();
   }
 
   protected getRelayUrl(): string {

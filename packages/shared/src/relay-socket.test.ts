@@ -22,6 +22,7 @@ describe("assertSecureRelayUrl", () => {
 // Mirrors the private constants in relay-socket.ts.
 const PING_INTERVAL_MS = 30_000;
 const PING_TIMEOUT_MS = 10_000;
+const STOP_CLOSE_TIMEOUT_MS = 5_000;
 
 class TestRelaySocket extends RelaySocket {
   opens = 0;
@@ -224,5 +225,50 @@ describe("RelaySocket", () => {
     // Give a generous window for a (unwanted) reconnect attempt to show up.
     await new Promise((r) => setTimeout(r, 50));
     expect(socket.opens).toBe(1);
+  });
+
+  // Regression test for the daemon-shutdown fix: stop() used to fire the close frame
+  // and return immediately, so a caller had no way to know the relay had actually seen
+  // a clean close rather than an abrupt drop.
+  it("stop() resolves only once the close handshake actually completes", async () => {
+    const socket = makeSocket(`http://127.0.0.1:${port}`);
+    socket.start();
+    const firstWs = await waitForOpen(wss, socket, 1);
+
+    let serverSawClose = false;
+    firstWs.on("close", () => { serverSawClose = true; });
+
+    await socket.stop();
+    expect(serverSawClose).toBe(true);
+  });
+
+  it("stop() gives up and resolves anyway if the close handshake never completes", async () => {
+    const socket = makeSocket(`http://127.0.0.1:${port}`);
+    const connPromise = nextConnection(wss);
+
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    let conn: ServerSideSocket | undefined;
+    try {
+      socket.start();
+      conn = await connPromise;
+      // Same trick as the pong-timeout test above: pausing the peer's socket stops it
+      // from ever acknowledging the close frame, so the handshake never completes on
+      // its own — stop() must fall back to its bounded timeout instead of hanging.
+      conn.pause();
+      await pollUntil(() => socket.opens === 1);
+
+      let resolved = false;
+      const stopPromise = socket.stop().then(() => { resolved = true; });
+
+      await flush();
+      expect(resolved).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(STOP_CLOSE_TIMEOUT_MS);
+      await stopPromise;
+      expect(resolved).toBe(true);
+    } finally {
+      vi.useRealTimers();
+      conn?.terminate();
+    }
   });
 });
