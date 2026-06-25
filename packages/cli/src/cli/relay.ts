@@ -86,6 +86,17 @@ function resolveRelayUrl(flagUrl: string | undefined, getConfigDir: () => string
   }
 }
 
+/** Wraps `fetch` so a network failure (DNS, connection refused, timeout) surfaces with
+ * the host it was trying to reach, instead of a bare contextless TypeError. */
+async function safeFetch(url: string, options?: RequestInit): Promise<Response> {
+  try {
+    return await fetch(url, options);
+  } catch (err) {
+    console.error(`Could not reach ${new URL(url).host}: ${(err as Error).message}`);
+    return process.exit(1);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Session management with silent refresh
 // ---------------------------------------------------------------------------
@@ -120,7 +131,7 @@ async function getValidSession(getConfigDir: () => string): Promise<RelaySession
 async function tryRefresh(session: RelaySession): Promise<RelaySession | null> {
   if (!session.refresh_token) return null;
 
-  const res = await fetch(`${session.relay_url}/oauth/token`, {
+  const res = await safeFetch(`${session.relay_url}/oauth/token`, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
@@ -132,11 +143,11 @@ async function tryRefresh(session: RelaySession): Promise<RelaySession | null> {
 
   if (!res.ok) return null;
 
-  const body = await res.json() as {
+  const body = await parseJson<{
     access_token: string;
     expires_in: number;
     refresh_token?: string;
-  };
+  }>(res);
 
   const now = new Date();
   const refreshTtlDays = 30;
@@ -160,7 +171,7 @@ async function apiFetch(
   path: string,
   options: RequestInit = {}
 ): Promise<Response> {
-  return fetch(`${session.relay_url}${path}`, {
+  return safeFetch(`${session.relay_url}${path}`, {
     ...options,
     headers: {
       Authorization: `Bearer ${session.access_token}`,
@@ -173,7 +184,7 @@ async function apiFetch(
 async function apiGet<T>(session: RelaySession, path: string): Promise<T> {
   const res = await apiFetch(session, path);
   if (!res.ok) await die(res);
-  return res.json() as Promise<T>;
+  return parseJson<T>(res);
 }
 
 /** Builds a `list` command's query string from its --limit/--offset options plus
@@ -212,7 +223,19 @@ async function apiPost<T>(
   });
   if (!res.ok) await die(res);
   if (res.status === 204) return undefined as T;
-  return res.json() as Promise<T>;
+  return parseJson<T>(res);
+}
+
+/** Parses a response body expected to be JSON on success; a non-JSON body here means
+ * something between us and the relay (a proxy error page, a truncated response) broke,
+ * not an application-level error — surface that distinction instead of a raw SyntaxError. */
+async function parseJson<T>(res: Response): Promise<T> {
+  try {
+    return (await res.json()) as T;
+  } catch {
+    console.error(`Unexpected response from relay (status ${res.status}): expected JSON, got something else.`);
+    return process.exit(1);
+  }
 }
 
 export async function die(res: Response): Promise<never> {
@@ -263,7 +286,7 @@ export function registerRelayCommands(program: Command): void {
     .action(async () => {
       const relayUrl = resolveRelayUrl(getRelayFlag(), getConfigDir);
 
-      const dcRes = await fetch(`${relayUrl}/oauth/device/code`, {
+      const dcRes = await safeFetch(`${relayUrl}/oauth/device/code`, {
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
         body: new URLSearchParams({ scope: "relay:manage" }),
@@ -272,13 +295,13 @@ export function registerRelayCommands(program: Command): void {
         console.error("Failed to start device flow:", await dcRes.text());
         process.exit(1);
       }
-      const dc = await dcRes.json() as {
+      const dc = await parseJson<{
         device_code: string;
         user_code: string;
         verification_uri_complete: string;
         expires_in: number;
         interval: number;
-      };
+      }>(dcRes);
 
       console.log(`\nOpen the following URL to authenticate (opening browser automatically):`);
       console.log(`  ${dc.verification_uri_complete}\n`);
@@ -287,7 +310,7 @@ export function registerRelayCommands(program: Command): void {
 
       const result = await poll(
         async ({ intervalMs, setIntervalMs }) => {
-          const r = await fetch(`${relayUrl}/oauth/token`, {
+          const r = await safeFetch(`${relayUrl}/oauth/token`, {
             method: "POST",
             headers: { "Content-Type": "application/x-www-form-urlencoded" },
             body: new URLSearchParams({
@@ -303,11 +326,11 @@ export function registerRelayCommands(program: Command): void {
             process.exit(1);
           }
           if (!r.ok) return null;
-          return r.json() as Promise<{
+          return parseJson<{
             access_token: string;
             expires_in: number;
             refresh_token?: string;
-          }>;
+          }>(r);
         },
         dc.interval * 1000,
         dc.expires_in * 1000
@@ -612,9 +635,9 @@ export function registerRelayCommands(program: Command): void {
       // Fetch the current session ID from the relay (not stored locally).
       const meRes = await apiFetch(session, "/api/me");
       if (!meRes.ok) { console.error("Failed to fetch session info."); process.exit(1); }
-      const me = await meRes.json() as { session_id: string };
+      const me = await parseJson<{ session_id: string }>(meRes);
 
-      const dcRes = await fetch(`${relayUrl}/oauth/device/code`, {
+      const dcRes = await safeFetch(`${relayUrl}/oauth/device/code`, {
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
         body: new URLSearchParams({
@@ -627,13 +650,13 @@ export function registerRelayCommands(program: Command): void {
         console.error("Failed to start escalation flow:", await dcRes.text());
         process.exit(1);
       }
-      const dc = await dcRes.json() as {
+      const dc = await parseJson<{
         device_code: string;
         user_code: string;
         verification_uri_complete: string;
         expires_in: number;
         interval: number;
-      };
+      }>(dcRes);
 
       console.log(`\nOpen the following URL to approve admin access (opening browser automatically):`);
       console.log(`  ${dc.verification_uri_complete}\n`);
@@ -642,7 +665,7 @@ export function registerRelayCommands(program: Command): void {
 
       const result = await poll(
         async ({ intervalMs, setIntervalMs }) => {
-          const r = await fetch(`${relayUrl}/oauth/token`, {
+          const r = await safeFetch(`${relayUrl}/oauth/token`, {
             method: "POST",
             headers: { "Content-Type": "application/x-www-form-urlencoded" },
             body: new URLSearchParams({
@@ -695,7 +718,7 @@ export function registerRelayCommands(program: Command): void {
         process.exit(1);
       }
       const relayUrl = resolveRelayUrl(getRelayFlag(), getConfigDir);
-      const res = await fetch(`${relayUrl}/api/admin/users/${encodeURIComponent(identifier)}/promote`, {
+      const res = await safeFetch(`${relayUrl}/api/admin/users/${encodeURIComponent(identifier)}/promote`, {
         method: "POST",
         headers: { Authorization: `Bearer ${adminToken}` },
       });
@@ -716,7 +739,7 @@ export function registerRelayCommands(program: Command): void {
         process.exit(1);
       }
       const relayUrl = resolveRelayUrl(getRelayFlag(), getConfigDir);
-      const res = await fetch(`${relayUrl}/api/admin/users/${encodeURIComponent(identifier)}/demote`, {
+      const res = await safeFetch(`${relayUrl}/api/admin/users/${encodeURIComponent(identifier)}/demote`, {
         method: "POST",
         headers: { Authorization: `Bearer ${adminToken}` },
       });
