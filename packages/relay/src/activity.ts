@@ -87,6 +87,7 @@ function makeWebhookSink(url: string): ActivitySink {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(event),
+      signal: AbortSignal.timeout(5000),
     }).catch((err) => {
       log.warn({ err, url }, "Activity webhook sink failed");
     });
