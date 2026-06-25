@@ -137,6 +137,7 @@ deviceRouter.post("/oauth/device/code", async (req: Request, res: Response) => {
 
   log.info({ scope }, "Device code issued");
 
+  res.set("Cache-Control", "no-store");
   res.json({
     device_code: deviceCode,
     user_code: userCodeDisplay,
