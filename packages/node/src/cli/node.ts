@@ -569,6 +569,7 @@ async function pollDeviceToken(
         const body = await r.json() as { error: string };
         if (body.error === "authorization_pending") return null;
         if (body.error === "slow_down") { setIntervalMs(currentIntervalMs + 5000); return null; }
+        if (body.error === "rate_limit_exceeded") return null;
         if (body.error === "access_denied") return { kind: "denied" };
         return { kind: "error", message: body.error };
       }

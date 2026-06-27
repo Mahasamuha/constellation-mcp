@@ -101,7 +101,8 @@ The relay returns a 9-character user code and a verification URL. The GUI displa
 
 Poll outcomes:
 - `authorization_pending` — continue polling, emit `Pending` event to frontend
-- `slow_down` / `rate_limit_exceeded` — continue polling at the same interval
+- `slow_down` — continue polling, increase interval by 5 seconds
+- `rate_limit_exceeded` — continue polling at the same interval
 - Any other error — emit `Error` event with the error string
 - Timeout (device code `expires_in` elapsed) — emit `Timeout` event
 - Success — write `node.yaml` with `relay_url`, `node_token`, and `host`; create `paths.yaml` if absent; emit `Success { host }` event; tray refreshes to Connected
