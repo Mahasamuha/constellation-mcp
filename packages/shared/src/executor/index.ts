@@ -52,7 +52,7 @@ export class FileExecutor {
       resolvedDstRoot = fromRegistry;
     } else if (dstRootRaw !== undefined) {
       try {
-        const resolved = await fs.realpath(dstRootRaw);
+        const resolved = await safeRealpath(dstRootRaw, dstRootRaw);
         if (!Object.values(this.shareRegistry).includes(resolved)) {
           log.warn({ tool, dstRootRaw }, "dst_root not in share registry");
           return { content: { message: "Path rejected" }, isError: true };
