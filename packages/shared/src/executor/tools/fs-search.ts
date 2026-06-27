@@ -90,6 +90,9 @@ export async function grepFiles(
   if (isRegex && !safeRegex(params.pattern)) {
     throw new Error("Pattern rejected: potential ReDoS vulnerability");
   }
+  if (params.file_glob && !safeRegex(picomatch.makeRe(params.file_glob).source)) {
+    throw new Error("file_glob rejected: potential ReDoS vulnerability");
+  }
   const re = isRegex
     ? new RegExp(params.pattern, "g")
     : null;

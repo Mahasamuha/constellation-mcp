@@ -28,6 +28,11 @@ export async function writeFile(absolutePath: string, boundaryRoot: string, para
   }
   await assertPathStable(absolutePath, boundaryRoot);
   await fs.mkdir(dirname(absolutePath), { recursive: true });
+  // Re-validate after mkdir: a TOCTOU race could have swapped an intermediate
+  // component to a symlink during the recursive mkdir, creating dirs outside the
+  // share. openNoFollow still protects the file write, but catching it here
+  // prevents the write attempt entirely.
+  await assertPathStable(absolutePath, boundaryRoot);
   const flags = fsConstants.O_WRONLY | fsConstants.O_CREAT |
     (params.mode === "append" ? fsConstants.O_APPEND : fsConstants.O_TRUNC);
   const handle = await openNoFollow(absolutePath, flags);
@@ -45,6 +50,8 @@ export async function writeFile(absolutePath: string, boundaryRoot: string, para
 export async function createDirectory(absolutePath: string, boundaryRoot: string): Promise<void> {
   await assertPathStable(absolutePath, boundaryRoot);
   await fs.mkdir(absolutePath, { recursive: true });
+  // Re-validate after mkdir for the same TOCTOU reason as in writeFile.
+  await assertPathStable(absolutePath, boundaryRoot);
 }
 
 // ---------------------------------------------------------------------------
@@ -192,6 +199,11 @@ async function copyRecursive(src: string, dst: string): Promise<void> {
       await copyRecursive(join(src, entry), join(dst, entry));
     }
   } else {
+    // Verify dst is not a symlink before writing — COPYFILE_EXCL uses O_EXCL which
+    // rejects an existing symlink, but a defense-in-depth lstat check here makes the
+    // intent explicit and guards against libuv behavior changes.
+    const dstStat = await fs.lstat(dst).catch(() => null);
+    if (dstStat?.isSymbolicLink()) return;
     await fs.copyFile(src, dst, fsConstants.COPYFILE_EXCL);
   }
 }

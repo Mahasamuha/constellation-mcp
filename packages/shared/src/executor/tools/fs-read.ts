@@ -12,6 +12,7 @@ import { assertPathStable } from "./safe-path.js";
 // ---------------------------------------------------------------------------
 
 import picomatch from "picomatch";
+import safeRegex from "safe-regex2";
 
 export interface ListDirectoryParams {
   recursive?: boolean;
@@ -42,6 +43,11 @@ export async function listDirectory(
   const hardCap = 10_000;
   const limit = params.limit === 0 ? hardCap : Math.min(params.limit ?? 2_000, hardCap);
   const exclude = params.exclude ?? [];
+  for (const pattern of exclude) {
+    if (!safeRegex(picomatch.makeRe(pattern).source)) {
+      throw new Error(`Exclude pattern rejected: potential ReDoS vulnerability`);
+    }
+  }
 
   const nodes: DirNode[] = [];
   let truncated = false;

@@ -5,7 +5,8 @@ import { dirname, basename, join, sep } from "node:path";
  * Resolves a path to its real path. For paths that don't exist yet (e.g. write
  * targets), resolves the nearest existing parent and reconstructs the rest.
  */
-export async function safeRealpath(path: string, boundaryRoot: string): Promise<string> {
+export async function safeRealpath(path: string, boundaryRoot: string, _depth = 0): Promise<string> {
+  if (_depth > 50) throw new Error("Cannot resolve path: too many non-existent components");
   try {
     return await fs.realpath(path);
   } catch (err) {
@@ -14,7 +15,7 @@ export async function safeRealpath(path: string, boundaryRoot: string): Promise<
     const parent = dirname(path);
     if (parent === path) throw new Error("Cannot resolve path", { cause: err });
 
-    const resolvedParent = await safeRealpath(parent, boundaryRoot);
+    const resolvedParent = await safeRealpath(parent, boundaryRoot, _depth + 1);
     if (!resolvedParent.startsWith(boundaryRoot + sep) && resolvedParent !== boundaryRoot) {
       throw new Error("Cannot resolve path", { cause: err });
     }
