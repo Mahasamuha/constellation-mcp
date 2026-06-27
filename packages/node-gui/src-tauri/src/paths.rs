@@ -37,13 +37,16 @@ pub async fn add_path(share: String, path: String, instructions: Option<String>)
     if !meta.is_dir() {
         return Err(format!("'{}' is not a directory", path));
     }
-    let mut args = vec!["node", "paths", "add", "--", &share, &path];
+    let mut args = vec!["node", "paths", "add"];
     if let Some(ref text) = instructions {
         if !text.trim().is_empty() {
             args.push("--instructions");
             args.push(text);
         }
     }
+    args.push("--");
+    args.push(&share);
+    args.push(&path);
     crate::cli::run(&args)?;
     Ok(load_paths())
 }
