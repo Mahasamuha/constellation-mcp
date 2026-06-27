@@ -65,7 +65,15 @@ export class AuditWriter {
 
   private async append(entry: AuditEntry): Promise<void> {
     try {
-      this.handle ??= open(this.logPath, "a", 0o600);
+      this.handle ??= open(this.logPath, "a", 0o600).then(async (fh) => {
+        const st = await fh.stat();
+        const mode = st.mode & 0o777;
+        if (mode !== 0o600) {
+          process.stderr.write(`WARNING: audit log '${this.logPath}' has permissions ${mode.toString(8).padStart(3, "0")} — expected 600. Correcting.\n`);
+          await fh.chmod(0o600);
+        }
+        return fh;
+      });
       const fh = await this.handle;
       await fh.appendFile(JSON.stringify(entry) + "\n");
     } catch (err) {
