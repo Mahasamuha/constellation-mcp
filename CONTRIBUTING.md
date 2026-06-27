@@ -34,7 +34,7 @@ The relay requires a running Postgres instance. The easiest way in development i
 docker run -d \
   --name constellation-postgres \
   -e POSTGRES_USER=postgres \
-  -e POSTGRES_PASSWORD=postgres \
+  -e POSTGRES_PASSWORD=replace-with-a-strong-password \
   -e POSTGRES_DB=constellation \
   -p 5432:5432 \
   postgres:16
