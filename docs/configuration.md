@@ -70,6 +70,16 @@ The relay constructs both callback URLs from `RELAY_URL` automatically — there
 | `OAUTH_REFRESH_TOKEN_TTL_DAYS` | `30` | Lifetime of MCP client refresh tokens, in days |
 | `OAUTH_DYNAMIC_CLIENT_TTL_HOURS` | `24` | How long a dynamically registered OAuth client may sit unactivated (no completed auth flow) before it's pruned |
 
+**OAuth client registration**
+
+The relay supports RFC 7591 dynamic client registration at `POST /oauth/register`, which MCP clients use to register themselves automatically. To prevent an unauthenticated attacker from registering a client with an attacker-controlled redirect URI (and using it to phish authorization codes), registration is restricted to a per-operator allowlist of permitted HTTPS origins.
+
+| Variable | Default | Description |
+|---|---|---|
+| `OAUTH_ALLOWED_REDIRECT_ORIGINS` | *(none)* | Comma-separated HTTPS origins whose redirect URIs are permitted during dynamic client registration. `http://localhost`, `http://127.0.0.1`, and `http://[::1]` (any port) are always allowed regardless of this setting — no entry needed for local dev servers or native apps. If this variable is unset or empty, no HTTPS redirect URIs are accepted. |
+
+The `.env.example` files ship with `claude.ai`, `chatgpt.com`, and `cursor.com` as the starting value — the three clients documented in [mcp-clients.md](mcp-clients.md). Add or replace entries to match the clients you actually use.
+
 **Timeouts and heartbeat**
 
 | Variable | Default | Description |
