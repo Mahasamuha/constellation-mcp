@@ -61,12 +61,11 @@ export const config = {
   // before it's pruned. Mitigates unbounded growth from the unauthenticated /oauth/register endpoint.
   oauthDynamicClientTtlHours: parseEnvInt("OAUTH_DYNAMIC_CLIENT_TTL_HOURS", 24),
   // HTTPS origins permitted as OAuth redirect URI hosts during dynamic client registration.
-  // Defaults cover the MCP clients documented in docs/mcp-clients.md. localhost/127.0.0.1/::1
-  // are always allowed regardless of this list (native app / local dev server flows).
-  // Set OAUTH_ALLOWED_REDIRECT_ORIGINS to a comma-separated list to override the defaults.
+  // localhost/127.0.0.1/::1 are always allowed regardless of this list (native app / local
+  // dev server flows). All other HTTPS redirect URIs are blocked if this list is empty.
   oauthAllowedRedirectOrigins: process.env["OAUTH_ALLOWED_REDIRECT_ORIGINS"]
     ? process.env["OAUTH_ALLOWED_REDIRECT_ORIGINS"].split(",").map((s) => s.trim()).filter(Boolean)
-    : ["https://claude.ai", "https://chatgpt.com", "https://cursor.com"],
+    : [],
   activityLog: {
     maxEntriesPerUser: parseEnvInt("ACTIVITY_LOG_MAX_ENTRIES", 1000),
     sinks: {
