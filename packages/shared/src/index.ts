@@ -14,6 +14,8 @@ export { str, num } from "./config-util.js";
 export {
   startControlServer,
   requestRotateViaControlChannel,
+  requestConfigUpdateViaControlChannel,
+  requestUpdateHostViaControlChannel,
   type RotatableConnection,
   type ControlResult,
 } from "./control-channel.js";

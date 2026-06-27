@@ -3,12 +3,15 @@ import { readFileSync, writeFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { createLogger } from "./logger.js";
 import { generateToken, safeEqual } from "./tokens.js";
+import type { PathEntry } from "./rpc.js";
 
 const log = createLogger("control-channel");
 
-/** The slice of a daemon connection's surface the control server actually drives. */
+/** The slice of a daemon connection's surface the control server drives. */
 export interface RotatableConnection {
   rotateToken(): Promise<void>;
+  configUpdate?(paths: PathEntry[]): Promise<void>;
+  updateHost?(host: string): Promise<void>;
 }
 
 /** How long the CLI waits for a response before treating the daemon as unreachable
@@ -93,19 +96,55 @@ async function handleRequest(line: string, socket: Socket, conn: RotatableConnec
     return;
   }
 
+  if (req["type"] === "config_update") {
+    if (!conn.configUpdate) {
+      socket.end(JSON.stringify({ ok: false, error: "Not supported" }) + "\n");
+      return;
+    }
+    const paths = req["paths"];
+    if (!Array.isArray(paths)) {
+      socket.end(JSON.stringify({ ok: false, error: "Invalid paths payload" }) + "\n");
+      return;
+    }
+    try {
+      await conn.configUpdate(paths as PathEntry[]);
+      socket.end(JSON.stringify({ ok: true }) + "\n");
+    } catch (err) {
+      socket.end(JSON.stringify({ ok: false, error: err instanceof Error ? err.message : String(err) }) + "\n");
+    }
+    return;
+  }
+
+  if (req["type"] === "update_host") {
+    if (!conn.updateHost) {
+      socket.end(JSON.stringify({ ok: false, error: "Not supported" }) + "\n");
+      return;
+    }
+    const host = req["host"];
+    if (typeof host !== "string") {
+      socket.end(JSON.stringify({ ok: false, error: "Invalid host payload" }) + "\n");
+      return;
+    }
+    try {
+      await conn.updateHost(host);
+      socket.end(JSON.stringify({ ok: true }) + "\n");
+    } catch (err) {
+      socket.end(JSON.stringify({ ok: false, error: err instanceof Error ? err.message : String(err) }) + "\n");
+    }
+    return;
+  }
+
   socket.end(JSON.stringify({ ok: false, error: "Unknown request type" }) + "\n");
 }
 
 export type ControlResult = { ok: true } | { ok: false; error: string };
 
 /**
- * Asks a running daemon (if any) to rotate its own token on its live connection.
- * Returns null if no daemon appears to be reachable — the control file is missing,
- * unreadable, or nothing answers on the recorded port — in which case the caller should
- * fall back to rotating directly (safe when no daemon is running: there's no live
- * connection for a second WebSocket to evict).
+ * Sends a single request to the running daemon's control channel and returns the result.
+ * Returns null if no daemon is reachable (control file missing/unreadable, nothing on port),
+ * in which case the caller should fall back to acting directly.
  */
-export function requestRotateViaControlChannel(dir: string): Promise<ControlResult | null> {
+function requestViaControlChannel(dir: string, message: Record<string, unknown>): Promise<ControlResult | null> {
   let control: ControlFile;
   try {
     const raw = JSON.parse(readFileSync(controlFilePath(dir), "utf8")) as Partial<ControlFile>;
@@ -125,7 +164,7 @@ export function requestRotateViaControlChannel(dir: string): Promise<ControlResu
     };
 
     const socket = createConnection({ host: "127.0.0.1", port: control.port }, () => {
-      socket.write(JSON.stringify({ type: "rotate_token", auth: control.auth }) + "\n");
+      socket.write(JSON.stringify({ ...message, auth: control.auth }) + "\n");
     });
 
     const timeout = setTimeout(() => { socket.destroy(); finish(null); }, CONTROL_TIMEOUT_MS);
@@ -144,4 +183,19 @@ export function requestRotateViaControlChannel(dir: string): Promise<ControlResu
     });
     socket.on("error", () => finish(null));
   });
+}
+
+/** Asks a running daemon to rotate its own token on its live connection. */
+export function requestRotateViaControlChannel(dir: string): Promise<ControlResult | null> {
+  return requestViaControlChannel(dir, { type: "rotate_token" });
+}
+
+/** Asks a running daemon to push the given paths to the relay on its live connection. */
+export function requestConfigUpdateViaControlChannel(dir: string, paths: PathEntry[]): Promise<ControlResult | null> {
+  return requestViaControlChannel(dir, { type: "config_update", paths });
+}
+
+/** Asks a running daemon to send an update_host message on its live connection. */
+export function requestUpdateHostViaControlChannel(dir: string, host: string): Promise<ControlResult | null> {
+  return requestViaControlChannel(dir, { type: "update_host", host });
 }

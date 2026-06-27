@@ -15,6 +15,8 @@ export interface ConnectionOptions {
  * rotation would have expired server-side anyway. */
 const ROTATE_TIMEOUT_MS = 30_000;
 
+const CONTROL_OP_TIMEOUT_MS = 15_000;
+
 interface RotationState {
   resolve: () => void;
   reject: (err: Error) => void;
@@ -25,6 +27,8 @@ export class NodeConnection extends RelaySocket {
   private readonly registryCache = new ShareRegistryCache();
   private rotationState: RotationState | null = null;
   private awaitingRotationConfirm = false;
+  private configUpdateState: RotationState | null = null;
+  private updateHostState: RotationState | null = null;
 
   constructor(private readonly opts: ConnectionOptions) {
     super({ logModule: "node:connection", path: "/executor/connect" });
@@ -42,6 +46,36 @@ export class NodeConnection extends RelaySocket {
   /** Sends an update_host message. */
   sendUpdateHost(host: string): void {
     this.send({ type: "update_host", host });
+  }
+
+  /** Sends a config_update on the live connection and resolves once the relay ACKs. */
+  configUpdate(paths: PathEntry[]): Promise<void> {
+    if (this.configUpdateState) {
+      return Promise.reject(new Error("A config update is already in progress"));
+    }
+    return new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.configUpdateState = null;
+        reject(new Error("Timed out waiting for config_update acknowledgment"));
+      }, CONTROL_OP_TIMEOUT_MS);
+      this.configUpdateState = { resolve, reject, timer };
+      this.send({ type: "config_update", paths: buildConfigUpdatePaths(paths) });
+    });
+  }
+
+  /** Sends an update_host on the live connection and resolves once the relay ACKs. */
+  updateHost(host: string): Promise<void> {
+    if (this.updateHostState) {
+      return Promise.reject(new Error("A host update is already in progress"));
+    }
+    return new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.updateHostState = null;
+        reject(new Error("Timed out waiting for update_host acknowledgment"));
+      }, CONTROL_OP_TIMEOUT_MS);
+      this.updateHostState = { resolve, reject, timer };
+      this.send({ type: "update_host", host });
+    });
   }
 
   /**
@@ -79,6 +113,16 @@ export class NodeConnection extends RelaySocket {
 
   override async stop(): Promise<void> {
     this.failRotation(new Error("Connection stopped"));
+    if (this.configUpdateState) {
+      clearTimeout(this.configUpdateState.timer);
+      this.configUpdateState.reject(new Error("Connection stopped"));
+      this.configUpdateState = null;
+    }
+    if (this.updateHostState) {
+      clearTimeout(this.updateHostState.timer);
+      this.updateHostState.reject(new Error("Connection stopped"));
+      this.updateHostState = null;
+    }
     await super.stop();
   }
 
@@ -158,13 +202,47 @@ export class NodeConnection extends RelaySocket {
       return;
     }
 
-    if (type === "config_update_ok" || type === "update_host_ok") {
-      this.log.info({ type }, "Relay acknowledged control message");
+    if (type === "config_update_ok") {
+      this.log.info({ type }, "Relay acknowledged config_update");
+      if (this.configUpdateState) {
+        clearTimeout(this.configUpdateState.timer);
+        const { resolve } = this.configUpdateState;
+        this.configUpdateState = null;
+        resolve();
+      }
       return;
     }
 
-    if (type === "config_update_error" || type === "update_host_error") {
-      this.log.warn({ msg }, "Relay returned error for control message");
+    if (type === "config_update_error") {
+      this.log.warn({ msg }, "Relay rejected config_update");
+      if (this.configUpdateState) {
+        clearTimeout(this.configUpdateState.timer);
+        const { reject } = this.configUpdateState;
+        this.configUpdateState = null;
+        reject(new Error(String(msg["error"] ?? "config_update failed")));
+      }
+      return;
+    }
+
+    if (type === "update_host_ok") {
+      this.log.info({ type }, "Relay acknowledged update_host");
+      if (this.updateHostState) {
+        clearTimeout(this.updateHostState.timer);
+        const { resolve } = this.updateHostState;
+        this.updateHostState = null;
+        resolve();
+      }
+      return;
+    }
+
+    if (type === "update_host_error") {
+      this.log.warn({ msg }, "Relay rejected update_host");
+      if (this.updateHostState) {
+        clearTimeout(this.updateHostState.timer);
+        const { reject } = this.updateHostState;
+        this.updateHostState = null;
+        reject(new Error(String(msg["error"] ?? "update_host failed")));
+      }
       return;
     }
 

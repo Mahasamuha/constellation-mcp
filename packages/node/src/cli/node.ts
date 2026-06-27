@@ -21,6 +21,8 @@ import {
   confirm,
   assertSecureRelayUrl,
   requestRotateViaControlChannel,
+  requestConfigUpdateViaControlChannel,
+  requestUpdateHostViaControlChannel,
   type PathEntry,
 } from "@constellation/shared";
 import {
@@ -288,6 +290,19 @@ export function registerNodeCommands(program: Command): void {
     .description("Push a new host name to the relay")
     .action(async (host: string) => {
       const dir = getConfigDir();
+
+      // Prefer routing through the running daemon's live connection — opening a second
+      // WebSocket here would evict it (relay enforces one connection per executor).
+      const viaControl = await requestUpdateHostViaControlChannel(dir, host);
+      if (viaControl !== null) {
+        if (!viaControl.ok) { console.error("Error:", viaControl.error); process.exit(1); }
+        const cfg = loadNodeConfig(dir);
+        writeNodeConfig(dir, { ...cfg, host });
+        console.log(`Host renamed to '${host}'.`);
+        return;
+      }
+
+      // No daemon running — open a direct relay connection.
       const result = await nodeControlCommand(dir, "update_host",
         () => ({ type: "update_host", host }),
         "update_host_ok", "update_host_error"
@@ -475,10 +490,21 @@ export function registerNodeCommands(program: Command): void {
 // ---------------------------------------------------------------------------
 
 async function syncPaths(dir: string, candidatePaths?: PathEntry[]): Promise<void> {
+  const paths = candidatePaths ?? loadPathsConfig(dir).paths;
+
+  // Prefer routing through the running daemon's live connection — opening a second
+  // WebSocket here would evict it (relay enforces one connection per executor).
+  const viaControl = await requestConfigUpdateViaControlChannel(dir, paths);
+  if (viaControl !== null) {
+    if (!viaControl.ok) { console.error("Error:", viaControl.error); process.exit(1); }
+    return;
+  }
+
+  // No daemon running — open a direct relay connection.
   await nodeControlCommand(dir, "config_update",
-    (_cfg, paths) => ({
+    (_cfg, loadedPaths) => ({
       type: "config_update",
-      paths: buildConfigUpdatePaths(candidatePaths ?? paths),
+      paths: buildConfigUpdatePaths(candidatePaths ?? loadedPaths),
     }),
     "config_update_ok", "config_update_error"
   );
