@@ -156,18 +156,22 @@ export interface CopyParams {
 export async function copyPath(srcAbsolutePath: string, dstAbsolutePath: string, srcRoot: string, dstRoot: string, params: CopyParams): Promise<void> {
   await assertPathStable(srcAbsolutePath, srcRoot);
   await assertPathStable(dstAbsolutePath, dstRoot);
+  const srcStat = await fs.lstat(srcAbsolutePath);
+  if (srcStat.isSymbolicLink()) {
+    throw Object.assign(new Error("Source path is a symlink — copy is not supported for symlinks"), { code: "SRC_IS_SYMLINK" });
+  }
   await assertNotExists(dstAbsolutePath, params.dst_relative_path);
   await fs.mkdir(dirname(dstAbsolutePath), { recursive: true });
   await copyRecursive(srcAbsolutePath, dstAbsolutePath);
 }
 
 /**
- * `src`/`dst` at the top level are already realpath-resolved and boundary-checked by the
- * executor dispatcher, so they can never be symlinks themselves. Entries discovered via
- * `readdir` during the walk are not re-validated against the share root, so a symlink
- * encountered here is skipped outright rather than dereferenced (which would copy whatever
- * it points to, including paths outside the share root) or recreated as a symlink at the
- * destination (which would let the destination point outside the share root too).
+ * Top-level `src` is guaranteed non-symlink by the `lstat` check in `copyPath`.
+ * Entries discovered via `readdir` during the walk are not re-validated against the share
+ * root, so a symlink encountered here is skipped outright rather than dereferenced (which
+ * would copy whatever it points to, including paths outside the share root) or recreated
+ * as a symlink at the destination (which would let the destination point outside the
+ * share root too).
  */
 async function copyRecursive(src: string, dst: string): Promise<void> {
   const stat = await fs.lstat(src);

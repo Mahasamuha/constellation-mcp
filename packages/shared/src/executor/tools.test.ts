@@ -583,6 +583,18 @@ describe("copyPath", () => {
     expect(err.code).toBe("DEST_EXISTS");
   });
 
+  it("throws SRC_IS_SYMLINK when the top-level source is a symlink", async () => {
+    await fs.writeFile(join(root, "real.txt"), "content");
+    await fs.symlink(join(root, "real.txt"), join(root, "link.txt"));
+
+    const err = await copyPath(join(root, "link.txt"), join(root, "dst.txt"), root, root, {
+      dst_relative_path: "dst.txt",
+    }).catch((e) => e);
+
+    expect(err.code).toBe("SRC_IS_SYMLINK");
+    await expect(fs.access(join(root, "dst.txt"))).rejects.toThrow();
+  });
+
   it("skips symlinks found during a recursive directory copy", async () => {
     await fs.mkdir(join(root, "secret"));
     await fs.writeFile(join(root, "secret", "id_rsa"), "private-key-contents");

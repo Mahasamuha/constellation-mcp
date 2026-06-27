@@ -14,7 +14,7 @@ export interface ToolResult {
   isError?: boolean;
 }
 
-const KNOWN_CODES = new Set(["FILE_TOO_LARGE", "READ_TOO_LARGE", "EDIT_NO_MATCH", "EDIT_AMBIGUOUS", "DEST_EXISTS", "MOVE_INCOMPLETE"]);
+const KNOWN_CODES = new Set(["FILE_TOO_LARGE", "READ_TOO_LARGE", "EDIT_NO_MATCH", "EDIT_AMBIGUOUS", "DEST_EXISTS", "MOVE_INCOMPLETE", "SRC_IS_SYMLINK"]);
 
 // MOVE_INCOMPLETE is "known" in the sense that its message is deliberately constructed and
 // caller-safe (see crossDeviceMove in fs-write.ts), but unlike the other known codes it
