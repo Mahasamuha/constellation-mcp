@@ -150,7 +150,7 @@ Edits `node.yaml` fields. `node_token` is managed via the Auth window only.
 |---|---|
 | Relay URL | Changing this requires a node restart |
 | Node name (host) | Calls `constellation node rename` if changed |
-| Max file size (KB) | Range 1–100; written directly to `node.yaml` |
+| Max file size (KB) | Minimum 1 (enforced); the GUI caps input at 100 but higher values can be set directly in `node.yaml` |
 | Config directory | Read-only; shows the resolved path |
 
 **Buttons**: Save (writes config, renames if host changed), Cancel
