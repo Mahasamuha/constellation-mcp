@@ -9,6 +9,7 @@ import {
   loadPathsConfig,
   writeNodeConfig,
   writeNodeToken,
+  clearPreviousToken,
   writePathsConfig,
   buildConfigUpdatePaths,
   nodeYamlPath,
@@ -280,6 +281,9 @@ export function registerNodeCommands(program: Command): void {
       );
       if (result && typeof result === "object" && "token" in result) {
         writeNodeToken(dir, (result as { token: string }).token);
+        // No live daemon to confirm the reconnect, so no rotation window to protect —
+        // clear previous_node_token immediately so node.yaml isn't permanently misleading.
+        clearPreviousToken(dir);
         console.log("Token rotated. Start the node service to connect with the new token.");
       }
     });
