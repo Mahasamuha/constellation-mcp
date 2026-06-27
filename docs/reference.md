@@ -313,7 +313,7 @@ Requests temporary admin access via a browser-approved device code flow (step-up
 constellation relay --relay <url> user promote <identifier> [--admin-token <token>]
 ```
 
-Grants admin role to a user. `<identifier>` is the OIDC sub or (in `AUTH_MODE=local`) the username. Requires `RELAY_ADMIN_TOKEN` env var or `--admin-token` flag — this is a bootstrap operation not gated by OAuth.
+Grants admin role to a user. `<identifier>` is the OIDC sub or (in `AUTH_MODE=local`) the username. Requires `RELAY_ADMIN_TOKEN` env var or `--admin-token` flag — this is a bootstrap operation not gated by OAuth. Prefer the env var: the `--admin-token` flag value appears in shell history and `ps` output.
 
 ### `relay user demote <identifier>`
 
@@ -321,7 +321,7 @@ Grants admin role to a user. `<identifier>` is the OIDC sub or (in `AUTH_MODE=lo
 constellation relay --relay <url> user demote <identifier> [--admin-token <token>]
 ```
 
-Revokes admin role from a user. Same auth requirements as `relay user promote`.
+Revokes admin role from a user. Same auth requirements as `relay user promote` — prefer `RELAY_ADMIN_TOKEN` env var over the `--admin-token` flag.
 
 ### `relay hub-shares list [--executor <id>] [--json]`
 
