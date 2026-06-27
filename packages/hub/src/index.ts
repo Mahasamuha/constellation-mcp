@@ -213,7 +213,20 @@ export class HubSocket extends RelaySocket implements RotatableConnection {
   protected onMessage(msg: Record<string, unknown>): void {
     if (typeof msg["request_id"] === "string" && typeof msg["tool"] === "string") {
       if (this.shuttingDown) {
-        this.send({ request_id: msg["request_id"], error: { message: "HUB_SHUTTING_DOWN — retry after 45 seconds" } });
+        const requestId = msg["request_id"] as string;
+        const tool = msg["tool"] as string;
+        this.audit.write({
+          ts: new Date().toISOString(),
+          hub_name: this.cfg.hub_name,
+          request_id: requestId,
+          user_oidc_sub: typeof msg["user_oidc_sub"] === "string" ? msg["user_oidc_sub"] : null,
+          local_username: null,
+          share: typeof msg["share"] === "string" ? msg["share"] : "",
+          tool,
+          outcome: "shutting_down",
+          error: "HUB_SHUTTING_DOWN",
+        });
+        this.send({ request_id: requestId, error: { message: "HUB_SHUTTING_DOWN — retry after 45 seconds" } });
         return;
       }
       this.handleRpc(msg as unknown as IncomingRpcEnvelope)

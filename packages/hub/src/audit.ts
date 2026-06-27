@@ -9,7 +9,7 @@ import type { DispatchError } from "./subnode.js";
  * so an operator can filter/alert on "policy rejection" vs. "capacity" vs.
  * "infra failure" without string-matching the free-text error message.
  */
-export type AuditOutcome = "ok" | "identity_error" | "permission_denied" | "exec_error" | DispatchError["kind"];
+export type AuditOutcome = "ok" | "identity_error" | "permission_denied" | "exec_error" | "shutting_down" | DispatchError["kind"];
 
 export interface AuditEntry {
   ts: string;
