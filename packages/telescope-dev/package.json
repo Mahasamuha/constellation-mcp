@@ -1,7 +1,7 @@
 {
   "name": "@constellation/telescope-dev",
   "private": true,
-  "version": "0.5.1",
+  "version": "0.6.0",
   "type": "module",
   "description": "Local-only mock MCP Apps host for poking at packages/telescope's file browser without a real relay/agent/model in the loop.",
   "scripts": {
