@@ -578,7 +578,7 @@ async function resolveUserByIdentifier(identifier: string): Promise<{ id: string
 // ---------------------------------------------------------------------------
 
 apiRouter.get("/api/admin/hub-shares", requireAdmin, async (req: Request, res: Response) => {
-  const executorId = typeof req.query["executor"] === "string" ? req.query["executor"] : undefined;
+  const executorId = typeof req.query["executor_id"] === "string" ? req.query["executor_id"] : undefined;
 
   const shares = await prisma.hubShare.findMany({
     where: executorId ? { executorId } : {},

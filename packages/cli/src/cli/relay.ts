@@ -763,7 +763,7 @@ export function registerRelayCommands(program: Command): void {
     .option("--json", "Output as JSON")
     .action(async (opts: ListOpts & { executor?: string; json?: boolean }) => {
       const session = await getValidSession(cfgDir);
-      const qs = buildListQuery(opts, { executor: opts.executor });
+      const qs = buildListQuery(opts, { executor_id: opts.executor });
       const data = await apiGet<PaginatedResponse<HubShareEntry>>(session, `/api/admin/hub-shares${qs}`);
       if (opts.json) { console.log(JSON.stringify(data.data, null, 2)); warnIfMore(data); return; }
 
