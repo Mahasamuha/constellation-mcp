@@ -1,4 +1,5 @@
 import { Router, Request, Response, IRouter } from "express";
+import { Prisma } from "./generated/prisma/client.js";
 import escHtml from "escape-html";
 import { randomBytes, createHash } from "node:crypto";
 import { prisma } from "./db.js";
@@ -423,7 +424,15 @@ async function handleAuthorizationCodeGrant(
     return;
   }
 
-  await prisma.authCode.delete({ where: { codeHash } });
+  try {
+    await prisma.authCode.delete({ where: { codeHash } });
+  } catch (err) {
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2025") {
+      res.status(400).json({ error: "invalid_grant", error_description: "Authorization code already redeemed" });
+      return;
+    }
+    throw err;
+  }
 
   const oauthClient = await prisma.oauthClient.findUnique({ where: { id: client_id } });
   if (!oauthClient) {

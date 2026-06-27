@@ -2,7 +2,7 @@ import { Router, Request, Response, IRouter } from "express";
 import escHtml from "escape-html";
 import { randomBytes } from "node:crypto";
 import { prisma } from "./db.js";
-import { ExecutorTokenType, RelayRole } from "./generated/prisma/client.js";
+import { ExecutorTokenType, RelayRole, Prisma } from "./generated/prisma/client.js";
 import { buildAuthorizationUrl, exchangeCodeAndUpsertUser } from "./oidc.js";
 import { issueOAuthSession, sendTokenResponse } from "./oauth-tokens.js";
 import { generateToken, hashToken, createLogger, requireEnv } from "@constellation/shared";
@@ -470,7 +470,15 @@ export async function handleDeviceCodeGrant(
   }
 
   // Consume the entry.
-  await prisma.deviceCode.delete(byCode(device_code));
+  try {
+    await prisma.deviceCode.delete(byCode(device_code));
+  } catch (err) {
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2025") {
+      res.status(400).json({ error: "invalid_grant", error_description: "Device code already redeemed" });
+      return;
+    }
+    throw err;
+  }
 
   const scope = entry.scope as DeviceScope;
   switch (scope) {
