@@ -13,7 +13,7 @@ Nodes connect outbound to the relay over WebSocket — no inbound ports required
 ```yaml
 services:
   relay:
-    image: mahasamuha/constellation-relay
+    image: mahasamuha/constellation-relay:0.5.2
     ports:
       - "3000:3000"
     environment:
@@ -25,7 +25,7 @@ services:
       - postgres
 
   postgres:
-    image: postgres:16
+    image: postgres:16.14
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: replace-with-a-strong-password
