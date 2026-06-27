@@ -21,7 +21,7 @@ describe("highlightForPath", () => {
     const result = highlightForPath(payload, "notes.txt");
     expect(result.language).toBe("none");
     expect(result.html).not.toContain("<img");
-    expect(result.html).toBe("&lt;img src=x onerror=alert(1)>");
+    expect(result.html).toBe("&lt;img src=x onerror=alert(1)&gt;");
   });
 
   it("neutralizes the same payload when path is null", () => {

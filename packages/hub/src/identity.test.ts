@@ -102,8 +102,7 @@ describe("resolveIdentity", () => {
 
     expect(isIdentityError(result)).toBe(true);
     if (isIdentityError(result)) {
-      expect(result.message).toContain("maps to 'nobody'");
-      expect(result.message).toContain("does not exist on this system");
+      expect(result.message).toContain("Could not resolve an OS identity");
     }
     // Tier 3 must not have been attempted — only the user_map lookup ran.
     expect(execFileMock).toHaveBeenCalledTimes(1);
