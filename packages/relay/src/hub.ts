@@ -1,9 +1,9 @@
 import { IncomingMessage, Server } from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
 import { prisma } from "./db.js";
-import { ExecutorTokenType } from "./generated/prisma/client.js";
+import { ExecutorTokenType, Prisma } from "./generated/prisma/client.js";
 import { logEvent } from "./activity.js";
-import { hashToken, generateToken, createLogger, type RpcError, type RpcResponse } from "@constellation/shared";
+import { hashToken, generateToken, createLogger, type RpcError, type RpcResponse, type RpcEnvelope as BaseRpcEnvelope } from "@constellation/shared";
 import { config } from "./config.js";
 import {
   type ConnectedExecutor,
@@ -22,13 +22,11 @@ const log = createLogger("hub");
 // Types
 // ---------------------------------------------------------------------------
 
-export interface RpcEnvelope {
-  request_id: string;
-  tool: string;
-  absolute_root: string;
+/** Relay's view of the envelope adds the caller identity fields it forwards to
+ * executors — node ignores them, hub uses them for OS-identity resolution. */
+export interface RpcEnvelope extends BaseRpcEnvelope {
   user_oidc_sub: string | null;
   user_claims: Record<string, unknown>;
-  [key: string]: unknown;
 }
 
 interface ConfigUpdateMessage {
@@ -456,13 +454,11 @@ async function handleConfigUpdate(conn: ConnectedExecutor, msg: ConfigUpdateMess
   send(conn.ws, { type: "config_update_ok" });
 }
 
-async function handleUpdateHost(conn: ConnectedExecutor, msg: UpdateHostMessage): Promise<void> {
+export async function handleUpdateHost(conn: ConnectedExecutor, msg: UpdateHostMessage): Promise<void> {
   if (conn.tokenType === ExecutorTokenType.HUB) {
     send(conn.ws, { type: "update_host_error", error: "Hubs use a fixed host (machine ID); update_host is not supported" });
     return;
   }
-  // After HUB guard: userId is guaranteed non-null for NODE connections.
-  const userId = conn.userId!;
   const newHost = typeof msg.host === "string" ? msg.host.trim() : "";
 
   if (!newHost) {
@@ -475,16 +471,20 @@ async function handleUpdateHost(conn: ConnectedExecutor, msg: UpdateHostMessage)
     return;
   }
 
-  const conflict = await prisma.executor.findFirst({
-    where: { userId, host: newHost, NOT: { id: conn.executorId } },
-  });
-
-  if (conflict) {
-    send(conn.ws, { type: "update_host_error", error: `Host name "${newHost}" is already registered` });
-    return;
+  // No separate conflict check beforehand — the write doesn't depend on the row's
+  // current host, so there's nothing for a check-then-write race to act on. Attempt
+  // the write directly and let the (user_id, host) partial unique index reject a
+  // conflict atomically, in the same statement, instead of a SELECT-then-UPDATE pair
+  // two concurrent renames could both pass.
+  try {
+    await prisma.executor.update({ where: { id: conn.executorId }, data: { host: newHost } });
+  } catch (err) {
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {
+      send(conn.ws, { type: "update_host_error", error: `Host name "${newHost}" is already registered` });
+      return;
+    }
+    throw err;
   }
-
-  await prisma.executor.update({ where: { id: conn.executorId }, data: { host: newHost } });
   conn.host = newHost;
 
   log.info({ executorId: conn.executorId, newHost }, "Executor host updated");
@@ -583,8 +583,32 @@ async function handleHubShareSync(conn: ConnectedExecutor, msg: HubShareSyncMess
       send(conn.ws, { type: "hub_share_sync_error", error: `Share '${entry.name}': permission_blob must be an object` });
       return;
     }
+    const blob = entry.permission_blob as Record<string, unknown>;
+    const validAccess = new Set(["none", "read", "read-write"]);
+    if (!validAccess.has(blob["default"] as string)) {
+      send(conn.ws, { type: "hub_share_sync_error", error: `Share '${entry.name}': permission_blob.default must be "none", "read", or "read-write"` });
+      return;
+    }
+    if (blob["overrides"] !== undefined) {
+      if (!Array.isArray(blob["overrides"])) {
+        send(conn.ws, { type: "hub_share_sync_error", error: `Share '${entry.name}': permission_blob.overrides must be an array` });
+        return;
+      }
+      for (const o of blob["overrides"] as unknown[]) {
+        if (typeof o !== "object" || o === null ||
+            typeof (o as Record<string, unknown>)["oidc_sub"] !== "string" ||
+            !validAccess.has((o as Record<string, unknown>)["access"] as string)) {
+          send(conn.ws, { type: "hub_share_sync_error", error: `Share '${entry.name}': each permission_blob.overrides entry must have oidc_sub (string) and access ("none"|"read"|"read-write")` });
+          return;
+        }
+      }
+    }
     if (entry.instructions !== undefined && typeof entry.instructions !== "string") {
       send(conn.ws, { type: "hub_share_sync_error", error: `Share '${entry.name}': instructions must be a string` });
+      return;
+    }
+    if (typeof entry.instructions === "string" && entry.instructions.length > 4096) {
+      send(conn.ws, { type: "hub_share_sync_error", error: `Share '${entry.name}': instructions must not exceed 4096 characters` });
       return;
     }
   }

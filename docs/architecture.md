@@ -64,6 +64,8 @@ MCP clients authenticate via the **Authorization Code flow** (with mandatory PKC
 The node CLI and relay CLI authenticate via the **Device Code flow** (RFC 8628). Scope determines which flow is served:
 - `agent:register` — creates a node registration and returns a node token
 - `relay:manage` — issues a management API session for `constellation relay` commands
+- `agent:escalate` — elevates the requester's existing session to admin-level access for `ADMIN_SESSION_DURATION` (`constellation relay elevate`); requires the *approving* user to already hold the admin role
+- `agent:register:shared` — creates a shared (non-user-bound) executor token for `constellation hub register`; requires admin approval
 
 Tokens are 32-byte cryptographically random values stored as SHA-256 hashes. They are never logged in plaintext.
 
@@ -83,7 +85,7 @@ When an MCP client calls a tool, the relay:
 2. Resolves the `share` (and optional `host`) to a target `executor_id` and `absolute_root` path
 3. Applies relay-side deny filters (glob or regex patterns)
 4. Looks up the live WebSocket for that executor
-5. Forwards an RPC envelope: `{ request_id, tool, absolute_root, ...tool_params }`
+5. Forwards an RPC envelope: `{ request_id, tool, absolute_root, params: tool_params }`
 6. Waits up to `RPC_TIMEOUT_MS` (default 30s) for a response
 7. Returns the result or a structured error to the MCP client
 
@@ -232,13 +234,32 @@ This check only covers the path supplied in the RPC — it does not re-run on en
 
 ### Rate limiting
 
+Every request — every MCP tool call and every HTTP route — hits exactly one rate-limit
+bucket, decided by an explicit classifier (`classifyTool` in `router.ts` for tool
+calls, `classifyHttpRoute` in `rate-limit-classify.ts` for HTTP routes). A request
+gets a named, more permissive bucket only by being listed explicitly in one of those
+two functions; anything not listed — a new tool, a new route, added later and never
+classified — falls through to the strictest bucket in its dimension (expensive tools
+for tool calls, the default bucket for HTTP routes) rather than skipping rate limiting
+entirely. This is deliberate: the failure mode for forgetting to classify something
+new is "rate limited too aggressively," never "not rate limited at all."
+
 | Surface | Default | Config variable |
 |---|---|---|
-| MCP tool calls | 60 req/min per user | `RATE_LIMIT_TOOL_CALLS_PER_MIN` |
-| Expensive tools (`grep_files`, `find_files`, recursive `list_directory`) | 20 req/min per user | `RATE_LIMIT_EXPENSIVE_TOOLS_PER_MIN` |
-| OAuth endpoints | 10 req/15 min per IP | `RATE_LIMIT_OAUTH_PER_15MIN` |
-| Device code polling | 200 req/15 min per IP | `RATE_LIMIT_DEVICE_POLL_PER_15MIN` |
+| MCP tool calls (standard tools) | 60 req/min per user | `RATE_LIMIT_TOOL_CALLS_PER_MIN` |
+| MCP tool calls (expensive tools — `grep_files`, `find_files`, recursive `list_directory`, **and any unclassified tool**) | 20 req/min per user | `RATE_LIMIT_EXPENSIVE_TOOLS_PER_MIN` |
+| OAuth endpoints (`/oauth/register`, `/oauth/device/code`, `/setup`, `/auth/login`, `/oauth/token` for non-device-code grants) | 10 req/15 min per IP | `RATE_LIMIT_OAUTH_PER_15MIN` |
+| Device code polling (`/oauth/token` with `grant_type=device_code`) | 200 req/15 min per IP | `RATE_LIMIT_DEVICE_POLL_PER_15MIN` |
+| Device-authorization consent flow (`/activate*`) | 20 req/15 min per IP | `RATE_LIMIT_DEVICE_AUTH_PER_15MIN` |
+| Any other HTTP route, including `/api/*` — **and any route added later and not explicitly classified** | 10 req/15 min per IP | `RATE_LIMIT_DEFAULT_PER_15MIN` |
 | Executor WebSocket reconnects | 10 req/min per executor token | `RATE_LIMIT_WS_RECONNECT_PER_MIN` |
+
+Two routes are deliberately exempt from the HTTP-level buckets, not by oversight:
+`/healthz` (an infra liveness check, registered before the rate-limit dispatcher is
+mounted) and `/mcp` (every MCP tool call already goes through the per-user tool-call
+buckets above, which fit that traffic shape far better than a per-IP HTTP bucket
+would — a normal session legitimately makes many more requests to this one endpoint
+than the default bucket allows for an arbitrary route).
 
 Rate limit state is in-memory — no Redis required. State is lost on relay restart, which is acceptable.
 

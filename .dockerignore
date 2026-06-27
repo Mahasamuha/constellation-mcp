@@ -1,0 +1,18 @@
+# relay-publish.yml builds with `context: .` (full repo root) — without this file,
+# .git/ and every package's node_modules/ enter the Docker build context on every
+# push/release build. The Dockerfile's COPY lines are explicit/selective today so
+# nothing extra lands in the final image, but this is the guardrail against a future
+# broad `COPY . .` baking .git history or a stray local .env into a publicly pushed image.
+
+.git
+**/node_modules
+**/dist
+
+# Real .env files never belong in a build context; .env.example files are just
+# documentation and are safe (and occasionally useful) to keep.
+**/*.env
+!**/*.env.example
+
+.claude
+.idea
+*.log

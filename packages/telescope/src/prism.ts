@@ -72,14 +72,18 @@ export function languageForPath(path: string): string | null {
   return EXTENSION_LANGUAGE[name.slice(dot + 1).toLowerCase()] ?? null;
 }
 
-const HTML_ESCAPES: Record<string, string> = {
-  "&": "&amp;",
-  "<": "&lt;",
-  ">": "&gt;",
-  '"': "&quot;",
-  "'": "&#39;",
-};
+function escapeHtml(text: string): string {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
 
-export function escapeHtml(text: string): string {
-  return text.replace(/[&<>"']/g, (c) => HTML_ESCAPES[c]!);
+/**
+ * Highlights `text` for `path`'s language. When no grammar is registered the
+ * text is HTML-escaped explicitly (rather than relying on Prism's internal
+ * escaping of its empty-grammar path) so the XSS guarantee is self-evident.
+ */
+export function highlightForPath(text: string, path: string | null): { html: string; language: string } {
+  const language = path ? languageForPath(path) : null;
+  const grammar = language ? Prism.languages[language] : undefined;
+  if (!language || !grammar) return { html: escapeHtml(text), language: "none" };
+  return { html: Prism.highlight(text, grammar, language), language };
 }

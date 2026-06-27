@@ -1,10 +1,10 @@
-import { promises as fs } from "node:fs";
-import { join, basename, dirname, sep } from "node:path";
+import { join, sep } from "node:path";
 import { createLogger } from "../logger.js";
 import { listDirectory, fileInfo, readFile } from "./tools/fs-read.js";
 import { writeFile, createDirectory, deletePath, movePath, copyPath } from "./tools/fs-write.js";
 import { findFiles, grepFiles } from "./tools/fs-search.js";
 import { editFile } from "./tools/fs-edit.js";
+import { safeRealpath } from "./tools/safe-path.js";
 
 const log = createLogger("executor");
 
@@ -13,7 +13,7 @@ export interface ToolResult {
   isError?: boolean;
 }
 
-const KNOWN_CODES = new Set(["FILE_TOO_LARGE", "READ_TOO_LARGE", "EDIT_NO_MATCH", "EDIT_AMBIGUOUS", "DEST_EXISTS", "MOVE_INCOMPLETE"]);
+const KNOWN_CODES = new Set(["FILE_TOO_LARGE", "READ_TOO_LARGE", "WRITE_TOO_LARGE", "EDIT_NO_MATCH", "EDIT_AMBIGUOUS", "DEST_EXISTS", "MOVE_INCOMPLETE", "SRC_IS_SYMLINK"]);
 
 // MOVE_INCOMPLETE is "known" in the sense that its message is deliberately constructed and
 // caller-safe (see crossDeviceMove in fs-write.ts), but unlike the other known codes it
@@ -51,7 +51,7 @@ export class FileExecutor {
       resolvedDstRoot = fromRegistry;
     } else if (dstRootRaw !== undefined) {
       try {
-        const resolved = await fs.realpath(dstRootRaw);
+        const resolved = await safeRealpath(dstRootRaw, dstRootRaw);
         if (!Object.values(this.shareRegistry).includes(resolved)) {
           log.warn({ tool, dstRootRaw }, "dst_root not in share registry");
           return { content: { message: "Path rejected" }, isError: true };
@@ -105,7 +105,7 @@ export class FileExecutor {
       create_directory: ["relative_path"],
       delete:           ["relative_path"],
       move:             ["src_relative_path", "dst_relative_path"],
-      copy:             ["dst_relative_path"],
+      copy:             ["src_relative_path", "dst_relative_path"],
     };
     const mutationFields = MUTATION_ROOT_FIELDS[tool];
     if (mutationFields) {
@@ -145,7 +145,7 @@ export class FileExecutor {
     }
 
     try {
-      const content = await this.dispatch(tool, root, p, resolvedPaths);
+      const content = await this.dispatch(tool, root, resolvedDstRoot, p, resolvedPaths);
       return { content };
     } catch (err) {
       const e = err as Error & {
@@ -166,6 +166,7 @@ export class FileExecutor {
   private async dispatch(
     tool: string,
     root: string,
+    resolvedDstRoot: string | undefined,
     p: Record<string, unknown>,
     resolvedPaths: Map<string, string>
   ): Promise<object> {
@@ -189,7 +190,7 @@ export class FileExecutor {
         });
 
       case "file_info":
-        return fileInfo(relPath!);
+        return fileInfo(relPath!, root);
 
       case "find_files":
         return findFiles(root, relPath ?? root, {
@@ -198,7 +199,7 @@ export class FileExecutor {
         });
 
       case "read_file":
-        return readFile(relPath!, {
+        return readFile(relPath!, root, {
           start_line: n(p, "start_line"),
           end_line: n(p, "end_line"),
           max_file_size_kb: this.maxFileSizeKb,
@@ -212,30 +213,32 @@ export class FileExecutor {
         });
 
       case "write_file":
-        await writeFile(relPath!, {
+        await writeFile(relPath!, root, {
           content: req(p, "content"),
           mode: p["mode"] as "overwrite" | "append" | undefined,
+          maxFileSizeKb: this.maxFileSizeKb,
         });
         return { ok: true };
 
       case "edit_file":
-        return editFile(relPath!, req(p, "relative_path"), {
+        return editFile(relPath!, root, req(p, "relative_path"), {
           edits: p["edits"] as Array<{ old_text: string; new_text: string }>,
           dry_run: b(p, "dry_run"),
+          maxFileSizeKb: this.maxFileSizeKb,
         });
 
       case "copy":
-        await copyPath(srcPath!, dstPath!, {
+        await copyPath(srcPath!, dstPath!, root, resolvedDstRoot ?? root, {
           dst_relative_path: req(p, "dst_relative_path"),
         });
         return { ok: true };
 
       case "create_directory":
-        await createDirectory(relPath!);
+        await createDirectory(relPath!, root);
         return { ok: true };
 
       case "delete": {
-        const summary = await deletePath(relPath!, {
+        const summary = await deletePath(relPath!, root, {
           relative_path: req(p, "relative_path"),
           recursive: b(p, "recursive"),
         });
@@ -243,7 +246,7 @@ export class FileExecutor {
       }
 
       case "move":
-        await movePath(srcPath!, dstPath!, {
+        await movePath(srcPath!, dstPath!, root, resolvedDstRoot ?? root, {
           dst_relative_path: req(p, "dst_relative_path"),
         });
         return { ok: true };
@@ -281,7 +284,7 @@ function b(p: Record<string, unknown>, key: string): boolean | undefined {
 
 function arr(p: Record<string, unknown>, key: string): string[] | undefined {
   const v = p[key];
-  return Array.isArray(v) ? (v as string[]) : undefined;
+  return Array.isArray(v) ? v.filter((e): e is string => typeof e === "string") : undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -305,6 +308,7 @@ function buildError(e: Error & {
   edit_index?: number;
   match_count?: number;
   read_size_kb?: number;
+  write_size_kb?: number;
   max_file_size_kb?: number;
   path?: string;
 }): object {
@@ -319,6 +323,7 @@ function buildError(e: Error & {
     if (e.edit_index !== undefined)       err["edit_index"]       = e.edit_index;
     if (e.match_count !== undefined)      err["match_count"]      = e.match_count;
     if (e.read_size_kb !== undefined)     err["read_size_kb"]     = e.read_size_kb;
+    if (e.write_size_kb !== undefined)    err["write_size_kb"]    = e.write_size_kb;
     if (e.max_file_size_kb !== undefined) err["max_file_size_kb"] = e.max_file_size_kb;
     if (e.path !== undefined)             err["path"]             = e.path;
   }
@@ -326,27 +331,3 @@ function buildError(e: Error & {
   return err;
 }
 
-// ---------------------------------------------------------------------------
-// Path safety
-// ---------------------------------------------------------------------------
-
-/**
- * Resolves a path to its real path. For paths that don't exist yet (e.g. write
- * targets), resolves the nearest existing parent and reconstructs the rest.
- */
-async function safeRealpath(path: string, boundaryRoot: string): Promise<string> {
-  try {
-    return await fs.realpath(path);
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-
-    const parent = dirname(path);
-    if (parent === path) throw new Error("Cannot resolve path", { cause: err });
-
-    const resolvedParent = await safeRealpath(parent, boundaryRoot);
-    if (!resolvedParent.startsWith(boundaryRoot + sep) && resolvedParent !== boundaryRoot) {
-      throw new Error("Cannot resolve path", { cause: err });
-    }
-    return join(resolvedParent, basename(path));
-  }
-}

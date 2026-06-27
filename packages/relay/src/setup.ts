@@ -47,7 +47,9 @@ export async function setupMiddleware(req: Request, res: Response, next: NextFun
 
 setupRouter.get("/setup", async (_req: Request, res: Response) => {
   if (config.authMode !== "local") {
-    res.send(oidcSetupPage());
+    // In OIDC mode setup is not applicable; redirect to home rather than
+    // exposing which environment variables are or are not configured.
+    res.redirect("/");
     return;
   }
 
@@ -60,9 +62,10 @@ setupRouter.get("/setup", async (_req: Request, res: Response) => {
   const csrfToken = generateToken();
   res.cookie("csrf_setup", csrfToken, {
     httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
+    secure: config.secureCookies,
     sameSite: "strict",
     maxAge: 30 * 60 * 1000,
+    signed: true,
   });
   res.send(setupFormPage([], csrfToken));
 });
@@ -93,9 +96,10 @@ setupRouter.post("/setup", async (req: Request, res: Response) => {
     const newToken = generateToken();
     res.cookie("csrf_setup", newToken, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
+      secure: config.secureCookies,
       sameSite: "strict",
       maxAge: 30 * 60 * 1000,
+      signed: true,
     });
     res.send(setupFormPage(errors, newToken));
   }
@@ -200,32 +204,6 @@ function setupFormPage(errors: string[], csrfToken?: string): string {
       <input id="confirm_password" name="confirm_password" type="password" autocomplete="new-password" required>
       <button type="submit">Create account</button>
     </form>
-  </div>
-</body>
-</html>`;
-}
-
-function oidcSetupPage(): string {
-  const checks = [
-    ["OIDC_ISSUER", process.env["OIDC_ISSUER"]],
-    ["OIDC_CLIENT_ID", process.env["OIDC_CLIENT_ID"]],
-    ["OIDC_CLIENT_SECRET", process.env["OIDC_CLIENT_SECRET"]],
-    ["RELAY_URL", process.env["RELAY_URL"]],
-  ];
-
-  const rows = checks.map(([name, val]) =>
-    `<li class="${val ? "ok" : "missing"}">${val ? "✓" : "✗"} <code>${escHtml(name!)}</code>${val ? "" : " — not set"}</li>`
-  ).join("\n");
-
-  return `<!DOCTYPE html>
-<html lang="en">
-<head><meta charset="utf-8"><title>Constellation — OIDC Setup</title>${pageStyle()}</head>
-<body>
-  <div class="card">
-    <h1>OIDC Configuration</h1>
-    <p>The relay is running in <code>AUTH_MODE=oidc</code>. Check the environment variables below:</p>
-    <ul class="checklist">${rows}</ul>
-    <p>Set all required variables and restart the relay.</p>
   </div>
 </body>
 </html>`;

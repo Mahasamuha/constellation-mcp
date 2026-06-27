@@ -2,7 +2,7 @@
 
 | # | Title | Status |
 |---|---|---|
-| [0001](0001-rpc-envelope-not-shared.md) | Do Not Share RpcEnvelope Across Node and Relay | Accepted |
+| [0001](0001-rpc-envelope-not-shared.md) | Do Not Share RpcEnvelope Across Node and Relay | Superseded by [0018](0018-share-rpcenvelope-via-inheritance.md) |
 | [0002](0002-agent-is-security-boundary.md) | The Node Is the Security Boundary | Accepted |
 | [0003](0003-outbound-only-agent-websocket.md) | Outbound-Only Node WebSocket (No Inbound Ports) | Accepted |
 | [0004](0004-oauth-mcp-auth.md) | OAuth 2.0 as the MCP Client Authentication Standard | Accepted |
@@ -19,3 +19,5 @@
 | [0015](0015-bundle-prism-syntax-highlighting.md) | Bundle Prism.js for File Browser Syntax Highlighting | Accepted |
 | [0016](0016-shared-queue-timeout.md) | Queue Timeout Utility Lives in `@constellation/shared`, Not Hub | Accepted |
 | [0017](0017-ambiguous-share-resolution.md) | Ambiguous Share Resolution Returns an Error Instead of Requiring `host` | Accepted |
+| [0018](0018-share-rpcenvelope-via-inheritance.md) | Share RpcEnvelope via Inheritance; Nest Tool Params | Accepted |
+| [0019](0019-hub-live-token-rotation.md) | Hub Token Rotation Is Live, Not Restart-Bound | Accepted |

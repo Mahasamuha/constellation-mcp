@@ -5,8 +5,17 @@ export type { PermissionBlob } from "./permissions.js";
 export { evaluatePermissionBlob } from "./permissions.js";
 export type { RpcError, RpcResponse, PathEntry, RpcEnvelope } from "./rpc.js";
 export { MAX_SHARE_INSTRUCTIONS_LENGTH } from "./rpc.js";
+export type { ExecutorEntry, ExecutorShare } from "./admin-api.js";
 export { FileExecutor, type ToolResult } from "./executor/index.js";
-export { RelaySocket, type RelaySocketOptions } from "./relay-socket.js";
+export { RelaySocket, type RelaySocketOptions, assertSecureRelayUrl, assertSecureHttpUrl, isSameOrigin } from "./relay-socket.js";
 export { resolveQueueTimeout } from "./queue-timeout.js";
 export { poll, sleep, confirm } from "./cli-util.js";
 export { str, num } from "./config-util.js";
+export {
+  startControlServer,
+  requestRotateViaControlChannel,
+  requestConfigUpdateViaControlChannel,
+  requestUpdateHostViaControlChannel,
+  type RotatableConnection,
+  type ControlResult,
+} from "./control-channel.js";

@@ -1,6 +1,7 @@
 import { writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
+import { randomBytes } from "node:crypto";
 import { run, runInherited, currentPlatform } from "./util.js";
 
 const SERVICE_NAME = "constellation-node";
@@ -37,11 +38,19 @@ function execPrefix(): string[] {
   return [process.execPath, process.argv[1]!];
 }
 
+function sysdQuote(s: string): string {
+  return `"${s.replace(/\\/g, "\\\\").replace(/\$/g, "\\$").replace(/"/g, '\\"')}"`;
+}
+
+function xmlEscape(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
 function installSystemd(_exec: string): void {
   const unitDir = join(homedir(), ".config", "systemd", "user");
   mkdirSync(unitDir, { recursive: true });
 
-  const execLine = execPrefix().join(" ");
+  const execLine = execPrefix().map(sysdQuote).join(" ");
 
   const unitPath = join(unitDir, `${SERVICE_NAME}.service`);
   const unit = `[Unit]
@@ -57,7 +66,7 @@ RestartSec=5
 [Install]
 WantedBy=default.target
 `;
-  writeFileSync(unitPath, unit);
+  writeFileSync(unitPath, unit, { mode: 0o600 });
   run("systemctl", ["--user", "daemon-reload"]);
   run("systemctl", ["--user", "enable", SERVICE_NAME]);
   console.log(`Installed systemd user unit: ${unitPath}`);
@@ -71,7 +80,7 @@ function installLaunchd(_exec: string): void {
   const plistPath = join(plistDir, `${label}.plist`);
   const programArgs = execPrefix()
     .concat(["node", "start", "--foreground"])
-    .map((a) => `    <string>${a}</string>`)
+    .map((a) => `    <string>${xmlEscape(a)}</string>`)
     .join("\n");
   const plist = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -94,7 +103,7 @@ ${programArgs}
 </dict>
 </plist>
 `;
-  writeFileSync(plistPath, plist);
+  writeFileSync(plistPath, plist, { mode: 0o600 });
   console.log(`Installed launchd plist: ${plistPath}`);
   console.log(`Run 'constellation node start' to load it.`);
 }
@@ -110,8 +119,8 @@ function installTaskScheduler(_exec: string): void {
   </Triggers>
   <Actions Context="Author">
     <Exec>
-      <Command>${command}</Command>
-      <Arguments>${args}</Arguments>
+      <Command>${xmlEscape(command)}</Command>
+      <Arguments>${xmlEscape(args)}</Arguments>
     </Exec>
   </Actions>
   <Settings>
@@ -120,8 +129,8 @@ function installTaskScheduler(_exec: string): void {
   </Settings>
 </Task>
 `;
-  const tmpPath = join(process.env["TEMP"] ?? "C:\\Temp", `${SERVICE_NAME}.xml`);
-  writeFileSync(tmpPath, xml, "utf16le");
+  const tmpPath = join(tmpdir(), `${SERVICE_NAME}-${randomBytes(6).toString("hex")}.xml`);
+  writeFileSync(tmpPath, xml, { encoding: "utf16le", mode: 0o600 });
   run("schtasks", ["/Create", "/TN", SERVICE_NAME, "/XML", tmpPath, "/F"]);
   console.log(`Registered Task Scheduler task: ${SERVICE_NAME}`);
 }

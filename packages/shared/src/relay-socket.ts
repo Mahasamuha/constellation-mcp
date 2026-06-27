@@ -7,12 +7,67 @@ const JITTER_FACTOR = 0.2;
 const MAX_DELAY_MS = 60_000;
 const PING_INTERVAL_MS = 30_000;
 const PING_TIMEOUT_MS = 10_000;
+/** Bounds how long stop() waits for the close handshake to actually complete before
+ * giving up and returning anyway — shorter than PING_TIMEOUT_MS, since this is just
+ * waiting on a clean close, not detecting a wedged connection. */
+const STOP_CLOSE_TIMEOUT_MS = 5_000;
 
 export interface RelaySocketOptions {
   /** Module name passed to createLogger, e.g. "node:connection" or "hub". */
   logModule: string;
   /** WebSocket path appended after the ws(s)://host:port, e.g. "/executor/connect". */
   path: string;
+}
+
+/** True for localhost, any 127.0.0.0/8 loopback address, or ::1 (bracketed or not). */
+function isLocalHostname(hostname: string): boolean {
+  if (hostname === "localhost") return true;
+  if (hostname === "::1" || hostname === "[::1]") return true;
+  return /^127(\.\d{1,3}){3}$/.test(hostname);
+}
+
+/**
+ * Throws if `wsUrl` is a plaintext ws:// URL targeting a non-localhost host.
+ * The bearer token sent in the Authorization header must never cross the
+ * network unencrypted. Call this before constructing *any* WebSocket
+ * connection to a relay — the long-lived RelaySocket connection below and
+ * every short-lived CLI control-plane connection (token rotation, rename,
+ * sync) alike. A second, independently-constructed WebSocket that skips this
+ * check defeats the whole point of enforcing it here.
+ */
+export function assertSecureRelayUrl(wsUrl: string): void {
+  if (!wsUrl.startsWith("ws://")) return;
+  const hostname = new URL(wsUrl).hostname;
+  if (isLocalHostname(hostname)) return;
+  throw new Error(
+    `Refusing to connect: relay URL uses ws:// for a non-localhost host (${hostname}). Use wss:// to protect the access token.`
+  );
+}
+
+/** Throws if `httpUrl` is a plaintext http:// URL targeting a non-localhost host.
+ * Bearer tokens sent in Authorization headers must never cross the network
+ * unencrypted. Call this before any fetch() that carries an access token. */
+export function assertSecureHttpUrl(httpUrl: string): void {
+  if (!httpUrl.startsWith("http://")) return;
+  const hostname = new URL(httpUrl).hostname;
+  if (isLocalHostname(hostname)) return;
+  throw new Error(
+    `Refusing to connect: relay URL uses http:// for a non-localhost host (${hostname}). Use https:// to protect the access token.`
+  );
+}
+
+/** Returns true if `targetUrl` shares the same origin as `relayUrl`.
+ * Use this to validate server-supplied redirect/verification URLs before
+ * opening them in a browser, preventing a compromised relay from redirecting
+ * to an arbitrary URI scheme or host. */
+export function isSameOrigin(relayUrl: string, targetUrl: string): boolean {
+  try {
+    const relay = new URL(relayUrl);
+    const target = new URL(targetUrl);
+    return relay.origin === target.origin;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -50,12 +105,31 @@ export abstract class RelaySocket {
     this.connect();
   }
 
-  stop(): void {
+  /**
+   * Stops reconnecting and closes the live socket, resolving once the close handshake
+   * actually completes (bounded by STOP_CLOSE_TIMEOUT_MS) instead of just firing the
+   * close frame and returning immediately. Callers that need a clean shutdown — the
+   * relay seeing a real close instead of an abrupt drop, control.json/other cleanup
+   * tied to "the connection is fully gone" — should await this before exiting.
+   */
+  async stop(): Promise<void> {
     this.stopped = true;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.clearPingTimers();
-    this.ws?.close();
+
+    const ws = this.ws;
     this.ws = null;
+    if (!ws || ws.readyState === WebSocket.CLOSED) return;
+
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, STOP_CLOSE_TIMEOUT_MS);
+      ws.once("close", () => { clearTimeout(timer); resolve(); });
+      ws.close();
+    });
+  }
+
+  protected isConnected(): boolean {
+    return this.ws?.readyState === WebSocket.OPEN;
   }
 
   protected send(msg: object): void {
@@ -87,20 +161,19 @@ export abstract class RelaySocket {
 
     const wsUrl = this.getRelayUrl().replace(/^http/, "ws");
 
-    if (wsUrl.startsWith("ws://")) {
-      const host = new URL(wsUrl).hostname;
-      const isLocal = host === "localhost" || host === "127.0.0.1" || host === "::1";
-      if (!isLocal) {
-        this.log.error({ url: wsUrl }, "Refusing to connect: relay URL uses ws:// for a non-localhost host. Use wss:// to protect the access token.");
-        this.scheduleReconnect();
-        return;
-      }
+    try {
+      assertSecureRelayUrl(wsUrl);
+    } catch (err) {
+      this.log.error({ url: wsUrl }, (err as Error).message);
+      this.scheduleReconnect();
+      return;
     }
 
     this.log.info({ url: wsUrl }, "Connecting to relay");
 
     const ws = new WebSocket(wsUrl + this.path, {
       headers: { Authorization: `Bearer ${this.getToken()}` },
+      maxPayload: 1_048_576,
     });
     this.ws = ws;
 

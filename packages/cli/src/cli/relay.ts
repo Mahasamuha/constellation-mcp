@@ -8,19 +8,11 @@ import {
   deleteRelaySession,
   type RelaySession,
 } from "@constellation/node/config";
-import { poll, confirm } from "@constellation/shared";
+import { poll, confirm, type ExecutorEntry, assertSecureHttpUrl, isSameOrigin } from "@constellation/shared";
 
 // ---------------------------------------------------------------------------
 // API response types
 // ---------------------------------------------------------------------------
-
-interface ExecutorEntry {
-  id: string;
-  host: string;
-  online: boolean;
-  last_heartbeat_at: string | null;
-  shares: Array<{ share: string; reported_path: string }>;
-}
 
 interface ShareEntry {
   share: string;
@@ -44,6 +36,14 @@ interface SessionEntry {
   has_refresh_token: boolean;
 }
 
+interface LocalUserEntry {
+  id: string;
+  username: string;
+  is_active: boolean;
+  created_at: string;
+  last_login_at: string | null;
+}
+
 interface HubShareEntry {
   executor_id: string;
   executor_host: string;
@@ -56,19 +56,50 @@ interface HubShareEntry {
   updated_at: string;
 }
 
+/** Every `GET /api/*` list endpoint paginates (default 100, max 1000 rows per page)
+ * and returns this shape — see docs/reference.md's pagination section. */
+interface PaginatedResponse<T> {
+  data: T[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+interface ListOpts {
+  limit: string;
+  offset: string;
+}
+
 // ---------------------------------------------------------------------------
 // Relay URL resolution
 // ---------------------------------------------------------------------------
 
 function resolveRelayUrl(flagUrl: string | undefined, getConfigDir: () => string): string {
-  if (flagUrl) return flagUrl;
+  const url = flagUrl ?? (() => {
+    try {
+      return loadNodeConfig(getConfigDir()).relay_url;
+    } catch {
+      console.error("No relay URL configured. Pass --relay <url> or run constellation node init first.");
+      process.exit(1);
+    }
+  })();
   try {
-    return loadNodeConfig(getConfigDir()).relay_url;
-  } catch {
-    console.error(
-      "No relay URL configured. Pass --relay <url> or run constellation node init first."
-    );
+    assertSecureHttpUrl(url);
+  } catch (err) {
+    console.error("Error:", (err as Error).message);
     process.exit(1);
+  }
+  return url;
+}
+
+/** Wraps `fetch` so a network failure (DNS, connection refused, timeout) surfaces with
+ * the host it was trying to reach, instead of a bare contextless TypeError. */
+async function safeFetch(url: string, options?: RequestInit): Promise<Response> {
+  try {
+    return await fetch(url, options);
+  } catch (err) {
+    console.error(`Could not reach ${new URL(url).host}: ${(err as Error).message}`);
+    return process.exit(1);
   }
 }
 
@@ -106,7 +137,7 @@ async function getValidSession(getConfigDir: () => string): Promise<RelaySession
 async function tryRefresh(session: RelaySession): Promise<RelaySession | null> {
   if (!session.refresh_token) return null;
 
-  const res = await fetch(`${session.relay_url}/oauth/token`, {
+  const res = await safeFetch(`${session.relay_url}/oauth/token`, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
@@ -118,11 +149,11 @@ async function tryRefresh(session: RelaySession): Promise<RelaySession | null> {
 
   if (!res.ok) return null;
 
-  const body = await res.json() as {
+  const body = await parseJson<{
     access_token: string;
     expires_in: number;
     refresh_token?: string;
-  };
+  }>(res);
 
   const now = new Date();
   const refreshTtlDays = 30;
@@ -146,7 +177,7 @@ async function apiFetch(
   path: string,
   options: RequestInit = {}
 ): Promise<Response> {
-  return fetch(`${session.relay_url}${path}`, {
+  return safeFetch(`${session.relay_url}${path}`, {
     ...options,
     headers: {
       Authorization: `Bearer ${session.access_token}`,
@@ -158,13 +189,33 @@ async function apiFetch(
 
 async function apiGet<T>(session: RelaySession, path: string): Promise<T> {
   const res = await apiFetch(session, path);
-  if (!res.ok) die(res);
-  return res.json() as Promise<T>;
+  if (!res.ok) await die(res);
+  return parseJson<T>(res);
+}
+
+/** Builds a `list` command's query string from its --limit/--offset options plus
+ * any command-specific filters, omitting anything not actually set. */
+function buildListQuery(opts: ListOpts, extra: Record<string, string | undefined> = {}): string {
+  const params = new URLSearchParams();
+  for (const [k, v] of Object.entries(extra)) if (v) params.set(k, v);
+  if (opts.limit) params.set("limit", opts.limit);
+  if (opts.offset) params.set("offset", opts.offset);
+  const qs = params.toString();
+  return qs ? `?${qs}` : "";
+}
+
+/** Warns when the server paginated and more rows exist beyond what's shown — to
+ * stderr, so --json output stays valid, pipeable JSON either way. */
+function warnIfMore(res: PaginatedResponse<unknown>): void {
+  const shown = res.offset + res.data.length;
+  if (shown < res.total) {
+    console.error(`Showing ${res.data.length} of ${res.total} total (offset ${res.offset}) — use --offset ${shown} to see more.`);
+  }
 }
 
 async function apiDelete(session: RelaySession, path: string): Promise<void> {
   const res = await apiFetch(session, path, { method: "DELETE" });
-  if (!res.ok) die(res);
+  if (!res.ok) await die(res);
 }
 
 async function apiPost<T>(
@@ -176,12 +227,26 @@ async function apiPost<T>(
     method: "POST",
     body: JSON.stringify(body),
   });
-  if (!res.ok) die(res);
-  return res.json() as Promise<T>;
+  if (!res.ok) await die(res);
+  if (res.status === 204) return undefined as T;
+  return parseJson<T>(res);
 }
 
-function die(res: Response): never {
-  res.json().then((body: unknown) => {
+/** Parses a response body expected to be JSON on success; a non-JSON body here means
+ * something between us and the relay (a proxy error page, a truncated response) broke,
+ * not an application-level error — surface that distinction instead of a raw SyntaxError. */
+async function parseJson<T>(res: Response): Promise<T> {
+  try {
+    return (await res.json()) as T;
+  } catch {
+    console.error(`Unexpected response from relay (status ${res.status}): expected JSON, got something else.`);
+    return process.exit(1);
+  }
+}
+
+export async function die(res: Response): Promise<never> {
+  try {
+    const body: unknown = await res.json();
     if (
       typeof body === "object" && body !== null &&
       (body as Record<string, unknown>)["error"] === "ESCALATION_REQUIRED"
@@ -191,9 +256,15 @@ function die(res: Response): never {
     } else {
       console.error(`API error ${res.status}: ${JSON.stringify(body)}`);
     }
-  }).catch(() => { console.error(`API error ${res.status}`); });
-  process.exit(1);
+  } catch {
+    console.error(`API error ${res.status}`);
+  }
+  return process.exit(1);
 }
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // Register all relay commands
@@ -225,7 +296,7 @@ export function registerRelayCommands(program: Command): void {
     .action(async () => {
       const relayUrl = resolveRelayUrl(getRelayFlag(), getConfigDir);
 
-      const dcRes = await fetch(`${relayUrl}/oauth/device/code`, {
+      const dcRes = await safeFetch(`${relayUrl}/oauth/device/code`, {
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
         body: new URLSearchParams({ scope: "relay:manage" }),
@@ -234,22 +305,24 @@ export function registerRelayCommands(program: Command): void {
         console.error("Failed to start device flow:", await dcRes.text());
         process.exit(1);
       }
-      const dc = await dcRes.json() as {
+      const dc = await parseJson<{
         device_code: string;
         user_code: string;
         verification_uri_complete: string;
         expires_in: number;
         interval: number;
-      };
+      }>(dcRes);
 
       console.log(`\nOpen the following URL to authenticate (opening browser automatically):`);
       console.log(`  ${dc.verification_uri_complete}\n`);
       console.log(`If the browser did not open, enter this code: ${dc.user_code}\n`);
-      try { await open(dc.verification_uri_complete); } catch { /* ignore */ }
+      if (isSameOrigin(relayUrl, dc.verification_uri_complete)) {
+        try { await open(dc.verification_uri_complete); } catch { /* ignore */ }
+      }
 
       const result = await poll(
-        async () => {
-          const r = await fetch(`${relayUrl}/oauth/token`, {
+        async ({ intervalMs, setIntervalMs }) => {
+          const r = await safeFetch(`${relayUrl}/oauth/token`, {
             method: "POST",
             headers: { "Content-Type": "application/x-www-form-urlencoded" },
             body: new URLSearchParams({
@@ -260,15 +333,16 @@ export function registerRelayCommands(program: Command): void {
           if (r.status === 400) {
             const body = await r.json() as { error: string };
             if (body.error === "authorization_pending") return null;
+            if (body.error === "slow_down") { setIntervalMs(intervalMs + 5000); return null; }
             console.error("\nDevice flow error:", body.error);
             process.exit(1);
           }
           if (!r.ok) return null;
-          return r.json() as Promise<{
+          return parseJson<{
             access_token: string;
             expires_in: number;
             refresh_token?: string;
-          }>;
+          }>(r);
         },
         dc.interval * 1000,
         dc.expires_in * 1000
@@ -333,16 +407,20 @@ export function registerRelayCommands(program: Command): void {
   executors
     .command("list")
     .description("List all registered executors")
+    .option("--limit <n>", "Max rows to return (server caps at 1000)", "100")
+    .option("--offset <n>", "Rows to skip", "0")
     .option("--json", "Output as JSON")
-    .action(async (opts: { json?: boolean }) => {
+    .action(async (opts: ListOpts & { json?: boolean }) => {
       const session = await getValidSession(cfgDir);
-      const res = await apiGet<{ data: ExecutorEntry[] }>(session, "/api/executors");
-      if (opts.json) { console.log(JSON.stringify(res.data, null, 2)); return; }
+      const qs = buildListQuery(opts);
+      const res = await apiGet<PaginatedResponse<ExecutorEntry>>(session, `/api/executors${qs}`);
+      if (opts.json) { console.log(JSON.stringify(res.data, null, 2)); warnIfMore(res); return; }
       for (const a of res.data) {
         console.log(`${a.host} (${a.id})`);
         console.log(`  Status: ${a.online ? "online" : "offline"}${a.last_heartbeat_at ? `  last seen ${a.last_heartbeat_at}` : ""}`);
         for (const s of a.shares) console.log(`  ${s.share} → ${s.reported_path}`);
       }
+      warnIfMore(res);
     });
 
   executors
@@ -353,7 +431,7 @@ export function registerRelayCommands(program: Command): void {
       const ok = await confirm(`Revoke token for executor ${executorId}? The executor will go offline.`);
       if (!ok) { console.log("Cancelled."); return; }
       const session = await getValidSession(cfgDir);
-      await apiDelete(session, `/api/executors/${executorId}/token`);
+      await apiDelete(session, `/api/executors/${encodeURIComponent(executorId)}/token`);
       console.log("Token revoked.");
     });
 
@@ -367,15 +445,18 @@ export function registerRelayCommands(program: Command): void {
     .command("list")
     .description("List path shares")
     .option("--executor <id>", "Filter by executor ID")
+    .option("--limit <n>", "Max rows to return (server caps at 1000)", "100")
+    .option("--offset <n>", "Rows to skip", "0")
     .option("--json", "Output as JSON")
-    .action(async (opts: { executor?: string; json?: boolean }) => {
+    .action(async (opts: ListOpts & { executor?: string; json?: boolean }) => {
       const session = await getValidSession(cfgDir);
-      const qs = opts.executor ? `?executor_id=${encodeURIComponent(opts.executor)}` : "";
-      const res = await apiGet<{ data: ShareEntry[] }>(session, `/api/shares${qs}`);
-      if (opts.json) { console.log(JSON.stringify(res.data, null, 2)); return; }
+      const qs = buildListQuery(opts, { executor_id: opts.executor });
+      const res = await apiGet<PaginatedResponse<ShareEntry>>(session, `/api/shares${qs}`);
+      if (opts.json) { console.log(JSON.stringify(res.data, null, 2)); warnIfMore(res); return; }
       for (const s of res.data) {
         console.log(`${s.share}  (${s.host})  →  ${s.reported_path}`);
       }
+      warnIfMore(res);
     });
 
   // -------------------------------------------------------------------------
@@ -387,15 +468,19 @@ export function registerRelayCommands(program: Command): void {
   filters
     .command("list")
     .description("List active deny filters")
+    .option("--limit <n>", "Max rows to return (server caps at 1000)", "100")
+    .option("--offset <n>", "Rows to skip", "0")
     .option("--json", "Output as JSON")
-    .action(async (opts: { json?: boolean }) => {
+    .action(async (opts: ListOpts & { json?: boolean }) => {
       const session = await getValidSession(cfgDir);
-      const res = await apiGet<{ data: FilterEntry[] }>(session, "/api/filters");
-      if (opts.json) { console.log(JSON.stringify(res.data, null, 2)); return; }
+      const qs = buildListQuery(opts);
+      const res = await apiGet<PaginatedResponse<FilterEntry>>(session, `/api/filters${qs}`);
+      if (opts.json) { console.log(JSON.stringify(res.data, null, 2)); warnIfMore(res); return; }
       for (const f of res.data) {
         const scope = f.scope_executor_id ? ` [executor: ${f.scope_executor_id}]` : "";
         console.log(`${f.id}  ${f.pattern_type}:${f.pattern}${scope}  (${f.created_at})`);
       }
+      warnIfMore(res);
     });
 
   filters
@@ -421,8 +506,10 @@ export function registerRelayCommands(program: Command): void {
     .argument("<filter-id>", "Filter ID to remove")
     .description("Remove a deny filter")
     .action(async (filterId: string) => {
+      const ok = await confirm(`Remove deny filter ${filterId}? This widens access — anything it was blocking becomes reachable again.`);
+      if (!ok) { console.log("Cancelled."); return; }
       const session = await getValidSession(cfgDir);
-      await apiDelete(session, `/api/filters/${filterId}`);
+      await apiDelete(session, `/api/filters/${encodeURIComponent(filterId)}`);
       console.log("Filter removed.");
     });
 
@@ -435,14 +522,18 @@ export function registerRelayCommands(program: Command): void {
   sessions
     .command("list")
     .description("List active MCP client sessions")
+    .option("--limit <n>", "Max rows to return (server caps at 1000)", "100")
+    .option("--offset <n>", "Rows to skip", "0")
     .option("--json", "Output as JSON")
-    .action(async (opts: { json?: boolean }) => {
+    .action(async (opts: ListOpts & { json?: boolean }) => {
       const session = await getValidSession(cfgDir);
-      const res = await apiGet<{ data: SessionEntry[] }>(session, "/api/sessions");
-      if (opts.json) { console.log(JSON.stringify(res.data, null, 2)); return; }
+      const qs = buildListQuery(opts);
+      const res = await apiGet<PaginatedResponse<SessionEntry>>(session, `/api/sessions${qs}`);
+      if (opts.json) { console.log(JSON.stringify(res.data, null, 2)); warnIfMore(res); return; }
       for (const s of res.data) {
         console.log(`${s.id}  client:${s.mcp_client_id}  issued:${s.issued_at}  expires:${s.expires_at}${s.has_refresh_token ? "  [refresh]" : ""}`);
       }
+      warnIfMore(res);
     });
 
   sessions
@@ -450,8 +541,10 @@ export function registerRelayCommands(program: Command): void {
     .argument("<session-id>", "Session ID to revoke")
     .description("Invalidate an MCP client session")
     .action(async (sessionId: string) => {
+      const ok = await confirm(`Revoke session ${sessionId}? The MCP client will need to re-authenticate.`);
+      if (!ok) { console.log("Cancelled."); return; }
       const session = await getValidSession(cfgDir);
-      await apiDelete(session, `/api/sessions/${sessionId}`);
+      await apiDelete(session, `/api/sessions/${encodeURIComponent(sessionId)}`);
       console.log("Session revoked.");
     });
 
@@ -464,19 +557,20 @@ export function registerRelayCommands(program: Command): void {
   users
     .command("list")
     .description("List all local users")
+    .option("--limit <n>", "Max rows to return (server caps at 1000)", "100")
+    .option("--offset <n>", "Rows to skip", "0")
     .option("--json", "Output as JSON")
-    .action(async (opts: { json?: boolean }) => {
+    .action(async (opts: ListOpts & { json?: boolean }) => {
       const session = await getValidSession(cfgDir);
-      const res = await apiGet<{ data: Array<{
-        id: string; username: string; is_active: boolean;
-        created_at: string; last_login_at: string | null;
-      }> }>(session, "/api/users");
-      if (opts.json) { console.log(JSON.stringify(res.data, null, 2)); return; }
+      const qs = buildListQuery(opts);
+      const res = await apiGet<PaginatedResponse<LocalUserEntry>>(session, `/api/users${qs}`);
+      if (opts.json) { console.log(JSON.stringify(res.data, null, 2)); warnIfMore(res); return; }
       for (const u of res.data) {
         const status = u.is_active ? "active" : "deactivated";
         const last = u.last_login_at ? `  last login: ${u.last_login_at}` : "";
         console.log(`${u.username}  [${status}]${last}`);
       }
+      warnIfMore(res);
     });
 
   users
@@ -501,7 +595,7 @@ export function registerRelayCommands(program: Command): void {
       const ok = await confirm(`Deactivate user '${username}'? Their sessions will become invalid.`);
       if (!ok) { console.log("Cancelled."); return; }
       const session = await getValidSession(cfgDir);
-      await apiDelete(session, `/api/users/${encodeURIComponent(username)}`);
+      await apiPost(session, `/api/users/${encodeURIComponent(username)}/deactivate`, {});
       console.log(`User '${username}' deactivated.`);
     });
 
@@ -553,9 +647,9 @@ export function registerRelayCommands(program: Command): void {
       // Fetch the current session ID from the relay (not stored locally).
       const meRes = await apiFetch(session, "/api/me");
       if (!meRes.ok) { console.error("Failed to fetch session info."); process.exit(1); }
-      const me = await meRes.json() as { session_id: string };
+      const me = await parseJson<{ session_id: string }>(meRes);
 
-      const dcRes = await fetch(`${relayUrl}/oauth/device/code`, {
+      const dcRes = await safeFetch(`${relayUrl}/oauth/device/code`, {
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
         body: new URLSearchParams({
@@ -568,22 +662,24 @@ export function registerRelayCommands(program: Command): void {
         console.error("Failed to start escalation flow:", await dcRes.text());
         process.exit(1);
       }
-      const dc = await dcRes.json() as {
+      const dc = await parseJson<{
         device_code: string;
         user_code: string;
         verification_uri_complete: string;
         expires_in: number;
         interval: number;
-      };
+      }>(dcRes);
 
       console.log(`\nOpen the following URL to approve admin access (opening browser automatically):`);
       console.log(`  ${dc.verification_uri_complete}\n`);
       console.log(`If the browser did not open, enter this code: ${dc.user_code}\n`);
-      try { await open(dc.verification_uri_complete); } catch { /* ignore */ }
+      if (isSameOrigin(relayUrl, dc.verification_uri_complete)) {
+        try { await open(dc.verification_uri_complete); } catch { /* ignore */ }
+      }
 
       const result = await poll(
-        async () => {
-          const r = await fetch(`${relayUrl}/oauth/token`, {
+        async ({ intervalMs, setIntervalMs }) => {
+          const r = await safeFetch(`${relayUrl}/oauth/token`, {
             method: "POST",
             headers: { "Content-Type": "application/x-www-form-urlencoded" },
             body: new URLSearchParams({
@@ -594,6 +690,7 @@ export function registerRelayCommands(program: Command): void {
           if (r.status === 400) {
             const body = await r.json() as { error: string };
             if (body.error === "authorization_pending") return null;
+            if (body.error === "slow_down") { setIntervalMs(intervalMs + 5000); return null; }
             if (body.error === "access_denied") {
               console.error("\nEscalation denied. Ensure your account has admin privileges.");
               process.exit(1);
@@ -626,16 +723,15 @@ export function registerRelayCommands(program: Command): void {
   userAdmin
     .command("promote")
     .argument("<identifier>", "OIDC sub or (local mode) username to promote to admin")
-    .description("Grant admin role — requires RELAY_ADMIN_TOKEN env var or --admin-token flag")
-    .option("--admin-token <token>", "Relay admin token (defaults to RELAY_ADMIN_TOKEN env var)")
-    .action(async (identifier: string, opts: { adminToken?: string }) => {
-      const adminToken = opts.adminToken ?? process.env["RELAY_ADMIN_TOKEN"];
+    .description("Grant admin role — requires RELAY_ADMIN_TOKEN env var")
+    .action(async (identifier: string) => {
+      const adminToken = process.env["RELAY_ADMIN_TOKEN"];
       if (!adminToken) {
-        console.error("RELAY_ADMIN_TOKEN is not set. Pass --admin-token or set the env var.");
+        console.error("RELAY_ADMIN_TOKEN is not set.");
         process.exit(1);
       }
       const relayUrl = resolveRelayUrl(getRelayFlag(), getConfigDir);
-      const res = await fetch(`${relayUrl}/api/admin/users/${encodeURIComponent(identifier)}/promote`, {
+      const res = await safeFetch(`${relayUrl}/api/admin/users/${encodeURIComponent(identifier)}/promote`, {
         method: "POST",
         headers: { Authorization: `Bearer ${adminToken}` },
       });
@@ -647,16 +743,15 @@ export function registerRelayCommands(program: Command): void {
   userAdmin
     .command("demote")
     .argument("<identifier>", "OIDC sub or (local mode) username to demote")
-    .description("Revoke admin role — requires RELAY_ADMIN_TOKEN env var or --admin-token flag")
-    .option("--admin-token <token>", "Relay admin token (defaults to RELAY_ADMIN_TOKEN env var)")
-    .action(async (identifier: string, opts: { adminToken?: string }) => {
-      const adminToken = opts.adminToken ?? process.env["RELAY_ADMIN_TOKEN"];
+    .description("Revoke admin role — requires RELAY_ADMIN_TOKEN env var")
+    .action(async (identifier: string) => {
+      const adminToken = process.env["RELAY_ADMIN_TOKEN"];
       if (!adminToken) {
-        console.error("RELAY_ADMIN_TOKEN is not set. Pass --admin-token or set the env var.");
+        console.error("RELAY_ADMIN_TOKEN is not set.");
         process.exit(1);
       }
       const relayUrl = resolveRelayUrl(getRelayFlag(), getConfigDir);
-      const res = await fetch(`${relayUrl}/api/admin/users/${encodeURIComponent(identifier)}/demote`, {
+      const res = await safeFetch(`${relayUrl}/api/admin/users/${encodeURIComponent(identifier)}/demote`, {
         method: "POST",
         headers: { Authorization: `Bearer ${adminToken}` },
       });
@@ -675,15 +770,17 @@ export function registerRelayCommands(program: Command): void {
     .command("list")
     .description("List all hub shares synced to the relay")
     .option("--executor <id>", "Filter to a specific hub by ID")
+    .option("--limit <n>", "Max rows to return (server caps at 1000)", "100")
+    .option("--offset <n>", "Rows to skip", "0")
     .option("--json", "Output as JSON")
-    .action(async (opts: { executor?: string; json?: boolean }) => {
+    .action(async (opts: ListOpts & { executor?: string; json?: boolean }) => {
       const session = await getValidSession(cfgDir);
-      const qs = opts.executor ? `?executor=${encodeURIComponent(opts.executor)}` : "";
-      const data = await apiGet<{ data: HubShareEntry[] }>(session, `/api/admin/hub-shares${qs}`);
-      if (opts.json) { console.log(JSON.stringify(data.data, null, 2)); return; }
+      const qs = buildListQuery(opts, { executor_id: opts.executor });
+      const data = await apiGet<PaginatedResponse<HubShareEntry>>(session, `/api/admin/hub-shares${qs}`);
+      if (opts.json) { console.log(JSON.stringify(data.data, null, 2)); warnIfMore(data); return; }
 
       if (data.data.length === 0) {
-        console.log("No hub shares found.");
+        console.log(data.total > 0 ? `No hub shares at this offset (${data.total} total — try --offset 0).` : "No hub shares found.");
         return;
       }
 
@@ -699,6 +796,7 @@ export function registerRelayCommands(program: Command): void {
           : "";
         console.log(`  ${s.share}  →  ${s.reported_path}  [default: ${s.permission_blob.default}]${overrideStr}`);
       }
+      warnIfMore(data);
     });
 
   // -------------------------------------------------------------------------

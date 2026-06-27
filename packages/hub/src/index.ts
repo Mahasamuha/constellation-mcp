@@ -1,14 +1,42 @@
 import { checkSharePath } from "./paths.js";
 import { readFileSync, writeFileSync, statSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { userInfo } from "node:os";
-import { createLogger, MAX_SHARE_INSTRUCTIONS_LENGTH, RelaySocket, type RpcEnvelope } from "@constellation/shared";
+import {
+  createLogger,
+  MAX_SHARE_INSTRUCTIONS_LENGTH,
+  RelaySocket,
+  startControlServer,
+  type RpcEnvelope,
+  type RotatableConnection,
+} from "@constellation/shared";
 import { loadHubConfig, validateHubConfig, type HubConfig } from "./config.js";
 import { resolveIdentity, isIdentityError } from "./identity.js";
 import { checkRpcPermission, buildPermissionBlob } from "./permissions.js";
-import { writeAuditEntry } from "./audit.js";
+import { AuditWriter } from "./audit.js";
 import { SubnodePool, isDispatchError } from "./subnode.js";
 
 const log = createLogger("hub");
+
+/** Relay forwards these on every envelope it dispatches, for OS-identity resolution
+ * below — defined locally (mirroring relay's own RpcEnvelope extension) rather than
+ * imported from @constellation/relay, which hub has no reason to depend on. */
+interface IncomingRpcEnvelope extends RpcEnvelope {
+  user_oidc_sub: string | null;
+  user_claims: Record<string, unknown>;
+}
+
+/** Bounds how long rotateToken() waits for the relay's reply and, separately, for the
+ * resulting reconnect to succeed — comfortably under the relay's pending-rotation TTL
+ * (5 minutes) so a caller never hangs past the point where the rotation would have
+ * expired server-side anyway. Mirrors node/src/connection.ts's identical constant. */
+const ROTATE_TIMEOUT_MS = 30_000;
+
+interface RotationState {
+  resolve: () => void;
+  reject: (err: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
+}
 
 // ---------------------------------------------------------------------------
 // Env file sourcing
@@ -39,7 +67,9 @@ export function sourceEnvFile(path: string): void {
     const eq = trimmed.indexOf("=");
     if (eq === -1) continue;
     const key = trimmed.slice(0, eq).trim();
-    const value = trimmed.slice(eq + 1).trim();
+    const rawValue = trimmed.slice(eq + 1).trim();
+    // Strip a single pair of matching surrounding quotes (bash/dotenv convention).
+    const value = /^(["']).*\1$/.test(rawValue) ? rawValue.slice(1, -1) : rawValue;
     if (key && !(key in process.env)) {
       process.env[key] = value;
     }
@@ -69,7 +99,7 @@ function buildHubShareSyncPayload(cfg: HubConfig, shareRegistry: Record<string, 
           try {
             instructions = readFileSync(s.context_file, "utf8");
           } catch {
-            log.info({ share: s.name, context_file: s.context_file }, "context_file is set but could not be read — omitting instructions");
+            log.warn({ share: s.name }, "context_file is set but could not be read — omitting instructions");
           }
         }
 
@@ -100,16 +130,20 @@ function buildHubShareSyncPayload(cfg: HubConfig, shareRegistry: Record<string, 
  * identity, permission checks, subnode dispatch, audit logging, and
  * graceful drain-on-shutdown.
  */
-class HubSocket extends RelaySocket {
+export class HubSocket extends RelaySocket implements RotatableConnection {
   private shuttingDown = false;
+  private rotationState: RotationState | null = null;
+  private awaitingRotationConfirm = false;
+  private readonly audit: AuditWriter;
 
   constructor(
     private readonly cfg: HubConfig,
-    private readonly hubToken: string,
+    private hubToken: string,
     private readonly shareRegistry: Record<string, string>,
     private readonly pool: SubnodePool
   ) {
     super({ logModule: "hub", path: "/executor/connect" });
+    this.audit = new AuditWriter(cfg.audit_log);
   }
 
   protected getRelayUrl(): string {
@@ -120,18 +154,84 @@ class HubSocket extends RelaySocket {
     return this.hubToken;
   }
 
+  /**
+   * Drives the same daemon-initiated rotation handshake `node` uses: requests a new
+   * token on this live connection, persists it to env_file and adopts it in place once
+   * the relay grants it, and waits for the resulting reconnect (triggered by closing
+   * this socket) to actually succeed before resolving. Unlike node, hub's token is
+   * deliberately kept out of the main config object (see docs/hub.md's "subnode workers
+   * never inherit the parent's environment" note) — env_file is where it's persisted
+   * across a future cold start, but this in-memory field is updated immediately so the
+   * very next reconnect uses it, with no restart required.
+   */
+  rotateToken(): Promise<void> {
+    if (!this.cfg.env_file) {
+      return Promise.reject(new Error("No env_file configured — cannot persist a rotated token across a restart"));
+    }
+    if (this.rotationState) {
+      return Promise.reject(new Error("A token rotation is already in progress"));
+    }
+    return new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.rotationState = null;
+        this.awaitingRotationConfirm = false;
+        reject(new Error("Timed out waiting for rotation to complete"));
+      }, ROTATE_TIMEOUT_MS);
+      this.rotationState = { resolve, reject, timer };
+      this.send({ type: "rotate_token" });
+    });
+  }
+
+  /** Settles any in-flight rotateToken() call with a failure — used for relay-reported
+   * errors and for cleanup if the connection is stopped mid-rotation. */
+  private failRotation(err: Error): void {
+    if (!this.rotationState) return;
+    clearTimeout(this.rotationState.timer);
+    const { reject } = this.rotationState;
+    this.rotationState = null;
+    this.awaitingRotationConfirm = false;
+    reject(err);
+  }
+
+  override async stop(): Promise<void> {
+    this.failRotation(new Error("Connection stopped"));
+    await super.stop();
+  }
+
   protected onOpen(): void {
     this.log.info({ hubName: this.cfg.hub_name }, "Connected to relay");
     this.send(buildHubShareSyncPayload(this.cfg, this.shareRegistry));
+    if (this.awaitingRotationConfirm) {
+      this.awaitingRotationConfirm = false;
+      if (this.rotationState) {
+        clearTimeout(this.rotationState.timer);
+        const { resolve } = this.rotationState;
+        this.rotationState = null;
+        resolve();
+      }
+    }
   }
 
   protected onMessage(msg: Record<string, unknown>): void {
-    if (typeof msg["request_id"] === "string" && typeof msg["tool"] === "string") {
+    if (typeof msg["request_id"] === "string" && msg["request_id"].length <= 200 && typeof msg["tool"] === "string") {
       if (this.shuttingDown) {
-        this.send({ request_id: msg["request_id"], error: { message: "HUB_SHUTTING_DOWN — retry after 45 seconds" } });
+        const requestId = msg["request_id"] as string;
+        const tool = msg["tool"] as string;
+        this.audit.write({
+          ts: new Date().toISOString(),
+          hub_name: this.cfg.hub_name,
+          request_id: requestId,
+          user_oidc_sub: typeof msg["user_oidc_sub"] === "string" ? msg["user_oidc_sub"] : null,
+          local_username: null,
+          share: typeof msg["share"] === "string" ? msg["share"] : "",
+          tool,
+          outcome: "shutting_down",
+          error: "HUB_SHUTTING_DOWN",
+        });
+        this.send({ request_id: requestId, error: { message: "HUB_SHUTTING_DOWN — retry after 45 seconds" } });
         return;
       }
-      this.handleRpc(msg as RpcEnvelope)
+      this.handleRpc(msg as unknown as IncomingRpcEnvelope)
         .then((response) => this.send(response))
         .catch((err) => {
           this.log.error({ err }, "Unhandled error in RPC handler");
@@ -146,20 +246,36 @@ class HubSocket extends RelaySocket {
       const token = msg["token"];
       if (typeof token !== "string") {
         this.log.warn("Received token_rotated without a token string");
+        this.failRotation(new Error("Relay sent token_rotated without a token"));
         return;
       }
-      // Write the new token to the env file
-      if (this.cfg.env_file) {
-        try {
-          writeTokenToEnvFile(this.cfg.env_file, token);
-          this.log.info("Rotated token written to env_file. Restart the hub to reconnect.");
-        } catch (err) {
-          this.log.error({ err }, "Failed to write rotated token to env_file");
-        }
-      } else {
-        this.log.warn("Token rotated but no env_file configured — new token not persisted. Restart hub manually with the new token.");
+      if (!this.cfg.env_file) {
+        // rotateToken() already refuses to start a rotation without env_file configured,
+        // so this should be unreachable in practice — defensive only.
+        this.log.error("Received token_rotated but no env_file is configured to persist it");
+        this.failRotation(new Error("No env_file configured to persist the rotated token"));
+        return;
       }
+      try {
+        writeTokenToEnvFile(this.cfg.env_file, token);
+      } catch (err) {
+        this.log.error({ err }, "Failed to write rotated token to env_file");
+        this.failRotation(err instanceof Error ? err : new Error(String(err)));
+        return;
+      }
+      this.hubToken = token;
+      this.log.info("Token rotated and persisted to env_file — reconnecting to confirm");
+      // Reconnect with the new token; onOpen() resolves the pending rotateToken() call
+      // once this reconnect actually succeeds.
+      this.awaitingRotationConfirm = true;
       this.ws?.close();
+      return;
+    }
+
+    if (type === "rotate_token_error") {
+      const err = new Error(String(msg["error"] ?? "Token rotation failed"));
+      this.log.warn({ err }, "Relay rejected rotate_token");
+      this.failRotation(err);
       return;
     }
 
@@ -181,20 +297,62 @@ class HubSocket extends RelaySocket {
     this.log.warn({ type }, "Unknown message from relay — dropping");
   }
 
-  private async handleRpc(envelope: RpcEnvelope): Promise<object> {
-    const { request_id, tool } = envelope;
-    const userOidcSub = typeof envelope["user_oidc_sub"] === "string" ? envelope["user_oidc_sub"] : null;
-    const userClaims = (envelope["user_claims"] !== null && typeof envelope["user_claims"] === "object"
-      ? envelope["user_claims"]
-      : {}) as Record<string, unknown>;
-    const share = typeof envelope["share"] === "string" ? envelope["share"] : guessShare(envelope.absolute_root, this.shareRegistry);
+  private async handleRpc(envelope: IncomingRpcEnvelope): Promise<object> {
+    const { request_id, tool, params, user_oidc_sub: userOidcSub } = envelope;
+    const share = envelope.share || guessShare(envelope.absolute_root, this.shareRegistry);
+
+    // onMessage casts the raw WS message to IncomingRpcEnvelope after checking only that
+    // request_id/tool are strings — params isn't validated there. Without this guard, a
+    // non-object params throws deep inside resolveDstShare below, which skips every
+    // this.audit.write call in this function entirely (onMessage's catch-all handler logs
+    // and replies with an error, but knows nothing about the audit log's shape).
+    if (typeof params !== "object" || params === null) {
+      const message = "Malformed request: params must be an object";
+      this.log.warn({ request_id, tool, share }, message);
+      this.audit.write({
+        ts: new Date().toISOString(),
+        hub_name: this.cfg.hub_name,
+        request_id,
+        user_oidc_sub: userOidcSub,
+        local_username: null,
+        share,
+        tool,
+        outcome: "exec_error",
+        error: message,
+      });
+      return { request_id, error: { message } };
+    }
+
+    // Coerce user_claims to a safe object — a compromised relay could send null,
+    // which would throw inside resolveIdentity and bypass all audit writes.
+    const rawClaims = envelope.user_claims as unknown;
+    const safeUserClaims: Record<string, unknown> =
+      (typeof rawClaims === "object" && rawClaims !== null && !Array.isArray(rawClaims))
+        ? rawClaims as Record<string, unknown>
+        : {};
+    if (rawClaims !== safeUserClaims) {
+      const message = "Malformed request: user_claims must be an object";
+      this.log.warn({ request_id, tool, share }, message);
+      this.audit.write({
+        ts: new Date().toISOString(),
+        hub_name: this.cfg.hub_name,
+        request_id,
+        user_oidc_sub: userOidcSub,
+        local_username: null,
+        share,
+        tool,
+        outcome: "exec_error",
+        error: message,
+      });
+      return { request_id, error: { message } };
+    }
 
     // Resolve OS identity
-    const identity = await resolveIdentity(userClaims, userOidcSub, this.cfg.identity);
+    const identity = await resolveIdentity(safeUserClaims, userOidcSub, this.cfg.identity);
 
     if (isIdentityError(identity)) {
       this.log.warn({ request_id, tool, share, error: identity.message }, "Identity resolution failed");
-      writeAuditEntry(this.cfg.audit_log, {
+      this.audit.write({
         ts: new Date().toISOString(),
         hub_name: this.cfg.hub_name,
         request_id,
@@ -208,28 +366,19 @@ class HubSocket extends RelaySocket {
       return { request_id, error: { message: identity.message } };
     }
 
-    // Check permissions — for cross-share copy/move, dst_share is checked too.
-    const dstShare = (tool === "copy" || tool === "move") && typeof envelope["dst_share"] === "string"
-      ? envelope["dst_share"]
-      : null;
+    // Check permissions — for cross-share copy/move, the destination share is checked too.
+    const dstShare = resolveDstShare(envelope, tool, this.shareRegistry);
     const permission = checkRpcPermission(userOidcSub, share, dstShare, tool, this.cfg.shares);
     if (!permission.permitted) {
       return this.permissionDenied(request_id, tool, permission.share, userOidcSub, identity.username, permission.reason);
     }
 
-    // Build tool params from the envelope, excluding all relay-routing fields.
-    // Named exclusion keeps this explicit — new routing fields must be listed here.
-    const ROUTING_FIELDS = new Set(["request_id", "tool", "absolute_root", "user_oidc_sub", "user_claims", "share"]);
-    const params: Record<string, unknown> = Object.fromEntries(
-      Object.entries(envelope).filter(([k]) => !ROUTING_FIELDS.has(k))
-    );
-
     // Dispatch to subnode
     const dispatchResult = await this.pool.dispatch(identity, tool, share, params, request_id);
 
     if (isDispatchError(dispatchResult)) {
-      this.log.warn({ request_id, tool, share, username: identity.username, error: dispatchResult.message }, "Subnode dispatch failed");
-      writeAuditEntry(this.cfg.audit_log, {
+      this.log.warn({ request_id, tool, share, username: identity.username, kind: dispatchResult.kind, error: dispatchResult.message }, "Subnode dispatch failed");
+      this.audit.write({
         ts: new Date().toISOString(),
         hub_name: this.cfg.hub_name,
         request_id,
@@ -237,7 +386,7 @@ class HubSocket extends RelaySocket {
         local_username: identity.username,
         share,
         tool,
-        outcome: "exec_error",
+        outcome: dispatchResult.kind,
         error: dispatchResult.message,
       });
       return { request_id, error: { message: dispatchResult.message } };
@@ -250,7 +399,7 @@ class HubSocket extends RelaySocket {
           : String(dispatchResult.error))
       : null;
 
-    writeAuditEntry(this.cfg.audit_log, {
+    this.audit.write({
       ts: new Date().toISOString(),
       hub_name: this.cfg.hub_name,
       request_id,
@@ -278,7 +427,7 @@ class HubSocket extends RelaySocket {
     reason: string
   ): object {
     this.log.info({ request_id, tool, share, username, reason }, "Permission denied");
-    writeAuditEntry(this.cfg.audit_log, {
+    this.audit.write({
       ts: new Date().toISOString(),
       hub_name: this.cfg.hub_name,
       request_id,
@@ -298,9 +447,14 @@ class HubSocket extends RelaySocket {
     this.shuttingDown = true;
 
     this.log.info("Shutting down — draining in-flight RPCs (up to 30s)");
-    this.stop();
+    await this.stop();
 
     await this.pool.shutdown(30_000);
+    // Draining above only guarantees every audit entry was enqueued (write() doesn't
+    // wait for the disk write itself) — flush so none are still in flight when this
+    // process exits, then close its file handle.
+    await this.audit.flush();
+    await this.audit.close();
     this.log.info("Shutdown complete");
   }
 }
@@ -371,12 +525,19 @@ export async function runHub(configPath: string): Promise<void> {
   const pool = new SubnodePool(cfg, shareRegistry);
   const socket = new HubSocket(cfg, hubToken, shareRegistry, pool);
 
-  process.on("SIGTERM", () => {
+  // Lives alongside the audit log — that directory is always present (audit_log is a
+  // required field) and already writable by the service user, so no new systemd
+  // ReadWritePaths grant is needed just for this. The rotated token itself is still
+  // persisted to env_file's own directory (see HubSocket's token_rotated handler);
+  // `hub install` grants write access there separately, only when env_file is set.
+  const controlServer = startControlServer(dirname(cfg.audit_log), socket);
+
+  const shutdown = () => {
+    controlServer.close();
     socket.shutdown().then(() => process.exit(0)).catch(() => process.exit(1));
-  });
-  process.on("SIGINT", () => {
-    socket.shutdown().then(() => process.exit(0)).catch(() => process.exit(1));
-  });
+  };
+  process.on("SIGTERM", shutdown);
+  process.on("SIGINT", shutdown);
 
   socket.start();
   log.info({ hubName: cfg.hub_name, shares: Object.keys(shareRegistry) }, "Hub started");
@@ -394,7 +555,36 @@ function guessShare(absoluteRoot: string, registry: Record<string, string>): str
   return "";
 }
 
+/**
+ * Resolves the destination share name for cross-share copy/move permission checks.
+ * Prefers the client-supplied dst_share; falls back to reverse-mapping dst_root the
+ * same way guessShare() does for the source share. FileExecutor independently accepts
+ * dst_root on its own (resolving it against its own share registry — see
+ * packages/shared/src/executor/index.ts), so this check must recognize the same shape
+ * or a destination reachable via dst_root alone would bypass the permission layer
+ * entirely.
+ */
+export function resolveDstShare(
+  envelope: RpcEnvelope,
+  tool: string,
+  registry: Record<string, string>
+): string | null {
+  if (tool !== "copy" && tool !== "move") return null;
+  if (typeof envelope.params["dst_share"] === "string") return envelope.params["dst_share"];
+  if (typeof envelope.params["dst_root"] === "string") {
+    const normalized = resolve(envelope.params["dst_root"]);
+    // Fail closed: if dst_root doesn't map to a known share (e.g. it's a symlink pointing at
+    // one), return the normalized path itself. checkPermission will reject it as an unrecognised
+    // share name rather than silently skipping the destination permission check (null would).
+    return guessShare(normalized, registry) || normalized;
+  }
+  return null;
+}
+
 function writeTokenToEnvFile(envFile: string, token: string): void {
+  if (/[\r\n]/.test(token)) {
+    throw new Error("Received token contains newline characters — rotation rejected");
+  }
   let existing: string[] = [];
   try {
     existing = readFileSync(envFile, "utf8").split("\n");

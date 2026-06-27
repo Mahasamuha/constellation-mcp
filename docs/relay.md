@@ -20,8 +20,8 @@ flowchart TD
     Client -->|"HTTPS + OAuth Bearer · POST /mcp"| Auth
     Auth --> Tool
     Tool --> Router
-    Router -->|"dispatchRpc · { tool, absolute_root, ...params }"| Node
-    Router -->|"dispatchRpc · { tool, absolute_root, share, user_oidc_sub, user_claims, ...params }"| Hub
+    Router -->|"dispatchRpc · { tool, absolute_root, params }"| Node
+    Router -->|"dispatchRpc · { tool, absolute_root, share, user_oidc_sub, user_claims, params }"| Hub
     Node -->|"RPC response (or timeout)"| RouterR
     Hub -->|"RPC response (or timeout)"| RouterR
     RouterR -->|"MCP tool response"| ClientR
@@ -71,7 +71,7 @@ This maps onto how humans and agents tend to work with files differently: a huma
 
 ## Management API
 
-All `/api/*` endpoints (except `/api/status`) require a valid Bearer token obtained via `constellation relay login` (OAuth device code flow). The token is an OAuth access token tied to a user session — there is no separate API key or scope requirement.
+All `/api/*` endpoints require a valid Bearer token obtained via `constellation relay login` (OAuth device code flow). The token is an OAuth access token tied to a user session — there is no separate API key or scope requirement.
 
 **Admin-gated endpoints** additionally require an active admin elevation window, obtained via `constellation relay elevate`. Without elevation those endpoints return `403 ESCALATION_REQUIRED`.
 
@@ -100,14 +100,15 @@ All list endpoints support `limit` (1–1000, default 100) and `offset` (default
 
 ### `GET /api/status`
 
-Relay health check. No auth required.
+Process uptime and version. Requires a Bearer token like every other `/api/*` endpoint
+— it is not a liveness check (that's `/healthz`, unauthenticated, outside `/api/*`).
 
 **Response `200`**
 ```json
 {
   "status": "ok",
   "uptime_seconds": 3724,
-  "version": "0.5.0"
+  "version": "<version>"
 }
 ```
 
@@ -375,7 +376,7 @@ User management endpoints. Available in `AUTH_MODE=local` only. Return `404` in 
 
 **`POST /api/users`** — create a new local user. Body: `{ username, password }`. Password must be at least 12 characters. Returns `409` if the username is already taken.
 
-**`POST /api/users/:username/deactivate`** — deactivate a user. Blocks all future logins. Does not revoke existing sessions immediately; those expire normally.
+**`POST /api/users/:username/deactivate`** — deactivate a user. Every existing session and executor connection for that user is rejected on its very next request — not just future logins.
 
 **`POST /api/users/:username/reset-password`** — set a new password. Body: `{ password }`. Immediately invalidates all existing OAuth sessions for that user.
 
@@ -391,7 +392,7 @@ Requires `RELAY_ADMIN_TOKEN` env var on the relay, passed as `Authorization: Bea
 
 | Status | Meaning |
 |---|---|
-| `200` | Role updated |
+| `204` | Role updated |
 | `404` | User not found |
 
 ---
@@ -400,7 +401,7 @@ Requires `RELAY_ADMIN_TOKEN` env var on the relay, passed as `Authorization: Bea
 
 List all hub shares synced to the relay from hubs. Paginated by executor.
 
-**Query params**: `executor` — filter by executor ID (optional).
+**Query params**: `executor_id` — filter by executor ID (optional).
 
 **Response `200`**
 ```json
@@ -475,7 +476,7 @@ PKCE (`S256`) is **required**. The relay rejects `/oauth/authorize` requests tha
 
 ### Device Code Flow (node init + relay login)
 
-Used by `constellation node init` (scope `agent:register`), `constellation relay login` (scope `relay:manage`), and `constellation hub register` (scope `agent:register:shared`).
+Used by `constellation node init` (scope `agent:register`), `constellation relay login` (scope `relay:manage`), `constellation relay elevate` (scope `agent:escalate`), and `constellation hub register` (scope `agent:register:shared`).
 
 ```mermaid
 sequenceDiagram
@@ -502,8 +503,9 @@ sequenceDiagram
 - `agent:register` — on approval, the relay creates an `Executor` row and an `ExecutorToken`, then returns `{ access_token, token_type: "agent", host }`.
 - `agent:register:shared` — creates a shared (non-user-bound) `ExecutorToken`; requires admin approval.
 - `relay:manage` — issues a standard OAuth session tied to a static first-party client.
+- `agent:escalate` — sets `adminUntil` on the requester's existing session (no new token is issued) and returns `204`; requires the *approving* user to already hold the admin role.
 
-Device codes expire after 15 minutes. The polling interval is 5 seconds. Responses follow RFC 8628: `authorization_pending`, `access_denied`, `expired_token`.
+Device codes expire after 15 minutes. The polling interval is 5 seconds. Responses follow RFC 8628: `authorization_pending`, `slow_down`, `access_denied`, `expired_token`.
 
 ### Refresh Token Flow
 
@@ -607,8 +609,9 @@ When an MCP client calls a tool, the relay forwards it to the executor as an RPC
 {
   "request_id": "<16-byte hex>",
   "tool": "<tool-name>",
+  "share": "projects",
   "absolute_root": "/home/user/projects",
-  "<param>": "<value>"
+  "params": { "<param>": "<value>" }
 }
 ```
 
@@ -617,11 +620,11 @@ For hubs the envelope also includes identity fields:
 {
   "request_id": "...",
   "tool": "...",
-  "absolute_root": "...",
   "share": "projects",
+  "absolute_root": "...",
   "user_oidc_sub": "auth0|abc123",
   "user_claims": { "constellation_username": "alice" },
-  "<param>": "<value>"
+  "params": { "<param>": "<value>" }
 }
 ```
 

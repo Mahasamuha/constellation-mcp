@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import { prisma } from "./db.js";
 import { createLogger } from "@constellation/shared";
 import { config } from "./config.js";
@@ -81,12 +82,19 @@ function stdoutSink(event: ActivityEvent): void {
   process.stdout.write(JSON.stringify(event) + "\n");
 }
 
-function makeWebhookSink(url: string): ActivitySink {
+function makeWebhookSink(url: string, secret: string | null): ActivitySink {
   return (event: ActivityEvent) => {
+    const body = JSON.stringify(event);
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (secret) {
+      const sig = createHmac("sha256", secret).update(body).digest("hex");
+      headers["X-Constellation-Signature"] = `sha256=${sig}`;
+    }
     fetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(event),
+      headers,
+      body,
+      signal: AbortSignal.timeout(5000),
     }).catch((err) => {
       log.warn({ err, url }, "Activity webhook sink failed");
     });
@@ -118,8 +126,8 @@ export function initActivitySinks(): void {
   }
 
   if (cfg.webhookUrl) {
-    registerActivitySink(makeWebhookSink(cfg.webhookUrl));
-    log.info({ url: cfg.webhookUrl }, "Activity sink: webhook enabled");
+    registerActivitySink(makeWebhookSink(cfg.webhookUrl, cfg.webhookSecret));
+    log.info({ url: cfg.webhookUrl, signed: !!cfg.webhookSecret }, "Activity sink: webhook enabled");
   }
 }
 

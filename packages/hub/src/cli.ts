@@ -1,11 +1,11 @@
 import { Command } from "commander";
 import { hostname } from "node:os";
 import { execFileSync } from "node:child_process";
-import { readFileSync, writeFileSync, mkdirSync, statSync } from "node:fs";
+import { readFileSync, writeFileSync, chmodSync, mkdirSync, statSync, statfsSync } from "node:fs";
 import { dirname } from "node:path";
 import WebSocket from "ws";
 import open from "open";
-import { poll } from "@constellation/shared";
+import { poll, assertSecureRelayUrl, assertSecureHttpUrl, isSameOrigin, requestRotateViaControlChannel } from "@constellation/shared";
 import { loadHubConfig, validateHubConfig } from "./config.js";
 import { getpwnam } from "./identity.js";
 import { runHub, sourceEnvFile } from "./index.js";
@@ -19,6 +19,38 @@ const DEFAULT_HUB_CONFIG = "/etc/constellation/hub.yaml";
 
 function defaultConfigPath(): string {
   return process.env["CONSTELLATION_HUB_CONFIG"] ?? DEFAULT_HUB_CONFIG;
+}
+
+/**
+ * Disk-space stats for the filesystem holding the audit log's directory.
+ * `AuditWriter` (audit.ts) fails open on ENOSPC/EACCES rather than blocking tool
+ * calls, so this is the one signal an operator has for catching a filling disk before
+ * audit coverage silently drops. Checks `dirname(auditLogPath)` specifically — not
+ * some other convenient path — since that's the mount whose exhaustion actually
+ * triggers the failure; on many production hosts /var/log is its own partition,
+ * separate from the rest of the filesystem. Returns null (rather than throwing) if
+ * the directory doesn't exist yet or can't be statted, since this is an informational
+ * field that shouldn't fail the whole status command.
+ */
+function auditLogDiskStatus(auditLogPath: string): { dir: string; free_bytes: number; total_bytes: number } | null {
+  const dir = dirname(auditLogPath);
+  try {
+    const stats = statfsSync(dir);
+    return { dir, free_bytes: stats.bavail * stats.bsize, total_bytes: stats.blocks * stats.bsize };
+  } catch {
+    return null;
+  }
+}
+
+function formatBytes(bytes: number): string {
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit++;
+  }
+  return `${value.toFixed(1)} ${units[unit]}`;
 }
 
 export function registerHubCommands(program: Command): void {
@@ -49,6 +81,13 @@ export function registerHubCommands(program: Command): void {
         process.exit(1);
       }
 
+      try {
+        assertSecureHttpUrl(relayUrl);
+      } catch (err) {
+        console.error("Error:", (err as Error).message);
+        process.exit(1);
+      }
+
       console.log(`\nRegistering hub '${hostName}' with relay: ${relayUrl}`);
       console.log("An admin must approve this request in the browser.\n");
 
@@ -73,10 +112,12 @@ export function registerHubCommands(program: Command): void {
       console.log(`  ${dc.verification_uri_complete}\n`);
       console.log(`If the browser did not open, the admin should enter this code: ${dc.user_code}\n`);
       console.log("Waiting for admin approval...\n");
-      try { await open(dc.verification_uri_complete); } catch { /* ignore */ }
+      if (isSameOrigin(relayUrl, dc.verification_uri_complete)) {
+        try { await open(dc.verification_uri_complete); } catch { /* ignore */ }
+      }
 
       const result = await poll(
-        async () => {
+        async ({ intervalMs, setIntervalMs }) => {
           const r = await fetch(`${relayUrl}/oauth/token`, {
             method: "POST",
             headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -88,6 +129,7 @@ export function registerHubCommands(program: Command): void {
           if (r.status === 400) {
             const body = await r.json() as { error: string };
             if (body.error === "authorization_pending") return null;
+            if (body.error === "slow_down") { setIntervalMs(intervalMs + 5000); return null; }
             if (body.error === "access_denied") {
               console.error("\nAccess denied. Ensure the approving user has admin privileges.");
               process.exit(1);
@@ -218,10 +260,13 @@ export function registerHubCommands(program: Command): void {
         process.exit(1);
       }
 
+      const disk = auditLogDiskStatus(cfg.audit_log);
+
       const out = {
         hub_name: cfg.hub_name,
         relay_url: cfg.relay_url,
         shares: cfg.shares.map((s) => ({ name: s.name, path: s.path, default_access: s.permissions.default })),
+        audit_log: { path: cfg.audit_log, disk },
       };
 
       if (opts.json) {
@@ -233,6 +278,12 @@ export function registerHubCommands(program: Command): void {
         for (const s of out.shares) {
           console.log(`  ${s.name} → ${s.path} [${s.default_access}]`);
         }
+        console.log(`Audit log: ${out.audit_log.path}`);
+        console.log(
+          disk
+            ? `  Disk (${disk.dir}): ${formatBytes(disk.free_bytes)} free / ${formatBytes(disk.total_bytes)} total`
+            : `  Disk: unavailable (directory may not exist yet)`
+        );
       }
     });
 
@@ -247,10 +298,23 @@ export function registerHubCommands(program: Command): void {
     .option("--unit-name <name>", "Systemd unit name", "constellation-hub")
     .option("--user <user>", "Service user to run as (must have CAP_SETUID/CAP_SETGID)", "constellation")
     .action((opts: { configFile: string; unitName: string; user: string }) => {
+      let cfg;
+      try {
+        cfg = loadHubConfig(opts.configFile);
+      } catch (err) {
+        console.error(`Error loading config: ${(err as Error).message}`);
+        process.exit(1);
+      }
+
       const isPkg = (process as typeof process & { pkg?: unknown }).pkg !== undefined;
+      const q = (s: string) => `"${s.replace(/"/g, '\\"')}"`;
       const execLine = isPkg
-        ? `${process.execPath} hub start --config-file ${opts.configFile}`
-        : `${process.execPath} ${process.argv[1]} hub start --config-file ${opts.configFile}`;
+        ? `${q(process.execPath)} hub start --config-file ${q(opts.configFile)}`
+        : `${q(process.execPath)} ${q(process.argv[1]!)} hub start --config-file ${q(opts.configFile)}`;
+      // The control channel's socket file lives next to the audit log (always present,
+      // already covered below) — only a live-rotated token's persistence to env_file
+      // needs a write grant of its own, and only when env_file is actually configured.
+      const readWritePaths = ["/var/log/constellation", ...(cfg.env_file ? [dirname(cfg.env_file)] : [])].join(" ");
       const unit = `[Unit]
 Description=Constellation Hub
 After=network.target nss-lookup.target
@@ -268,7 +332,7 @@ AmbientCapabilities=CAP_SETUID CAP_SETGID
 CapabilityBoundingSet=CAP_SETUID CAP_SETGID
 NoNewPrivileges=no
 ProtectSystem=strict
-ReadWritePaths=/var/log/constellation
+ReadWritePaths=${readWritePaths}
 
 [Install]
 WantedBy=multi-user.target
@@ -317,6 +381,27 @@ WantedBy=multi-user.target
         process.exit(1);
       }
 
+      // Prefer asking the running daemon to rotate on its own live connection — it
+      // performs the full handshake itself, persists the new token to env_file, and
+      // only reports success once it has actually reconnected with it: no restart,
+      // no race. Opening a second WebSocket of our own here (the fallback below)
+      // would otherwise evict the daemon's live connection outright, since the relay
+      // allows only one per executor. Control file lives alongside the audit log —
+      // see runHub()'s startControlServer call for why.
+      const viaControl = await requestRotateViaControlChannel(dirname(cfg.audit_log));
+      if (viaControl) {
+        if (viaControl.ok) {
+          console.log("Token rotated — the running hub has reconnected with the new token. No restart needed.");
+        } else {
+          console.error("Error:", viaControl.error);
+          process.exit(1);
+        }
+        return;
+      }
+
+      // No daemon reachable — nothing to evict, but also nothing to confirm the
+      // reconnect for. Rotate directly; the next `hub start` picks up the new token.
+
       // Source env_file to get the current token
       if (cfg.env_file) {
         try {
@@ -332,13 +417,26 @@ WantedBy=multi-user.target
 
       const wsUrl = cfg.relay_url.replace(/^http/, "ws") + "/executor/connect";
 
+      try {
+        assertSecureRelayUrl(wsUrl);
+      } catch (err) {
+        console.error("Error:", (err as Error).message);
+        process.exit(1);
+      }
+
       const newToken = await new Promise<string | null>((resolve) => {
         const ws = new WebSocket(wsUrl, { headers: { Authorization: `Bearer ${token}` } });
         const timeout = setTimeout(() => { ws.terminate(); resolve(null); }, 15_000);
 
         ws.on("open", () => ws.send(JSON.stringify({ type: "rotate_token" })));
         ws.on("message", (data: Buffer) => {
-          const msg = JSON.parse(data.toString()) as Record<string, unknown>;
+          let msg: Record<string, unknown>;
+          try {
+            msg = JSON.parse(data.toString()) as Record<string, unknown>;
+          } catch {
+            console.error("Received non-JSON message from relay");
+            return;
+          }
           if (msg["type"] === "token_rotated" && typeof msg["token"] === "string") {
             clearTimeout(timeout);
             ws.close();
@@ -396,6 +494,10 @@ function writeEnvToken(envFile: string, token: string): void {
   const updated = existing.filter((line) => !line.startsWith(`${key}=`) && line !== "");
   updated.push(`${key}=${token}`);
 
+  // chmodSync before writing: writeFileSync's mode option only applies when creating
+  // the file, not when overwriting an existing one. A pre-existing file at 0o644
+  // would have the new token written to it before mode is corrected.
+  try { chmodSync(envFile, 0o600); } catch { /* file may not exist yet — writeFileSync will create it with mode */ }
   writeFileSync(envFile, updated.join("\n") + "\n", { mode: 0o600 });
 }
 

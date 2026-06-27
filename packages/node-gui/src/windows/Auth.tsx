@@ -14,7 +14,6 @@ interface DeviceCodeInfo {
 }
 
 type AuthResult =
-  | { status: "pending" }
   | { status: "success"; host: string }
   | { status: "error"; message: string }
   | { status: "timeout" };
@@ -119,7 +118,15 @@ export default function Auth() {
           </div>
           <button
             className="auth-btn"
-            onClick={() => openUrl(codeInfo.verification_uri_complete)}
+            onClick={() => {
+              try {
+                const { protocol, hostname } = new URL(codeInfo.verification_uri_complete);
+                const isLocalhost = hostname === "localhost" || hostname.startsWith("127.");
+                if (protocol === "https:" || (protocol === "http:" && isLocalhost)) {
+                  openUrl(codeInfo.verification_uri_complete);
+                }
+              } catch { /* invalid URL — don't open */ }
+            }}
           >
             Open Browser
           </button>

@@ -81,6 +81,13 @@ html:is([data-display-mode="fullscreen"], [data-display-mode="pip"]) .app {
   font-size: 16px;
 }
 
+/* Still interactive (so onChange can catch the attempt and revert it), just
+ * styled to look blocked — see handleShareChange's isEditing guard. */
+.header select.blocked {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .display-mode-buttons {
   display: flex;
   flex: none;
@@ -349,6 +356,22 @@ html:is([data-display-mode="fullscreen"], [data-display-mode="pip"]) .app {
   border-color: color-mix(in oklch, var(--save), black 15%);
 }
 
+/* Draws the eye to Save/Cancel when a tree-node or share click was blocked
+ * mid-edit, so it's clear why the click did nothing — see editBlockedPulse. */
+.action-bar button.pulse {
+  animation: edit-blocked-pulse 0.6s ease-in-out infinite;
+}
+
+@keyframes edit-blocked-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in oklch, var(--accent) 55%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 5px color-mix(in oklch, var(--accent) 0%, transparent);
+  }
+}
+
 .status {
   padding: 4px 8px;
   border-top: 1px solid var(--divider);
@@ -417,6 +440,17 @@ ul.tree {
 }
 
 .node.empty:hover {
+  background: none;
+}
+
+/* Still clickable (the click handler itself decides to block and pulse
+ * Save/Cancel instead of opening the file) — just styled to look blocked. */
+.node.blocked {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.node.blocked:hover {
   background: none;
 }
 

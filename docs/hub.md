@@ -83,9 +83,10 @@ either spawns the subnode with the user's full, OS-resolved group list (the
 only option `initgroups()` supports; see [ADR 0014](adr/0014-subnode-worker-explicit-env.md)) or it doesn't spawn at all.
 So **before every dispatch** (not just at first spawn — group membership is
 re-resolved on each call so admin changes take effect without restarting the
-hub or waiting for a pooled worker to be torn down), the hub resolves the
-target user's complete group list and refuses to proceed if *any* member is on
-the blocked set:
+hub or waiting for a pooled worker to be torn down; this includes requests
+that were queued while all workers were busy, which are re-checked at dequeue
+time), the hub resolves the target user's complete group list and refuses to
+proceed if *any* member is on the blocked set:
 
 - GID 0 (`root`'s group) — always blocked, not configurable
 - The hub's own primary GID — always blocked
@@ -123,7 +124,7 @@ MCP client
   → POST /mcp (Bearer token)
     → Relay authenticates session → retrieves userId, oidcSub, lastKnownClaims
     → Relay resolves share → checks HubShare registry (optimistic permission check)
-    → Relay builds RPC envelope: { tool, share, absolute_root, user_oidc_sub, user_claims, ...params }
+    → Relay builds RPC envelope: { tool, share, absolute_root, user_oidc_sub, user_claims, params }
     → Relay forwards RPC via WebSocket to hub
       → Hub resolves OS identity (3-tier chain)
       → Hub checks permissions (share-level access against admin config)
@@ -175,6 +176,16 @@ so concurrent dispatches cannot race to double-spawn.
 **Subnode lifecycle.** Once a user's last worker is removed (idle timeout, RPC
 timeout, crash), the subnode is deleted. The next request from that user creates
 a fresh subnode.
+
+**Global subnode cap.** `subnode_workers.max` bounds workers *per user* — it
+does not limit how many distinct users can have a subnode at once. On a
+directory-backed hub (LDAP/AD), every distinct account that connects gets its
+own subnode, so a deployment with many users has no built-in ceiling on total
+worker processes unless `max_concurrent_subnodes` is set. When the cap is hit,
+a request from a *new* user is rejected with a capacity error; requests from
+users who already have a subnode are unaffected. Defaults to `0` (unlimited) —
+the per-user cap and idle eviction above already bound steady-state growth, so
+this is an opt-in extra ceiling, not a mandatory one.
 
 ---
 
@@ -262,6 +273,12 @@ audit_log: /var/log/constellation/hub-audit.jsonl
 # Optional
 env_file: /etc/constellation/hub.env       # Source CONSTELLATION_HUB_TOKEN from this file
 subnode_rpc_timeout_seconds: 30            # Timeout per in-flight tool call IPC round-trip (default: 30)
+max_concurrent_subnodes: 0                 # Global cap on distinct users with a subnode at once.
+                                           # 0 = unlimited (default). Independent of subnode_workers.max,
+                                           # which only caps workers per user — see "Global subnode cap" above.
+max_file_size_kb: 100                      # Per-read cap for hub-managed shares (default: 100).
+                                           # Same field/default as node.yaml's max_file_size_kb — see
+                                           # docs/configuration.md — but set independently per hub.
 
 subnode_workers:
   min: 1                                   # Always-warm workers per user (floor: 1; default: 1)
@@ -397,10 +414,15 @@ sudo systemctl restart constellation-hub
 
 ```sh
 constellation hub rotate-token --config-file /etc/constellation/hub.yaml
-sudo systemctl restart constellation-hub
 ```
 
-The command connects to the relay via WebSocket, requests a new token, and writes it to `env_file`. The hub must be restarted to reconnect with the new token.
+If the hub is currently running, this asks the live daemon to rotate on its own connection — it persists the new token to `env_file` and reconnects immediately. **No restart needed**, and no service interruption: the daemon never drops its connection to the relay.
+
+If no hub is running (or it's unreachable), the command falls back to requesting a new token directly and writing it to `env_file`; in that case, start (or restart) the hub to connect with it:
+
+```sh
+sudo systemctl restart constellation-hub
+```
 
 ### Revoke a hub
 
@@ -432,7 +454,9 @@ Each tool call produces one JSONL entry:
 }
 ```
 
-`outcome` values: `ok` | `identity_error` | `permission_denied` | `exec_error`.
+`outcome` values: `ok` | `identity_error` | `permission_denied` | `exec_error` | `uid_blocked` | `gid_blocked` | `spawn_failed` | `timeout` | `worker_error` | `subnode_limit`.
+
+The last six are the specific ways dispatching to a subnode worker can fail — `uid_blocked`/`gid_blocked` are policy rejections (the user's OS identity is blocked by admin config), `subnode_limit`/`timeout` are capacity issues, and `spawn_failed`/`worker_error` are infrastructure failures. `exec_error` remains a generic bucket for execution-path failures that aren't a dispatch failure (e.g. a malformed request rejected before dispatch, or the underlying tool call itself returning an error after dispatch succeeded).
 
 Rotate logs with `logrotate`. The hub does not rotate logs itself.
 

@@ -90,6 +90,8 @@ For self-hosted options see [Self-hosted with Cloudflare Tunnel](docs/self-hoste
 
 To expose a shared multi-user machine (NAS, dev server, domain host) see [Hub Quick Start](HUB_QUICKSTART.md).
 
+Running self-hosted in production? See [docs/operations.md](docs/operations.md) for backup, restore, and upgrade guidance.
+
 ## Configuration
 
 ### Server (relay)
@@ -104,7 +106,6 @@ To expose a shared multi-user machine (NAS, dev server, domain host) see [Hub Qu
 | `OIDC_ISSUER` | OIDC provider issuer URL — required when `AUTH_MODE=oidc` | — |
 | `OIDC_CLIENT_ID` | OIDC client ID — required when `AUTH_MODE=oidc` | — |
 | `OIDC_CLIENT_SECRET` | OIDC client secret — required when `AUTH_MODE=oidc` | — |
-| `OIDC_CALLBACK_URL` | Full URL of `/oauth/callback` — required when `AUTH_MODE=oidc` | — |
 | `PORT` | TCP port the HTTP server binds to | `3000` |
 | `RPC_TIMEOUT_MS` | Max wait for a node to respond to a tool call | `30000` |
 

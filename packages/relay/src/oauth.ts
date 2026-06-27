@@ -1,4 +1,5 @@
 import { Router, Request, Response, IRouter } from "express";
+import { Prisma } from "./generated/prisma/client.js";
 import escHtml from "escape-html";
 import { randomBytes, createHash } from "node:crypto";
 import { prisma } from "./db.js";
@@ -156,14 +157,15 @@ oauthRouter.get("/oauth/authorize", async (req: Request, res: Response) => {
     res.cookie(`login_pending_${pendingId}`, JSON.stringify({
       clientId: client_id,
       redirectUri: redirect_uri,
-      downstreamCodeChallenge: req.query["code_challenge"],
+      downstreamCodeChallenge: code_challenge,
       downstreamCodeChallengeMethod: req.query["code_challenge_method"],
       downstreamState: req.query["state"],
     }), {
       httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
+      secure: config.secureCookies,
       maxAge: 10 * 60 * 1000,
       sameSite: "strict",
+      signed: true,
     });
     log.info({ clientId: client_id }, "Authorization redirected to local login");
     res.redirect(`/auth/login?pending=${pendingId}`);
@@ -191,9 +193,10 @@ oauthRouter.get("/oauth/authorize", async (req: Request, res: Response) => {
     downstreamState: req.query["state"],
   }), {
     httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
+    secure: config.secureCookies,
     maxAge: 10 * 60 * 1000, // 10 minutes
     sameSite: "lax",
+    signed: true,
   });
 
   // Embed pendingId in upstream state so callback can look up the cookie
@@ -209,7 +212,18 @@ oauthRouter.get("/oauth/authorize", async (req: Request, res: Response) => {
 
 oauthRouter.get("/auth/login", (req: Request, res: Response) => {
   const pendingId = typeof req.query["pending"] === "string" ? req.query["pending"] : "";
-  res.send(loginPage(pendingId));
+  let clientInfo: { clientId: string; redirectDomain: string } | undefined;
+  if (pendingId) {
+    const cookieVal = (req.signedCookies as Record<string, string>)[`login_pending_${pendingId}`];
+    if (cookieVal) {
+      try {
+        const pending = JSON.parse(cookieVal) as LoginPending;
+        const redirectDomain = new URL(pending.redirectUri).hostname;
+        clientInfo = { clientId: pending.clientId, redirectDomain };
+      } catch { /* show form without client info */ }
+    }
+  }
+  res.send(loginPage(pendingId, undefined, clientInfo));
 });
 
 // ---------------------------------------------------------------------------
@@ -219,7 +233,11 @@ oauthRouter.get("/auth/login", (req: Request, res: Response) => {
 interface LoginPending {
   clientId: string;
   redirectUri: string;
-  downstreamCodeChallenge?: string;
+  // Required, not optional: /oauth/authorize already rejects a missing code_challenge
+  // before this object is ever constructed (see below). Keeping it required here means
+  // a future caller of issueAuthCode() can't pass this through unset by accident — it
+  // has to either supply a real value or deliberately work around the type.
+  downstreamCodeChallenge: string;
   downstreamCodeChallengeMethod?: string;
   downstreamState?: string;
 }
@@ -237,7 +255,7 @@ oauthRouter.post("/auth/login", async (req: Request, res: Response) => {
   }
 
   const cookieName = `login_pending_${pendingId}`;
-  const cookieVal = (req.cookies as Record<string, string>)[cookieName];
+  const cookieVal = (req.signedCookies as Record<string, string>)[cookieName];
   if (!cookieVal) {
     res.status(400).send(loginPage("", "Login session expired. Please try again."));
     return;
@@ -275,7 +293,8 @@ interface PendingOidc {
   codeVerifier?: string;
   clientId: string;
   redirectUri: string;
-  downstreamCodeChallenge?: string;
+  // Required for the same reason as LoginPending's field above.
+  downstreamCodeChallenge: string;
   downstreamCodeChallengeMethod?: string;
   downstreamState?: string;
 }
@@ -312,7 +331,7 @@ oauthRouter.get("/oauth/callback", async (req: Request, res: Response) => {
   const upstreamState = rawState.slice(0, colonIdx);
   const pendingId = rawState.slice(colonIdx + 1);
   const cookieName = `oidc_pending_${pendingId}`;
-  const cookieVal = (req.cookies as Record<string, string>)[cookieName];
+  const cookieVal = (req.signedCookies as Record<string, string>)[cookieName];
 
   if (!cookieVal) {
     res.status(400).send("Authorization session expired or not found");
@@ -399,26 +418,29 @@ async function handleAuthorizationCodeGrant(
     return;
   }
 
-  // Verify PKCE if the authorization request included a code_challenge.
-  if (entry.codeChallenge) {
-    if (!code_verifier) {
-      res.status(400).json({ error: "invalid_grant", error_description: "code_verifier required" });
-      return;
-    }
-    const method = entry.codeChallengeMethod ?? "S256";
-    if (method !== "S256") {
-      res.status(400).json({ error: "invalid_grant", error_description: "Unsupported code_challenge_method" });
-      return;
-    }
-    const challenge = createHash("sha256").update(code_verifier).digest("base64url");
-    if (challenge !== entry.codeChallenge) {
-      res.status(400).json({ error: "invalid_grant", error_description: "code_verifier mismatch" });
-      return;
-    }
+  // PKCE is mandatory for every AuthCode — code_challenge is required at
+  // /oauth/authorize, and the column itself is NOT NULL — so this runs
+  // unconditionally rather than only "if present". A future code path that
+  // creates an AuthCode without going through /oauth/authorize fails at the
+  // database layer; it can't reach here with a missing challenge.
+  if (!code_verifier) {
+    res.status(400).json({ error: "invalid_grant", error_description: "code_verifier required" });
+    return;
+  }
+  if (entry.codeChallengeMethod !== "S256") {
+    res.status(400).json({ error: "invalid_grant", error_description: "Unsupported code_challenge_method" });
+    return;
+  }
+  const challenge = createHash("sha256").update(code_verifier).digest("base64url");
+  if (challenge !== entry.codeChallenge) {
+    res.status(400).json({ error: "invalid_grant", error_description: "code_verifier mismatch" });
+    return;
   }
 
-  await prisma.authCode.delete({ where: { codeHash } });
-
+  // Look up the OAuth client and verify client_secret BEFORE consuming the code.
+  // Doing it after would let an attacker who intercepts a code submit it with a wrong
+  // secret — the code is consumed but no token issued, so the legitimate client's code
+  // is gone (targeted DoS).
   const oauthClient = await prisma.oauthClient.findUnique({ where: { id: client_id } });
   if (!oauthClient) {
     res.status(400).json({ error: "invalid_client" });
@@ -431,6 +453,16 @@ async function handleAuthorizationCodeGrant(
       res.status(401).json({ error: "invalid_client", error_description: "client_secret required for confidential clients" });
       return;
     }
+  }
+
+  try {
+    await prisma.authCode.delete({ where: { codeHash } });
+  } catch (err) {
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2025") {
+      res.status(400).json({ error: "invalid_grant", error_description: "Authorization code already redeemed" });
+      return;
+    }
+    throw err;
   }
 
   const tokens = await issueOAuthSession(entry.userId, client_id);
@@ -471,6 +503,20 @@ async function handleRefreshTokenGrant(
     return;
   }
 
+  const oauthClient = await prisma.oauthClient.findUnique({ where: { id: client_id } });
+  if (!oauthClient) {
+    res.status(400).json({ error: "invalid_client" });
+    return;
+  }
+
+  if (oauthClient.clientSecretHash !== null) {
+    const { client_secret } = body;
+    if (!client_secret || !safeEqual(hashToken(client_secret), oauthClient.clientSecretHash)) {
+      res.status(401).json({ error: "invalid_client", error_description: "client_secret required for confidential clients" });
+      return;
+    }
+  }
+
   const tokens = makeTokenPair();
 
   await prisma.oauthSession.update({
@@ -491,7 +537,10 @@ async function handleRefreshTokenGrant(
 // helpers
 // ---------------------------------------------------------------------------
 
-function loginPage(pendingId: string, error?: string): string {
+function loginPage(pendingId: string, error?: string, clientInfo?: { clientId: string; redirectDomain: string }): string {
+  const clientBanner = clientInfo
+    ? `<p class="client-info">Signing in to grant <strong>${escHtml(clientInfo.clientId)}</strong> access (redirects to <strong>${escHtml(clientInfo.redirectDomain)}</strong>)</p>`
+    : "";
   return `<!DOCTYPE html>
 <html lang="en">
 <head><meta charset="utf-8"><title>Constellation — Sign in</title>
@@ -504,11 +553,14 @@ ${FAVICON_LINK}
   input { width: 100%; box-sizing: border-box; padding: .5rem; font-size: 1rem; border: 1px solid #ccc; border-radius: 4px; }
   button { margin-top: 1.2rem; padding: .6rem 1.4rem; font-size: 1rem; border: none; border-radius: 4px; cursor: pointer; background: #2563eb; color: #fff; }
   .error { color: #dc2626; background: #fee2e2; padding: .6rem; border-radius: 4px; margin-bottom: .5rem; }
+  .client-info { font-size: .85rem; color: #555; background: #f0f4ff; border: 1px solid #c7d7fe; padding: .5rem .7rem; border-radius: 4px; margin-bottom: .5rem; }
+  .client-info strong { color: #1d4ed8; }
 </style>
 </head>
 <body>
   <div class="card">
     <h1>Sign in</h1>
+    ${clientBanner}
     ${error ? `<p class="error">${escHtml(error)}</p>` : ""}
     <form method="POST" action="/auth/login">
       <input type="hidden" name="pending" value="${escHtml(pendingId)}">
@@ -542,7 +594,19 @@ function isAllowedRedirectUri(uri: string): boolean {
     const host = parsed.hostname;
     return host === "localhost" || host === "127.0.0.1" || host === "::1";
   }
-  return true;
+  if (scheme === "https:") {
+    // Allow only origins explicitly listed in config (defaults cover documented MCP clients;
+    // operators extend via OAUTH_ALLOWED_REDIRECT_ORIGINS). Prevents arbitrary redirect-URI
+    // registration from being used for authorization-code phishing.
+    return config.oauthAllowedRedirectOrigins.some((origin) => {
+      try {
+        return new URL(origin).hostname === parsed.hostname;
+      } catch {
+        return false;
+      }
+    });
+  }
+  return false;
 }
 
 function asStringArray(val: unknown): string[] {
@@ -560,8 +624,8 @@ async function issueAuthCode(pending: LoginPending, userId: string, res: Respons
       userId,
       clientId: pending.clientId,
       redirectUri: pending.redirectUri,
-      codeChallenge: pending.downstreamCodeChallenge ?? null,
-      codeChallengeMethod: pending.downstreamCodeChallengeMethod ?? null,
+      codeChallenge: pending.downstreamCodeChallenge,
+      codeChallengeMethod: pending.downstreamCodeChallengeMethod ?? "S256",
       expiresAt: new Date(Date.now() + 10 * 60 * 1000),
     },
   });

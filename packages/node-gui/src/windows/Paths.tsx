@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open, confirm } from "@tauri-apps/plugin-dialog";
 import "./Paths.css";
 
 const MAX_INSTRUCTIONS_LENGTH = 500;
@@ -52,6 +52,11 @@ export default function Paths() {
   }
 
   async function removePath(shr: string) {
+    const ok = await confirm(`Remove path "${shr}"? MCP clients will immediately lose access to this share.`, {
+      title: "Remove Path",
+      kind: "warning",
+    });
+    if (!ok) return;
     setRemoving(shr);
     try {
       const updated = await invoke<PathEntry[]>("remove_path", { share: shr });

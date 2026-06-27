@@ -101,7 +101,8 @@ The relay returns a 9-character user code and a verification URL. The GUI displa
 
 Poll outcomes:
 - `authorization_pending` — continue polling, emit `Pending` event to frontend
-- `slow_down` / `rate_limit_exceeded` — continue polling at the same interval
+- `slow_down` — continue polling, increase interval by 5 seconds
+- `rate_limit_exceeded` — continue polling at the same interval
 - Any other error — emit `Error` event with the error string
 - Timeout (device code `expires_in` elapsed) — emit `Timeout` event
 - Success — write `node.yaml` with `relay_url`, `node_token`, and `host`; create `paths.yaml` if absent; emit `Success { host }` event; tray refreshes to Connected
@@ -113,7 +114,7 @@ Auth results are delivered to the frontend via Tauri events on the `auth-result`
 Shows live node state. Polls the same data sources as the tray.
 
 **Connection section**
-- Status badge (Connected / Connecting / Stopped / Disconnected / Not set up)
+- Status badge (Connected / Connecting / Stopped / Disconnected / Not set up) — reflects the live WebSocket connection state, which is distinct from the OS service state shown in the Service section below. A node can be service-running but Connection-Connecting (still establishing the WebSocket) or Connection-Stopped (service stopped cleanly).
 - Relay URL
 - Last heartbeat timestamp
 - Disconnect reason (if applicable)
@@ -149,7 +150,7 @@ Edits `node.yaml` fields. `node_token` is managed via the Auth window only.
 |---|---|
 | Relay URL | Changing this requires a node restart |
 | Node name (host) | Calls `constellation node rename` if changed |
-| Max file size (KB) | Range 1–100; written directly to `node.yaml` |
+| Max file size (KB) | Minimum 1 (enforced); the GUI caps input at 100 but higher values can be set directly in `node.yaml` |
 | Config directory | Read-only; shows the resolved path |
 
 **Buttons**: Save (writes config, renames if host changed), Cancel

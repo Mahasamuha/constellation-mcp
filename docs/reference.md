@@ -137,7 +137,10 @@ Starts the hub daemon.
 constellation hub status [--config-file <path>]
 ```
 
-Prints hub name, relay URL, and share list from the config file.
+Prints hub name, relay URL, share list, and the audit log's path with free/total
+disk space on the filesystem holding it (`null` in `--json` output if that directory
+doesn't exist yet) — `writeAuditEntry` fails open on a full disk rather than blocking
+tool calls, so this is the signal to catch it before audit coverage silently drops.
 
 ### `hub install`
 
@@ -166,7 +169,7 @@ Stops the systemd unit (calls `systemctl stop`). If the hub is not managed by sy
 constellation hub rotate-token [--config-file <path>]
 ```
 
-Rotates the hub token via a WebSocket connection and writes the new token to the `env_file` specified in the config. Restart the hub afterwards to reconnect.
+If the hub is currently running, asks it to rotate on its own live connection — persists the new token to `env_file` and reconnects immediately, no restart needed. Otherwise rotates via a direct WebSocket connection and writes the new token to `env_file`; restart the hub afterwards to connect with it.
 
 ---
 
@@ -244,21 +247,21 @@ Deletes `relay-session.yaml`. Does not revoke the token on the relay.
 
 Shows relay health, uptime, and version.
 
-### `relay executors list [--json]`
+### `relay executors list [--limit <n>] [--offset <n>] [--json]`
 
-Lists all executors registered to your account with their online status and shares.
+Lists all executors registered to your account with their online status and shares. Paginated like the underlying API (see "Management API" below) — defaults to `--limit 100 --offset 0`; if more rows exist than fit on the current page, a "Showing N of total" note is printed to stderr (so `--json` output stays valid, pipeable JSON either way).
 
 ### `relay executors revoke <executor-id>`
 
 Revokes the executor's token. The executor goes offline immediately and cannot reconnect until re-initialized. Prompts for confirmation.
 
-### `relay shares list [--executor <id>] [--json]`
+### `relay shares list [--executor <id>] [--limit <n>] [--offset <n>] [--json]`
 
-Lists path shares across all executors, optionally filtered to a specific executor ID.
+Lists path shares across all executors, optionally filtered to a specific executor ID. Paginated — see `relay executors list` above.
 
-### `relay filters list [--json]`
+### `relay filters list [--limit <n>] [--offset <n>] [--json]`
 
-Lists active relay-side path deny filters.
+Lists active relay-side path deny filters. Paginated — see `relay executors list` above.
 
 ### `relay filters add <pattern> [--type glob|regex] [--executor <id>]`
 
@@ -268,17 +271,17 @@ Adds a deny filter. `--type` defaults to `glob`. `--executor` scopes it to a spe
 
 Removes a deny filter by ID.
 
-### `relay sessions list [--json]`
+### `relay sessions list [--limit <n>] [--offset <n>] [--json]`
 
-Lists active MCP client OAuth sessions (non-expired only).
+Lists active MCP client OAuth sessions (non-expired only). Paginated — see `relay executors list` above.
 
 ### `relay sessions revoke <session-id>`
 
 Immediately invalidates an MCP client session (both access and refresh tokens).
 
-### `relay users list [--json]`
+### `relay users list [--limit <n>] [--offset <n>] [--json]`
 
-Lists all local user accounts. Only available when the relay is running in `AUTH_MODE=local`.
+Lists all local user accounts. Only available when the relay is running in `AUTH_MODE=local`. Paginated — see `relay executors list` above.
 
 ### `relay users add <username>`
 
@@ -286,7 +289,7 @@ Creates a new local user. Prompts for a password (minimum 12 characters).
 
 ### `relay users remove <username>`
 
-Deactivates a local user (soft delete). Prompts for confirmation. Existing sessions expire normally; no future logins are permitted.
+Deactivates a local user (soft delete). Prompts for confirmation. Access is cut immediately — every existing session and executor connection for that user is rejected on its very next request, not just future logins.
 
 ### `relay users reset-password <username>`
 
@@ -310,7 +313,7 @@ Requests temporary admin access via a browser-approved device code flow (step-up
 constellation relay --relay <url> user promote <identifier> [--admin-token <token>]
 ```
 
-Grants admin role to a user. `<identifier>` is the OIDC sub or (in `AUTH_MODE=local`) the username. Requires `RELAY_ADMIN_TOKEN` env var or `--admin-token` flag — this is a bootstrap operation not gated by OAuth.
+Grants admin role to a user. `<identifier>` is the OIDC sub or (in `AUTH_MODE=local`) the username. Requires `RELAY_ADMIN_TOKEN` env var or `--admin-token` flag — this is a bootstrap operation not gated by OAuth. Prefer the env var: the `--admin-token` flag value appears in shell history and `ps` output.
 
 ### `relay user demote <identifier>`
 
@@ -318,7 +321,7 @@ Grants admin role to a user. `<identifier>` is the OIDC sub or (in `AUTH_MODE=lo
 constellation relay --relay <url> user demote <identifier> [--admin-token <token>]
 ```
 
-Revokes admin role from a user. Same auth requirements as `relay user promote`.
+Revokes admin role from a user. Same auth requirements as `relay user promote` — prefer `RELAY_ADMIN_TOKEN` env var over the `--admin-token` flag.
 
 ### `relay hub-shares list [--executor <id>] [--json]`
 
@@ -347,9 +350,33 @@ These limits are applied by the node regardless of relay settings.
 | `list_directory` | Default 2,000 nodes per call; hard cap 10,000. Set `limit` to override (capped at 10,000). Returns `truncated: true` and `truncated_by` when the limit is hit. |
 | `find_files` | 200 results. Returns `truncated: true` when hit. |
 | `grep_files` | 50 total matches or 100 KB of output, whichever comes first. Files larger than 10 MB are skipped silently. Returns `truncated: true` when hit. |
-| `read_file` | `max_file_size_kb` from `node.yaml` (default 100 KB) per call. Applies to both full reads and range reads. Use `start_line`/`end_line` to page through large files; `total_lines` in the response tells you when to stop. |
+| `read_file` | `max_file_size_kb` from `node.yaml`/`hub.yaml` (default 100 KB) per call. Applies to both full reads and range reads. Use `start_line`/`end_line` to page through large files; `total_lines` in the response tells you when to stop. |
 | `copy` / `move` | Fails if the destination already exists. Cross-device `move` falls back to copy + delete automatically. |
 | `delete` (directory) | Without `recursive: true`, returns a dry-run summary (`size_bytes`, `file_count`, `requires_confirmation: true`). Re-call with `recursive: true` to proceed. |
+
+### Tool call errors
+
+A tool call can fail before it ever reaches a node or hub — share/host resolution, path
+filters, and rate limiting all happen at the relay first. These aren't returned as a
+structured error code over MCP; like any other tool error, the client just sees the
+message text below as the call's result. The codes are how the relay's own code and
+logs refer to each case (`packages/relay/src/router.ts`'s `RouterError`) — listed here
+as labels for cross-referencing, not as something you'll see directly.
+
+| Code | Trigger | Message you'll see |
+|---|---|---|
+| `share_not_found` | No share with that name is registered to you (or, for hub shares, visible to you) | `No share '<share>' found` |
+| `host_not_found` | `host` param given, but no host with that name exists for you | `No host '<host>' found` |
+| `ambiguous` | A hub share name is visible to you on more than one host | `Share '<share>' is available on multiple hosts you have access to: <hosts>. Specify host to disambiguate.` |
+| `cross_host` | `copy`/`move` with `dst_share` resolving to a different host than the source share | `'<share>' is on '<host>' and '<dst_share>' is on '<dst_host>' — cross-host move/copy is not supported` |
+| `path_filtered` | The resolved path matches a relay-side [path filter](relay.md#path-filters) | `Path blocked by relay filter: <share>/<relative_path>` |
+| `executor_offline` | The share's executor isn't currently connected (checked before dispatch, or disconnected before responding) | `'<share>' is on '<host>', which was last seen <relative time, or 'never'>` |
+| `timeout` | The executor was connected but didn't respond within `RPC_TIMEOUT_MS` | `No response from '<host>' within <N>s` |
+| `rate_limited` | Per-user rate limit exceeded for this tool, checked before dispatch | `Rate limit exceeded. Please slow down.` |
+
+`executor_offline`, `timeout`, and `rate_limited` also show up as `error_code` /
+`event_type` values in [`GET /api/activity`](#get-apiactivity). The other five aren't
+logged to the activity feed at all — they're returned directly to the failing call only.
 
 ---
 
@@ -457,7 +484,7 @@ Read a file's content, optionally restricted to a line range. Returns `total_lin
 
 **Output**: `{ content, total_lines }`
 
-Files exceeding `max_file_size_kb` (node config, default 100 KB) return `FILE_TOO_LARGE`. Range reads that exceed the cap return `READ_TOO_LARGE` — narrow the range.
+Files exceeding `max_file_size_kb` (node or hub config, default 100 KB) return `FILE_TOO_LARGE`. Range reads that exceed the cap return `READ_TOO_LARGE` — narrow the range.
 
 ---
 
@@ -600,7 +627,7 @@ Delete a file or directory. If the target is a directory and `recursive` is abse
 
 ## Management API
 
-All `/api/*` endpoints require a `relay:manage`-scoped Bearer token obtained via `constellation relay login`. Tokens without that scope receive `403 insufficient_scope`.
+All `/api/*` endpoints require a valid Bearer token obtained via `constellation relay login`. The token is an OAuth access token tied to a user session — there is no separate API key or scope requirement.
 
 Admin-only endpoints additionally require the session to be elevated (see `relay elevate`). Requests without admin privileges receive `403 ESCALATION_REQUIRED`.
 
@@ -609,6 +636,14 @@ All error responses follow:
 { "error": "<code>", "error_description": "<human-readable>" }
 ```
 
+Common auth errors:
+
+| Status | `error` | Meaning |
+|---|---|---|
+| `401` | `unauthorized` | Bearer token missing |
+| `401` | `invalid_token` | Token expired or not found |
+| `403` | `ESCALATION_REQUIRED` | Admin endpoint — run `constellation relay elevate` |
+
 List endpoints support pagination via `limit` (default 100, max 1000) and `offset` (default 0) query parameters and return:
 ```json
 { "data": [...], "total": <n>, "limit": <n>, "offset": <n> }
@@ -616,11 +651,12 @@ List endpoints support pagination via `limit` (default 100, max 1000) and `offse
 
 ### `GET /api/status`
 
-Relay health check. No auth required.
+Process uptime and version. Requires a Bearer token like every other `/api/*` endpoint
+— it is not a liveness check (that's `/healthz`, unauthenticated, outside `/api/*`).
 
 **Response `200`**
 ```json
-{ "status": "ok", "uptime_seconds": 3724, "version": "0.2.3" }
+{ "status": "ok", "uptime_seconds": 3724, "version": "<version>" }
 ```
 
 ---
@@ -778,6 +814,65 @@ The token is returned once and not stored. Revoke via `DELETE /api/executors/:id
 
 ---
 
+### `GET /api/activity`
+
+Activity log for the authenticated user. Returns tool calls, errors, rate limit hits, and executor connection events, newest first.
+
+**Query params**
+
+| Param | Description |
+|---|---|
+| `event_type` | Filter to one event type (optional). See table below. Returns `400` for unrecognised values. |
+| `limit` | Default 100, max 1000 |
+| `offset` | Default 0 |
+
+**Response `200`**
+```json
+{
+  "data": [
+    {
+      "id": 42,
+      "event_type": "tool_call",
+      "host": "home-server",
+      "tool": "read_file",
+      "share": "projects",
+      "request_id": "a3f9c2e1d4b85f2a...",
+      "duration_ms": 84,
+      "error_code": null,
+      "error_message": null,
+      "created_at": "2026-05-27T20:00:00.000Z"
+    }
+  ],
+  "total": 142,
+  "limit": 100,
+  "offset": 0
+}
+```
+
+**Event types**
+
+| `event_type` | Populated fields | Description |
+|---|---|---|
+| `tool_call` | `host`, `tool`, `share`, `request_id`, `duration_ms`; `error_code` + `error_message` when the executor returned an error | RPC reached the executor and a response was received |
+| `tool_error` | `host`, `tool`, `share`, `request_id`, `error_code` | RPC could not be delivered: `executor_offline`, `executor_disconnected`, or `timeout` |
+| `rate_limited` | `tool`, `share`, `request_id` | Call rejected before dispatch — per-user rate limit exceeded |
+| `executor_connect` | `host` | Executor opened a WebSocket connection |
+| `executor_disconnect` | `host`; `error_code` (`timeout` or `error`) for non-clean disconnects | Executor connection closed |
+
+The `request_id` on `tool_call`, `tool_error`, and `rate_limited` events matches the `request_id` field in the relay's structured log output, allowing activity entries to be correlated with log lines.
+
+The log is capped at `ACTIVITY_LOG_MAX_ENTRIES` rows per user (default 1000). Oldest rows are pruned every 5 minutes.
+
+---
+
+### `GET /api/admin/activity`
+
+Activity log entries with no associated user — `executor_connect`/`executor_disconnect` events for **hubs**, which aren't bound to any single user. Admins collectively own this data, since no individual user does. Newest first.
+
+Accepts the same `event_type`, `limit`, and `offset` query params, and returns the same response shape, as `GET /api/activity`. Entries are capped and pruned the same way, as their own ring buffer (`user_id IS NULL` rows are partitioned together by `ACTIVITY_LOG_MAX_ENTRIES`).
+
+---
+
 ### `GET /api/users` · `POST /api/users` · `POST /api/users/:username/deactivate` · `POST /api/users/:username/reset-password`
 
 User management endpoints. Available in `AUTH_MODE=local` only — return `404` in `AUTH_MODE=oidc`. All require an elevated admin session.
@@ -804,7 +899,7 @@ User management endpoints. Available in `AUTH_MODE=local` only — return `404` 
 
 **`POST /api/users`** — create a new local user. Body: `{ username, password }`. Password must be at least 12 characters. Returns `409` if the username is already taken.
 
-**`POST /api/users/:username/deactivate`** — deactivate a user. Blocks all future logins and marks the user account as deactivated. Existing sessions expire normally.
+**`POST /api/users/:username/deactivate`** — deactivate a user. Marks the user account as deactivated; every existing session and executor connection for that user is rejected on its very next request, not just future logins.
 
 **`POST /api/users/:username/reset-password`** — set a new password. Body: `{ password }`. Immediately invalidates all existing OAuth sessions for that user.
 
@@ -838,7 +933,7 @@ Revoke admin role from a user. Same auth requirements as promote.
 
 List all hub shares synced to the relay from hubs. Requires an elevated admin session.
 
-**Query params**: `executor` — filter to a specific hub by ID (optional).
+**Query params**: `executor_id` — filter to a specific hub by ID (optional).
 
 **Response `200`**
 ```json

@@ -1,6 +1,9 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { IdentityConfig } from "./config.js";
+import { createLogger } from "@constellation/shared";
+
+const log = createLogger("identity");
 
 const execFileAsync = promisify(execFile);
 
@@ -36,7 +39,7 @@ export function isIdentityError(v: ResolvedIdentity | IdentityResolutionError): 
 export async function getpwnam(username: string): Promise<{ uid: number; gid: number; home: string } | null> {
   if (!username) return null;
   try {
-    const { stdout } = await execFileAsync("getent", ["passwd", username]);
+    const { stdout } = await execFileAsync("getent", ["passwd", "--", username]);
     const out = stdout.trim();
     if (!out) return null;
     // passwd format: name:passwd:uid:gid:gecos:home:shell
@@ -65,7 +68,7 @@ export async function getpwnam(username: string): Promise<{ uid: number; gid: nu
 export async function getGroupIds(username: string): Promise<number[] | null> {
   if (!username) return null;
   try {
-    const { stdout } = await execFileAsync("id", ["-G", username]);
+    const { stdout } = await execFileAsync("id", ["-G", "--", username]);
     const ids = stdout
       .trim()
       .split(/\s+/)
@@ -116,9 +119,11 @@ export async function resolveIdentity(
       }
       // user_map entry found but the mapped username doesn't exist on this OS — hard rejection,
       // no fallthrough to Tier 3. The admin explicitly mapped this sub; ambiguity is worse than failure.
+      // Log the detail operator-side; return a generic message so local_username is not disclosed.
+      log.warn({ oidc_sub: userOidcSub, local_username: entry.local_username }, "user_map entry maps to non-existent local user");
       return {
         kind: "identity_error",
-        message: `user_map entry for oidc_sub '${userOidcSub}' maps to '${entry.local_username}' which does not exist on this system`,
+        message: "Could not resolve an OS identity for this user. Contact the hub administrator.",
       };
     }
   }

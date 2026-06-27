@@ -1,6 +1,6 @@
 import { createContext, use, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useApp, useHostStyleVariables, type App } from "@modelcontextprotocol/ext-apps/react";
-import { Prism, escapeHtml, languageForPath } from "./prism";
+import { highlightForPath } from "./prism";
 
 type DisplayMode = "inline" | "fullscreen" | "pip";
 
@@ -122,6 +122,14 @@ interface BrowserContextValue {
   fileContent: string | null;
   isLoadingFile: boolean;
   isEditing: boolean;
+  /** True only for the write+re-read round trip after Save is clicked — at that
+   * point the draft has already been handed off, so navigation guards must not
+   * treat it as still-unsaved even though isEditing hasn't flipped false yet. */
+  isSaving: boolean;
+  /** Bumped each time navigation is blocked by an in-progress edit, so the
+   * Save/Cancel buttons can pulse to explain why the click did nothing. */
+  editBlockedPulse: number;
+  triggerEditBlockedPulse: () => void;
   status: StatusMessage;
   sidebarOpen: boolean;
   wordWrap: boolean;
@@ -183,8 +191,19 @@ function toolErrorMessage(result: { isError?: boolean; content?: ReadonlyArray<{
   return result.content?.find((c) => c.type === "text")?.text ?? "Request failed.";
 }
 
+// Unlike the isError:true result path above, transport failure/timeout/connection loss
+// makes callServerTool/updateModelContext *throw* instead of resolving — every call site
+// needs to turn that into the same displayable string.
+function transportErrorMessage(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
 export function FileBrowserApp() {
   const initialInput = useRef<{ share?: string; path?: string }>({});
+  // Bumped at the start of every openFile() call; a call only applies its result if
+  // this still equals the value it captured when it started — otherwise a newer
+  // openFile() call has superseded it, and its (possibly out-of-order) response is stale.
+  const openFileSeq = useRef(0);
   const [shares, setShares] = useState<ShareEntry[]>([]);
   const [selectedShare, setSelectedShare] = useState<string | null>(null);
   const [selectedHost, setSelectedHost] = useState<string | null>(null);
@@ -192,6 +211,9 @@ export function FileBrowserApp() {
   const [fileContent, setFileContent] = useState<string | null>(null);
   const [isLoadingFile, setIsLoadingFile] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [editBlockedPulse, setEditBlockedPulse] = useState(0);
+  const triggerEditBlockedPulse = useCallback(() => setEditBlockedPulse((n) => n + 1), []);
   const [status, setStatusMessage] = useState<StatusMessage>({ text: "Connecting…", isError: false });
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [wordWrap, setWordWrap] = useState(false);
@@ -220,6 +242,7 @@ export function FileBrowserApp() {
   const openFile = useCallback(
     async (share: string, host: string, relativePath: string, opts: { deferSidebarCollapse?: boolean } = {}) => {
       if (!app) return;
+      const seq = ++openFileSeq.current;
       setIsEditing(false);
       setIsLoadingFile(true);
       // Normally the sidebar collapses immediately, concurrent with the load
@@ -229,7 +252,24 @@ export function FileBrowserApp() {
       // that the bar is what they tap to bring the picker back.
       if (!opts.deferSidebarCollapse) setSidebarOpen(false);
       setStatus(`Loading ${relativePath}…`);
-      const result = await app.callServerTool({ name: "read_file", arguments: { share, host, relative_path: relativePath } });
+      let result;
+      try {
+        result = await app.callServerTool({ name: "read_file", arguments: { share, host, relative_path: relativePath } });
+      } catch (e) {
+        // Transport failure/timeout/connection loss throws here instead of resolving
+        // with isError:true — without this, the status bar is left at "Loading…" forever.
+        if (openFileSeq.current !== seq) return;
+        setSelectedPath(null);
+        setFileContent(null);
+        setIsLoadingFile(false);
+        setSidebarOpen(true);
+        setStatusError(transportErrorMessage(e));
+        return;
+      }
+      // A newer openFile() call started while this one was in flight — its result (this
+      // one) is stale and arrived out of order. Bail out before touching any state; the
+      // newer call owns the loading/error/content state from here.
+      if (openFileSeq.current !== seq) return;
       const err = toolErrorMessage(result);
       if (err) {
         setSelectedPath(null);
@@ -244,9 +284,15 @@ export function FileBrowserApp() {
       setIsLoadingFile(false);
       if (opts.deferSidebarCollapse) setSidebarOpen(false);
       setStatus("");
-      await app.updateModelContext({
-        content: [{ type: "text", text: `User has file open: ${share}/${relativePath}` }],
-      });
+      try {
+        await app.updateModelContext({
+          content: [{ type: "text", text: `User has file open: ${share}/${relativePath}` }],
+        });
+      } catch (e) {
+        // Best-effort notification to the host/model — the file genuinely is open even
+        // if this fails, so don't roll the UI back to "no file selected" over it.
+        console.error("[telescope] updateModelContext failed:", e);
+      }
     },
     [app, setStatus, setStatusError]
   );
@@ -254,29 +300,51 @@ export function FileBrowserApp() {
   const saveFile = useCallback(
     async (content: string) => {
       if (!app || !selectedShare || !selectedHost || !selectedPath) return;
+      // Snapshot the same counter openFile() bumps: if the user navigates to a different
+      // file while this write+re-read round trip is in flight, openFileSeq.current will
+      // have moved on by the time we get a result back, and we bail out before touching
+      // any state — otherwise this call's closure-captured (now-stale) share/host/path
+      // would clobber whatever the user has since navigated to.
+      const seq = openFileSeq.current;
+      // The draft is handed off to the tool call right here — from this point on
+      // there's nothing left to lose, so isSaving lets the navigation guards (see
+      // handleShareChange/TreeNode) stop treating this as still-unsaved even though
+      // isEditing itself only flips false once the round trip below completes.
+      setIsSaving(true);
       setStatus(`Saving ${selectedPath}…`);
-      const written = await app.callServerTool({
-        name: "write_file",
-        arguments: { share: selectedShare, host: selectedHost, relative_path: selectedPath, content, mode: "overwrite" },
-      });
-      const writeErr = toolErrorMessage(written);
-      if (writeErr) {
-        setStatusError(writeErr);
-        return;
+      try {
+        const written = await app.callServerTool({
+          name: "write_file",
+          arguments: { share: selectedShare, host: selectedHost, relative_path: selectedPath, content, mode: "overwrite" },
+        });
+        if (openFileSeq.current !== seq) return;
+        const writeErr = toolErrorMessage(written);
+        if (writeErr) {
+          setStatusError(writeErr);
+          return;
+        }
+        // Re-read to confirm the round-trip rather than trusting the local draft.
+        const reread = await app.callServerTool({
+          name: "read_file",
+          arguments: { share: selectedShare, host: selectedHost, relative_path: selectedPath },
+        });
+        if (openFileSeq.current !== seq) return;
+        const readErr = toolErrorMessage(reread);
+        if (readErr) {
+          setStatusError(readErr);
+          return;
+        }
+        setFileContent(String(reread.structuredContent?.["content"] ?? ""));
+        setIsEditing(false);
+        setStatus(`Saved ${selectedShare}/${selectedPath} at ${new Date().toLocaleTimeString()}`);
+      } catch (e) {
+        // Transport failure/timeout/connection loss throws here instead of resolving
+        // with isError:true — without this, the status bar is left at "Saving…" forever.
+        if (openFileSeq.current !== seq) return;
+        setStatusError(transportErrorMessage(e));
+      } finally {
+        setIsSaving(false);
       }
-      // Re-read to confirm the round-trip rather than trusting the local draft.
-      const reread = await app.callServerTool({
-        name: "read_file",
-        arguments: { share: selectedShare, host: selectedHost, relative_path: selectedPath },
-      });
-      const readErr = toolErrorMessage(reread);
-      if (readErr) {
-        setStatusError(readErr);
-        return;
-      }
-      setFileContent(String(reread.structuredContent?.["content"] ?? ""));
-      setIsEditing(false);
-      setStatus(`Saved ${selectedShare}/${selectedPath} at ${new Date().toLocaleTimeString()}`);
     },
     [app, selectedShare, selectedHost, selectedPath, setStatus, setStatusError]
   );
@@ -297,6 +365,15 @@ export function FileBrowserApp() {
 
   const handleShareChange = useCallback(
     (value: string) => {
+      // Switching shares mid-edit would silently discard the draft in the uncontrolled
+      // textarea (see openFile/selectShare's unconditional setIsEditing(false)) — block
+      // it and let the Save/Cancel buttons pulse instead, rather than swap underneath
+      // the user with no warning. Not while isSaving though — the draft's already
+      // been handed off to saveFile by then, so there's nothing left to lose.
+      if (isEditing && !isSaving) {
+        triggerEditBlockedPulse();
+        return;
+      }
       const match = shares.find((s) => shareKey(s.share, s.host) === value);
       if (match) {
         selectShare(match.share, match.host);
@@ -310,7 +387,7 @@ export function FileBrowserApp() {
         setStatus("Select a share to begin.");
       }
     },
-    [shares, selectShare, setStatus]
+    [shares, selectShare, setStatus, isEditing, isSaving, triggerEditBlockedPulse]
   );
 
   const toggleSidebar = useCallback(() => setSidebarOpen((open) => !open), []);
@@ -394,7 +471,15 @@ export function FileBrowserApp() {
     if (!app || !isConnected) return;
     void (async () => {
       setStatus("Loading shares…");
-      const result = await app.callServerTool({ name: "list_shares", arguments: {} });
+      let result;
+      try {
+        result = await app.callServerTool({ name: "list_shares", arguments: {} });
+      } catch (e) {
+        // Transport failure/timeout/connection loss throws here instead of resolving
+        // with isError:true — without this, the status bar is left at "Loading…" forever.
+        setStatusError(transportErrorMessage(e));
+        return;
+      }
       const err = toolErrorMessage(result);
       if (err) {
         setStatusError(err);
@@ -425,6 +510,9 @@ export function FileBrowserApp() {
       fileContent,
       isLoadingFile,
       isEditing,
+      isSaving,
+      editBlockedPulse,
+      triggerEditBlockedPulse,
       status,
       sidebarOpen,
       wordWrap,
@@ -451,6 +539,9 @@ export function FileBrowserApp() {
       fileContent,
       isLoadingFile,
       isEditing,
+      isSaving,
+      editBlockedPulse,
+      triggerEditBlockedPulse,
       status,
       sidebarOpen,
       wordWrap,
@@ -485,6 +576,8 @@ function FileBrowserLayout() {
     sidebarOpen,
     toggleSidebar,
     handleShareChange,
+    isEditing,
+    isSaving,
     status,
     displayMode,
     availableDisplayModes,
@@ -504,6 +597,8 @@ function FileBrowserLayout() {
       <header className="header">
         <select
           aria-label="Share"
+          aria-disabled={isEditing && !isSaving}
+          className={isEditing && !isSaving ? "blocked" : ""}
           value={selectedShare && selectedHost ? shareKey(selectedShare, selectedHost) : ""}
           onChange={(e) => handleShareChange(e.target.value)}
         >
@@ -590,12 +685,22 @@ function DirectoryTree({ path }: { path: string }) {
     if (!app || !selectedShare || !selectedHost) return;
     let cancelled = false;
     void (async () => {
-      const result = await app.callServerTool({
-        name: "list_directory",
-        arguments: path
-          ? { share: selectedShare, host: selectedHost, relative_path: path }
-          : { share: selectedShare, host: selectedHost },
-      });
+      let result;
+      try {
+        result = await app.callServerTool({
+          name: "list_directory",
+          arguments: path
+            ? { share: selectedShare, host: selectedHost, relative_path: path }
+            : { share: selectedShare, host: selectedHost },
+        });
+      } catch (e) {
+        // Transport failure/timeout/connection loss throws here instead of resolving
+        // with isError:true — without this, the tree is left on its loading skeleton forever.
+        if (cancelled) return;
+        setError(transportErrorMessage(e));
+        setNodes(null);
+        return;
+      }
       if (cancelled) return;
       const err = toolErrorMessage(result);
       if (err) {
@@ -642,10 +747,11 @@ function DirectoryTree({ path }: { path: string }) {
 }
 
 function TreeNode({ node }: { node: DirNode }) {
-  const { selectedShare, selectedHost, selectedPath, openFile } = useBrowserContext();
+  const { selectedShare, selectedHost, selectedPath, openFile, isEditing, isSaving, triggerEditBlockedPulse } = useBrowserContext();
   const [expanded, setExpanded] = useState(false);
   const isDir = node.type === "directory";
-  const classes = ["node", isDir ? "dir" : "file", expanded && "expanded", selectedPath === node.path && "selected"]
+  const blocked = !isDir && isEditing && !isSaving;
+  const classes = ["node", isDir ? "dir" : "file", expanded && "expanded", selectedPath === node.path && "selected", blocked && "blocked"]
     .filter(Boolean)
     .join(" ");
 
@@ -653,7 +759,15 @@ function TreeNode({ node }: { node: DirNode }) {
     <li>
       <div
         className={classes}
-        onClick={() => (isDir ? setExpanded((e) => !e) : void openFile(selectedShare!, selectedHost!, node.path))}
+        aria-disabled={blocked}
+        onClick={() => {
+          if (isDir) { setExpanded((e) => !e); return; }
+          // Opening a different file mid-edit would silently discard the draft in the
+          // uncontrolled textarea — block it and let Save/Cancel pulse instead. Not
+          // while isSaving though — see saveFile's comment on why that's safe.
+          if (isEditing && !isSaving) { triggerEditBlockedPulse(); return; }
+          void openFile(selectedShare!, selectedHost!, node.path);
+        }}
       >
         <span className="node-icon">{isDir && (expanded ? <FolderOpenIcon /> : <FolderClosedIcon />)}</span>
         {nodeName(node.path)}
@@ -671,6 +785,7 @@ function FileEditor() {
     selectedHost,
     selectedPath,
     isEditing,
+    editBlockedPulse,
     startEditing,
     cancelEditing,
     saveFile,
@@ -680,12 +795,22 @@ function FileEditor() {
   } = useBrowserContext();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+  // Save/Cancel pulse to explain a click that did nothing — only for *subsequent*
+  // increments, not the one already current when this component mounted/last
+  // rendered, so entering edit mode itself never falsely pulses.
+  const [pulsing, setPulsing] = useState(false);
+  const prevEditBlockedPulse = useRef(editBlockedPulse);
+  useEffect(() => {
+    if (editBlockedPulse === prevEditBlockedPulse.current) return;
+    prevEditBlockedPulse.current = editBlockedPulse;
+    setPulsing(true);
+    const t = window.setTimeout(() => setPulsing(false), 900);
+    return () => window.clearTimeout(t);
+  }, [editBlockedPulse]);
+
   const highlighted = useMemo(() => {
     if (fileContent == null) return null;
-    const language = selectedPath ? languageForPath(selectedPath) : null;
-    const grammar = language ? Prism.languages[language] : undefined;
-    if (!language || !grammar) return { html: escapeHtml(fileContent), language: "none" };
-    return { html: Prism.highlight(fileContent, grammar, language), language };
+    return highlightForPath(fileContent, selectedPath);
   }, [fileContent, selectedPath]);
 
   // Refreshing re-fetches from the agent host, so a click puts the button on a
@@ -728,14 +853,14 @@ function FileEditor() {
           <>
             <button
               type="button"
-              className="save"
+              className={`save${pulsing ? " pulse" : ""}`}
               title="Save"
               aria-label="Save"
               onClick={() => void saveFile(textareaRef.current?.value ?? "")}
             >
               <SaveIcon />
             </button>
-            <button type="button" title="Cancel" aria-label="Cancel" onClick={cancelEditing}>
+            <button type="button" className={pulsing ? "pulse" : ""} title="Cancel" aria-label="Cancel" onClick={cancelEditing}>
               <CancelIcon />
             </button>
           </>

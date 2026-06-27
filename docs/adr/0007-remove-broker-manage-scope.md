@@ -3,6 +3,14 @@
 **Status:** Accepted  
 **Date:** 2026-06-06
 
+> **Update (2026-06-20):** Despite the title, the `relay:manage` *scope string*
+> was never removed — it's still the live `DeviceScope` value requested by
+> `constellation relay login` today (see `packages/relay/src/device.ts` and
+> `docs/relay.md`/`docs/reference.md`). What this ADR actually removed is the
+> *authorization check* on that scope (the `requireRelayManage` middleware),
+> replaced by `requireBearerAuth` plus per-route `userId` filtering. The
+> Decision section below has been reworded to reflect that distinction.
+
 ## Context
 
 All `/api/*` relay management endpoints were originally gated by a `relay:manage`
@@ -11,9 +19,12 @@ API access from ordinary MCP client access.
 
 ## Decision
 
-The `relay:manage` scope has been removed. The `requireRelayManage` middleware is
-deleted. All `/api/*` endpoints are now gated by `requireBearerAuth` only, with
-per-route authorization enforced by filtering results to the calling user's `userId`.
+The authorization *check* on the `relay:manage` scope has been removed — the scope
+string itself is unchanged and is still requested by `constellation relay login`
+today; it just no longer gates anything beyond ordinary bearer-token authentication.
+The `requireRelayManage` middleware is deleted. All `/api/*` endpoints are now gated
+by `requireBearerAuth` only, with per-route authorization enforced by filtering
+results to the calling user's `userId`.
 
 The static first-party CLI client was renamed from `"relay-manage"` to
 `"constellation-cli"` for clarity.

@@ -4,7 +4,7 @@ declare const __PKG_VERSION__: string;
 import { Command } from "commander";
 import { existsSync } from "node:fs";
 import { registerNodeCommands } from "@constellation/node/cli";
-import { registerRelayCommands } from "./cli/relay.js";
+import { registerRelayCommands, die } from "./cli/relay.js";
 import { registerHubCommands } from "@constellation/hub/cli";
 import { writeRelaySession, relaySessionPath, loadRelaySession } from "@constellation/node/config";
 import { makeTempDir, cleanTempDir } from "./test/fixtures.js";
@@ -254,6 +254,103 @@ describe("relay status — valid session", () => {
   });
 });
 
+describe("die()", () => {
+  it("prints the error body before exiting, not after", async () => {
+    // process.exit really does terminate the process before any pending
+    // microtask runs — a throw-based mock (as the runCli() harness above
+    // uses) would mask a die() that fires off res.json() without awaiting
+    // it, since the unwind gives that pending promise a chance to flush.
+    // Mocking exit as a plain no-op and asserting call order instead pins
+    // down the actual ordering guarantee.
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
+
+    const res = new Response(JSON.stringify({ error: "ESCALATION_REQUIRED" }), { status: 403 });
+    await die(res);
+
+    expect(errorSpy).toHaveBeenCalled();
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(errorSpy.mock.invocationCallOrder[0]).toBeLessThan(exitSpy.mock.invocationCallOrder[0]);
+
+    errorSpy.mockRestore();
+    exitSpy.mockRestore();
+  });
+
+  it("falls back to a generic message when the body isn't JSON", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
+
+    const res = new Response("not json", { status: 500 });
+    await die(res);
+
+    expect(errorSpy).toHaveBeenCalledWith("API error 500");
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(errorSpy.mock.invocationCallOrder[0]).toBeLessThan(exitSpy.mock.invocationCallOrder[0]);
+
+    errorSpy.mockRestore();
+    exitSpy.mockRestore();
+  });
+});
+
+describe("relay executors list — pagination", () => {
+  beforeEach(() => {
+    writeRelaySession(dir, {
+      relay_url: "https://relay.example.com",
+      access_token: "tok_valid",
+      access_token_expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("defaults to limit=100&offset=0 and prints nothing extra when everything fits on one page", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      expect(url).toBe("https://relay.example.com/api/executors?limit=100&offset=0");
+      return new Response(JSON.stringify({ data: [], total: 0, limit: 100, offset: 0 }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { exitCode, err } = await runCli(["relay", "executors", "list"], dir);
+
+    expect(exitCode).toBe(0);
+    expect(err).toBe("");
+  });
+
+  it("forwards --limit/--offset to the request", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      expect(url).toBe("https://relay.example.com/api/executors?limit=5&offset=10");
+      return new Response(JSON.stringify({ data: [], total: 10, limit: 5, offset: 10 }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await runCli(["relay", "executors", "list", "--limit", "5", "--offset", "10"], dir);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("warns on stderr (not stdout) when more rows exist beyond the current page, in both human and --json output", async () => {
+    const page = {
+      data: [{ id: "e1", host: "h1", online: true, last_heartbeat_at: null, shares: [] }],
+      total: 250,
+      limit: 100,
+      offset: 0,
+    };
+
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(page), { status: 200 })));
+    const human = await runCli(["relay", "executors", "list"], dir);
+    expect(human.err).toContain("Showing 1 of 250 total");
+    expect(human.err).toContain("--offset 1");
+    expect(human.out).not.toContain("Showing");
+
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(page), { status: 200 })));
+    const json = await runCli(["relay", "executors", "list", "--json"], dir);
+    expect(json.err).toContain("Showing 1 of 250 total");
+    expect(() => JSON.parse(json.out)).not.toThrow();
+  });
+});
+
 describe("relay status — expired session with a refresh token", () => {
   beforeEach(() => {
     writeRelaySession(dir, {
@@ -352,6 +449,179 @@ describe("relay executors revoke", () => {
   });
 });
 
+describe("relay sessions revoke", () => {
+  beforeEach(() => {
+    writeRelaySession(dir, {
+      relay_url: "https://relay.example.com",
+      access_token: "tok_valid",
+      access_token_expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.mocked(mockedConfirm).mockReset();
+  });
+
+  it("does not call the API when the user declines the confirmation", async () => {
+    vi.mocked(mockedConfirm).mockResolvedValue(false);
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { exitCode, out } = await runCli(["relay", "sessions", "revoke", "sess-1"], dir);
+
+    expect(exitCode).toBe(0);
+    expect(out).toContain("Cancelled.");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("revokes the session when the user confirms", async () => {
+    vi.mocked(mockedConfirm).mockResolvedValue(true);
+    const fetchMock = vi.fn(async (url: string, opts?: RequestInit) => {
+      expect(url).toBe("https://relay.example.com/api/sessions/sess-1");
+      expect(opts?.method).toBe("DELETE");
+      return new Response(null, { status: 204 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { exitCode, out } = await runCli(["relay", "sessions", "revoke", "sess-1"], dir);
+
+    expect(exitCode).toBe(0);
+    expect(out).toContain("Session revoked.");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("relay filters remove", () => {
+  beforeEach(() => {
+    writeRelaySession(dir, {
+      relay_url: "https://relay.example.com",
+      access_token: "tok_valid",
+      access_token_expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.mocked(mockedConfirm).mockReset();
+  });
+
+  it("does not call the API when the user declines the confirmation", async () => {
+    vi.mocked(mockedConfirm).mockResolvedValue(false);
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { exitCode, out } = await runCli(["relay", "filters", "remove", "filter-1"], dir);
+
+    expect(exitCode).toBe(0);
+    expect(out).toContain("Cancelled.");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("removes the filter when the user confirms", async () => {
+    vi.mocked(mockedConfirm).mockResolvedValue(true);
+    const fetchMock = vi.fn(async (url: string, opts?: RequestInit) => {
+      expect(url).toBe("https://relay.example.com/api/filters/filter-1");
+      expect(opts?.method).toBe("DELETE");
+      return new Response(null, { status: 204 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { exitCode, out } = await runCli(["relay", "filters", "remove", "filter-1"], dir);
+
+    expect(exitCode).toBe(0);
+    expect(out).toContain("Filter removed.");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// relay users remove — regression test for a route mismatch (was calling
+// DELETE /api/users/:username, a route the relay never registered, instead
+// of POST /api/users/:username/deactivate) compounded by apiPost choking on
+// the deactivate route's 204 No Content response.
+// ---------------------------------------------------------------------------
+
+describe("relay users remove", () => {
+  beforeEach(() => {
+    writeRelaySession(dir, {
+      relay_url: "https://relay.example.com",
+      access_token: "tok_valid",
+      access_token_expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.mocked(mockedConfirm).mockReset();
+  });
+
+  it("does not call the API when the user declines the confirmation", async () => {
+    vi.mocked(mockedConfirm).mockResolvedValue(false);
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { exitCode, out } = await runCli(["relay", "users", "remove", "alice"], dir);
+
+    expect(exitCode).toBe(0);
+    expect(out).toContain("Cancelled.");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("deactivates the user via POST .../deactivate and handles the 204 response", async () => {
+    vi.mocked(mockedConfirm).mockResolvedValue(true);
+    const fetchMock = vi.fn(async (url: string, opts?: RequestInit) => {
+      expect(url).toBe("https://relay.example.com/api/users/alice/deactivate");
+      expect(opts?.method).toBe("POST");
+      return new Response(null, { status: 204 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { exitCode, out } = await runCli(["relay", "users", "remove", "alice"], dir);
+
+    expect(exitCode).toBe(0);
+    expect(out).toContain("User 'alice' deactivated.");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// relay account deactivate — same apiPost/204 bug as users remove above hit
+// this command too; deleteRelaySession() ran after the now-fixed apiPost
+// call, so the local session file was previously never being cleared either.
+// ---------------------------------------------------------------------------
+
+describe("relay account deactivate", () => {
+  beforeEach(() => {
+    writeRelaySession(dir, {
+      relay_url: "https://relay.example.com",
+      access_token: "tok_valid",
+      access_token_expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.mocked(mockedConfirm).mockReset();
+  });
+
+  it("deactivates the account, handles the 204 response, and clears the local session", async () => {
+    vi.mocked(mockedConfirm).mockResolvedValue(true);
+    const fetchMock = vi.fn(async (url: string, opts?: RequestInit) => {
+      expect(url).toBe("https://relay.example.com/api/account/deactivate");
+      expect(opts?.method).toBe("POST");
+      return new Response(null, { status: 204 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { exitCode, out } = await runCli(["relay", "account", "deactivate"], dir);
+
+    expect(exitCode).toBe(0);
+    expect(out).toContain("Account deactivated.");
+    expect(existsSync(relaySessionPath(dir))).toBe(false);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // relay user promote/demote — --relay given on the `relay` parent must reach
 // a subcommand nested two levels deep (relay -> user -> promote/demote).
@@ -368,12 +638,14 @@ describe("relay user promote/demote", () => {
       return new Response(null, { status: 200 });
     });
     vi.stubGlobal("fetch", fetchMock);
+    process.env["RELAY_ADMIN_TOKEN"] = "tok";
 
     const { exitCode, out } = await runCli(
-      ["relay", "--relay", "https://relay.example.com", "user", "promote", "alice", "--admin-token", "tok"],
+      ["relay", "--relay", "https://relay.example.com", "user", "promote", "alice"],
       dir
     );
 
+    delete process.env["RELAY_ADMIN_TOKEN"];
     expect(exitCode).toBe(0);
     expect(out).toContain("promoted to admin");
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -385,22 +657,26 @@ describe("relay user promote/demote", () => {
       return new Response(null, { status: 200 });
     });
     vi.stubGlobal("fetch", fetchMock);
+    process.env["RELAY_ADMIN_TOKEN"] = "tok";
 
     const { exitCode, out } = await runCli(
-      ["relay", "--relay", "https://relay.example.com", "user", "demote", "alice", "--admin-token", "tok"],
+      ["relay", "--relay", "https://relay.example.com", "user", "demote", "alice"],
       dir
     );
 
+    delete process.env["RELAY_ADMIN_TOKEN"];
     expect(exitCode).toBe(0);
     expect(out).toContain("demoted to regular user");
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("errors with the relay-URL hint when neither flag nor config provides one", async () => {
+    process.env["RELAY_ADMIN_TOKEN"] = "tok";
     const { exitCode, err } = await runCli(
-      ["relay", "user", "promote", "alice", "--admin-token", "tok"],
+      ["relay", "user", "promote", "alice"],
       dir
     );
+    delete process.env["RELAY_ADMIN_TOKEN"];
 
     expect(exitCode).toBe(1);
     expect(err).toContain("No relay URL configured");

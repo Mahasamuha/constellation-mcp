@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, mkdirSync, unlinkSync } from "node:fs";
+import { readFileSync, writeFileSync, renameSync, mkdirSync, unlinkSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { homedir, platform } from "node:os";
 import yaml from "js-yaml";
@@ -23,6 +23,50 @@ export function configDir(override?: string): string {
 export function nodeYamlPath(dir: string): string { return join(dir, "node.yaml"); }
 export function pathsYamlPath(dir: string): string { return join(dir, "paths.yaml"); }
 
+/**
+ * Writes via a temp file + rename so a crash mid-write can never leave `path` holding
+ * a torn/partial file. rename(2) is a single atomic syscall — readers only ever see
+ * the old or the new complete content, never something in between. This protects
+ * against file corruption from an interrupted write; it's not a durability guarantee
+ * against power loss (no fsync), which isn't a concern worth solving for local config.
+ */
+function atomicWriteFileSync(path: string, data: string, options: { mode: number }): void {
+  const tmpPath = `${path}.tmp-${process.pid}-${Date.now()}`;
+  writeFileSync(tmpPath, data, options);
+  renameSync(tmpPath, path);
+}
+
+/**
+ * Wraps a synchronous loader with an mtime-gated cache: the (comparatively
+ * expensive) read+parse only re-runs when `path`'s mtime has actually changed
+ * since the last call. Built for the daemon's per-RPC config/paths reload
+ * (see node/src/index.ts) — node.yaml/paths.yaml only actually change on an
+ * explicit `node rotate`/`node paths add|remove`, not between one RPC and the
+ * next, so most calls only pay for a stat() instead of a full read+parse.
+ *
+ * If `path` can't be stat'd (deleted, permissions), falls through to `load()`
+ * on every call instead of caching a stat failure — `load()` already has its
+ * own handling for a missing/unreadable file (loadNodeConfig throws,
+ * loadPathsConfig returns an empty list), and this preserves that exactly.
+ */
+export function cachedByMtime<T>(path: string, load: () => T): () => T {
+  let cachedMtimeMs: number | null = null;
+  let cachedValue: T;
+  return () => {
+    let mtimeMs: number | null = null;
+    try {
+      mtimeMs = statSync(path).mtimeMs;
+    } catch {
+      // Fall through — see doc comment above.
+    }
+    if (mtimeMs === null || mtimeMs !== cachedMtimeMs) {
+      cachedValue = load();
+      cachedMtimeMs = mtimeMs;
+    }
+    return cachedValue;
+  };
+}
+
 // ---------------------------------------------------------------------------
 // node.yaml
 // ---------------------------------------------------------------------------
@@ -32,6 +76,15 @@ export interface NodeConfig {
   node_token: string;
   host: string;
   max_file_size_kb: number;
+  /**
+   * The token displaced by the most recent rotation, kept until a connection using the
+   * new token is confirmed. The relay's pending-rotation window is time-bounded (see
+   * docs/architecture.md) — if the node never reconnects within it, the new token is
+   * revoked server-side while the old one stays valid. Without this field, a rotation
+   * that wrote the new token but failed to reconnect in time would leave node.yaml
+   * holding the only credential on disk, and that credential would already be dead.
+   */
+  previous_node_token?: string;
 }
 
 export function loadNodeConfig(dir: string): NodeConfig {
@@ -41,7 +94,7 @@ export function loadNodeConfig(dir: string): NodeConfig {
   const relay_url = str(parsed, "relay_url");
   const node_token = str(parsed, "node_token");
   const host = str(parsed, "host");
-  const max_file_size_kb = typeof parsed["max_file_size_kb"] === "number"
+  const max_file_size_kb = typeof parsed["max_file_size_kb"] === "number" && parsed["max_file_size_kb"] >= 1
     ? parsed["max_file_size_kb"]
     : 100;
 
@@ -49,15 +102,32 @@ export function loadNodeConfig(dir: string): NodeConfig {
   if (!node_token) throw new Error("node.yaml: node_token is required");
   if (!host) throw new Error("node.yaml: host is required");
 
-  return { relay_url, node_token, host, max_file_size_kb };
+  const previous_node_token = str(parsed, "previous_node_token");
+
+  return { relay_url, node_token, host, max_file_size_kb, ...(previous_node_token ? { previous_node_token } : {}) };
 }
 
+/**
+ * Writes a newly-rotated token, preserving the token it displaces as
+ * previous_node_token until clearPreviousToken() confirms the new one works.
+ */
 export function writeNodeToken(dir: string, token: string): void {
   const path = nodeYamlPath(dir);
   const raw = readFileSync(path, "utf8");
   const parsed = yaml.load(raw) as Partial<NodeConfig>;
+  if (parsed.node_token) parsed.previous_node_token = parsed.node_token;
   parsed.node_token = token;
-  writeFileSync(path, yaml.dump(parsed), { mode: 0o600 });
+  atomicWriteFileSync(path, yaml.dump(parsed), { mode: 0o600 });
+}
+
+/** Drops previous_node_token once a connection using the current token has succeeded. */
+export function clearPreviousToken(dir: string): void {
+  const path = nodeYamlPath(dir);
+  const raw = readFileSync(path, "utf8");
+  const parsed = yaml.load(raw) as Partial<NodeConfig>;
+  if (parsed.previous_node_token === undefined) return;
+  delete parsed.previous_node_token;
+  atomicWriteFileSync(path, yaml.dump(parsed), { mode: 0o600 });
 }
 
 export function writeNodeConfig(dir: string, config: Partial<NodeConfig>): void {
@@ -69,8 +139,8 @@ export function writeNodeConfig(dir: string, config: Partial<NodeConfig>): void 
     // file may not exist yet during init
   }
   Object.assign(parsed, config);
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(path, yaml.dump(parsed), { mode: 0o600 });
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  atomicWriteFileSync(path, yaml.dump(parsed), { mode: 0o600 });
 }
 
 // ---------------------------------------------------------------------------
@@ -100,8 +170,8 @@ export function loadPathsConfig(dir: string): PathsConfig {
 }
 
 export function writePathsConfig(dir: string, config: PathsConfig): void {
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(pathsYamlPath(dir), yaml.dump(config), { mode: 0o600 });
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  atomicWriteFileSync(pathsYamlPath(dir), yaml.dump(config), { mode: 0o600 });
 }
 
 /**
@@ -182,8 +252,8 @@ export function loadRelaySession(dir: string): RelaySession {
 }
 
 export function writeRelaySession(dir: string, session: RelaySession): void {
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(relaySessionPath(dir), yaml.dump(session), { mode: 0o600 });
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  atomicWriteFileSync(relaySessionPath(dir), yaml.dump(session), { mode: 0o600 });
 }
 
 export function deleteRelaySession(dir: string): void {

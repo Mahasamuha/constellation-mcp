@@ -1,12 +1,14 @@
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
+import { randomUUID } from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { Router, Request, Response, IRouter } from "express";
 import { z } from "zod/v4";
 import { prisma } from "./db.js";
-import { routeToolCall, RouterError } from "./router.js";
+import { routeToolCall, checkToolRateLimit, RouterError } from "./router.js";
 import { isOnline } from "./api.js";
+import { logEvent } from "./activity.js";
 import { evaluatePermissionBlob, requireEnv } from "@constellation/shared";
 import { lookupOAuthSession } from "./middleware.js";
 
@@ -180,7 +182,14 @@ interface UserIdentity {
   userClaims: Record<string, unknown>;
 }
 
-function identity(extra: { authInfo?: { extra?: Record<string, unknown> } }): UserIdentity {
+// registerTool() below is generic over each handler's exact signature, which means
+// the SDK's contextual typing for an unannotated trailing `extra` parameter is lost —
+// it would otherwise be inferred from server.registerTool()'s own overloads. Every
+// handler needs this annotated explicitly; ToolExtra mirrors exactly what identity()
+// (the only thing any handler does with it) requires.
+type ToolExtra = { authInfo?: { extra?: Record<string, unknown> } };
+
+function identity(extra: ToolExtra): UserIdentity {
   const e = extra.authInfo?.extra ?? {};
   const uid = e["userId"];
   if (typeof uid !== "string") throw new Error("Missing userId in auth context");
@@ -211,6 +220,39 @@ function toolError(message: string): never {
   throw new Error(message);
 }
 
+/**
+ * Registers a tool, wrapping its handler so checkToolRateLimit() always runs first.
+ * This is what makes "every tool call is rate-limited" structurally true rather than
+ * something each handler has to remember — including list_hosts/list_shares, which
+ * never call dispatch() and so would otherwise never reach router.ts's rate limiter
+ * at all. Use this for every tool instead of server.registerTool() directly; nothing
+ * else enforces the limit.
+ */
+function registerTool<Args extends unknown[]>(
+  server: McpServer,
+  name: string,
+  config: object,
+  handler: (...args: Args) => unknown
+): void {
+  const wrapped = (...args: Args): unknown => {
+    const extra = args[args.length - 1] as { authInfo?: { extra?: Record<string, unknown> } };
+    const { userId } = identity(extra);
+    const params = (args.length > 1 ? args[0] : {}) as Record<string, unknown>;
+    if (!checkToolRateLimit(userId, name, params)) {
+      const share = typeof params["share"] === "string" ? params["share"] : undefined;
+      logEvent({ userId, eventType: "rate_limited", tool: name, share, requestId: randomUUID() });
+      toolError("Rate limit exceeded. Please slow down.");
+    }
+    return handler(...args);
+  };
+  const register = server.registerTool.bind(server) as unknown as (
+    n: string,
+    c: object,
+    h: (...a: Args) => unknown
+  ) => void;
+  register(name, config, wrapped);
+}
+
 async function dispatch(
   id: UserIdentity,
   tool: string,
@@ -229,7 +271,8 @@ async function dispatch(
 // ---------------------------------------------------------------------------
 
 function registerListHosts(server: McpServer): void {
-  server.registerTool(
+  registerTool(
+    server,
     "list_hosts",
     {
       title: "List Hosts",
@@ -238,7 +281,7 @@ function registerListHosts(server: McpServer): void {
       annotations: { readOnlyHint: true },
       _meta: VISIBLE_TO_MODEL_ONLY,
     },
-    async (extra) => {
+    async (extra: ToolExtra) => {
       const { userId, userOidcSub } = identity(extra);
 
       const [nodeExecutors, hubShares] = await Promise.all([
@@ -293,7 +336,8 @@ function registerListHosts(server: McpServer): void {
 // ---------------------------------------------------------------------------
 
 function registerListShares(server: McpServer): void {
-  server.registerTool(
+  registerTool(
+    server,
     "list_shares",
     {
       title: "List Shares",
@@ -303,7 +347,7 @@ function registerListShares(server: McpServer): void {
       annotations: { readOnlyHint: true },
       _meta: VISIBLE_TO_MODEL_AND_APP,
     },
-    async ({ host }, extra) => {
+    async ({ host }, extra: ToolExtra) => {
       const { userId, userOidcSub } = identity(extra);
 
       const [personalShares, hubShares] = await Promise.all([
@@ -356,7 +400,8 @@ function registerListShares(server: McpServer): void {
 // ---------------------------------------------------------------------------
 
 function registerOpenFileBrowser(server: McpServer): void {
-  server.registerTool(
+  registerTool(
+    server,
     "open_file_browser",
     {
       title: "Open File Browser",
@@ -374,7 +419,7 @@ function registerOpenFileBrowser(server: McpServer): void {
         },
       },
     },
-    async ({ share, path }, extra) => {
+    async ({ share, path }, extra: ToolExtra) => {
       if (!share) return ok({ share: null, path: null });
 
       const listing = await dispatch(identity(extra), "list_directory", share, path ? { relative_path: path } : {});
@@ -435,7 +480,8 @@ function registerFileBrowserResource(server: McpServer): void {
 // ---------------------------------------------------------------------------
 
 function registerListDirectory(server: McpServer): void {
-  server.registerTool(
+  registerTool(
+    server,
     "list_directory",
     {
       title: "List Directory",
@@ -453,7 +499,7 @@ function registerListDirectory(server: McpServer): void {
       annotations: { readOnlyHint: true, openWorldHint: true },
       _meta: VISIBLE_TO_MODEL_AND_APP,
     },
-    async ({ share, host, ...params }, extra) => dispatch(identity(extra), "list_directory", share, params, host)
+    async ({ share, host, ...params }, extra: ToolExtra) => dispatch(identity(extra), "list_directory", share, params, host)
   );
 }
 
@@ -462,7 +508,8 @@ function registerListDirectory(server: McpServer): void {
 // ---------------------------------------------------------------------------
 
 function registerFileInfo(server: McpServer): void {
-  server.registerTool(
+  registerTool(
+    server,
     "file_info",
     {
       title: "File Info",
@@ -476,7 +523,7 @@ function registerFileInfo(server: McpServer): void {
       annotations: { readOnlyHint: true, openWorldHint: true },
       _meta: VISIBLE_TO_MODEL_AND_APP,
     },
-    async ({ share, host, ...params }, extra) => dispatch(identity(extra), "file_info", share, params, host)
+    async ({ share, host, ...params }, extra: ToolExtra) => dispatch(identity(extra), "file_info", share, params, host)
   );
 }
 
@@ -485,7 +532,8 @@ function registerFileInfo(server: McpServer): void {
 // ---------------------------------------------------------------------------
 
 function registerFindFiles(server: McpServer): void {
-  server.registerTool(
+  registerTool(
+    server,
     "find_files",
     {
       title: "Find Files",
@@ -501,7 +549,7 @@ function registerFindFiles(server: McpServer): void {
       annotations: { readOnlyHint: true, openWorldHint: true },
       _meta: VISIBLE_TO_MODEL_AND_APP,
     },
-    async ({ share, host, ...params }, extra) => dispatch(identity(extra), "find_files", share, params, host)
+    async ({ share, host, ...params }, extra: ToolExtra) => dispatch(identity(extra), "find_files", share, params, host)
   );
 }
 
@@ -510,7 +558,8 @@ function registerFindFiles(server: McpServer): void {
 // ---------------------------------------------------------------------------
 
 function registerReadFile(server: McpServer): void {
-  server.registerTool(
+  registerTool(
+    server,
     "read_file",
     {
       title: "Read File",
@@ -526,7 +575,7 @@ function registerReadFile(server: McpServer): void {
       annotations: { readOnlyHint: true, openWorldHint: true },
       _meta: VISIBLE_TO_MODEL_AND_APP,
     },
-    async ({ share, host, ...params }, extra) => dispatch(identity(extra), "read_file", share, params, host)
+    async ({ share, host, ...params }, extra: ToolExtra) => dispatch(identity(extra), "read_file", share, params, host)
   );
 }
 
@@ -535,7 +584,8 @@ function registerReadFile(server: McpServer): void {
 // ---------------------------------------------------------------------------
 
 function registerGrepFiles(server: McpServer): void {
-  server.registerTool(
+  registerTool(
+    server,
     "grep_files",
     {
       title: "Search File Contents",
@@ -552,7 +602,7 @@ function registerGrepFiles(server: McpServer): void {
       annotations: { readOnlyHint: true, openWorldHint: true },
       _meta: VISIBLE_TO_MODEL_AND_APP,
     },
-    async ({ share, host, ...params }, extra) => dispatch(identity(extra), "grep_files", share, params, host)
+    async ({ share, host, ...params }, extra: ToolExtra) => dispatch(identity(extra), "grep_files", share, params, host)
   );
 }
 
@@ -561,7 +611,8 @@ function registerGrepFiles(server: McpServer): void {
 // ---------------------------------------------------------------------------
 
 function registerWriteFile(server: McpServer): void {
-  server.registerTool(
+  registerTool(
+    server,
     "write_file",
     {
       title: "Write File",
@@ -577,7 +628,7 @@ function registerWriteFile(server: McpServer): void {
       annotations: { idempotentHint: true, destructiveHint: true, openWorldHint: true },
       _meta: VISIBLE_TO_MODEL_AND_APP,
     },
-    async ({ share, host, ...params }, extra) => dispatch(identity(extra), "write_file", share, params, host)
+    async ({ share, host, ...params }, extra: ToolExtra) => dispatch(identity(extra), "write_file", share, params, host)
   );
 }
 
@@ -586,7 +637,8 @@ function registerWriteFile(server: McpServer): void {
 // ---------------------------------------------------------------------------
 
 function registerEditFile(server: McpServer): void {
-  server.registerTool(
+  registerTool(
+    server,
     "edit_file",
     {
       title: "Edit File",
@@ -602,7 +654,7 @@ function registerEditFile(server: McpServer): void {
       annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: true },
       _meta: VISIBLE_TO_MODEL_ONLY,
     },
-    async ({ share, host, ...params }, extra) => dispatch(identity(extra), "edit_file", share, params, host)
+    async ({ share, host, ...params }, extra: ToolExtra) => dispatch(identity(extra), "edit_file", share, params, host)
   );
 }
 
@@ -611,7 +663,8 @@ function registerEditFile(server: McpServer): void {
 // ---------------------------------------------------------------------------
 
 function registerCopy(server: McpServer): void {
-  server.registerTool(
+  registerTool(
+    server,
     "copy",
     {
       title: "Copy",
@@ -627,7 +680,7 @@ function registerCopy(server: McpServer): void {
       annotations: { openWorldHint: true },
       _meta: VISIBLE_TO_MODEL_ONLY,
     },
-    async ({ share, host, ...params }, extra) => dispatch(identity(extra), "copy", share, params, host)
+    async ({ share, host, ...params }, extra: ToolExtra) => dispatch(identity(extra), "copy", share, params, host)
   );
 }
 
@@ -636,7 +689,8 @@ function registerCopy(server: McpServer): void {
 // ---------------------------------------------------------------------------
 
 function registerCreateDirectory(server: McpServer): void {
-  server.registerTool(
+  registerTool(
+    server,
     "create_directory",
     {
       title: "Create Directory",
@@ -650,7 +704,7 @@ function registerCreateDirectory(server: McpServer): void {
       annotations: { idempotentHint: true, openWorldHint: true },
       _meta: VISIBLE_TO_MODEL_ONLY,
     },
-    async ({ share, host, ...params }, extra) => dispatch(identity(extra), "create_directory", share, params, host)
+    async ({ share, host, ...params }, extra: ToolExtra) => dispatch(identity(extra), "create_directory", share, params, host)
   );
 }
 
@@ -659,7 +713,8 @@ function registerCreateDirectory(server: McpServer): void {
 // ---------------------------------------------------------------------------
 
 function registerDelete(server: McpServer): void {
-  server.registerTool(
+  registerTool(
+    server,
     "delete",
     {
       title: "Delete",
@@ -674,7 +729,7 @@ function registerDelete(server: McpServer): void {
       annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: true },
       _meta: VISIBLE_TO_MODEL_ONLY,
     },
-    async ({ share, host, ...params }, extra) => dispatch(identity(extra), "delete", share, params, host)
+    async ({ share, host, ...params }, extra: ToolExtra) => dispatch(identity(extra), "delete", share, params, host)
   );
 }
 
@@ -683,7 +738,8 @@ function registerDelete(server: McpServer): void {
 // ---------------------------------------------------------------------------
 
 function registerMove(server: McpServer): void {
-  server.registerTool(
+  registerTool(
+    server,
     "move",
     {
       title: "Move",
@@ -699,6 +755,6 @@ function registerMove(server: McpServer): void {
       annotations: { openWorldHint: true },
       _meta: VISIBLE_TO_MODEL_ONLY,
     },
-    async ({ share, host, ...params }, extra) => dispatch(identity(extra), "move", share, params, host)
+    async ({ share, host, ...params }, extra: ToolExtra) => dispatch(identity(extra), "move", share, params, host)
   );
 }

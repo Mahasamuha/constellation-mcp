@@ -113,7 +113,7 @@ describe("listDirectory", () => {
 describe("fileInfo", () => {
   it("returns correct metadata for a regular file", async () => {
     await fs.writeFile(join(root, "hello.txt"), "hello");
-    const info = await fileInfo(join(root, "hello.txt"));
+    const info = await fileInfo(join(root, "hello.txt"), root);
 
     expect(info.type).toBe("file");
     expect(info.size).toBe(5);
@@ -123,7 +123,7 @@ describe("fileInfo", () => {
 
   it("returns type:directory for a directory", async () => {
     await fs.mkdir(join(root, "mydir"));
-    const info = await fileInfo(join(root, "mydir"));
+    const info = await fileInfo(join(root, "mydir"), root);
     expect(info.type).toBe("directory");
   });
 
@@ -131,13 +131,13 @@ describe("fileInfo", () => {
     await fs.writeFile(join(root, "real.txt"), "content");
     await fs.symlink(join(root, "real.txt"), join(root, "link.txt"));
 
-    const info = await fileInfo(join(root, "link.txt"));
+    const info = await fileInfo(join(root, "link.txt"), root);
     expect(info.type).toBe("symlink");
     expect(info.target).toBe(join(root, "real.txt"));
   });
 
   it("throws when path does not exist", async () => {
-    await expect(fileInfo(join(root, "nope.txt"))).rejects.toThrow();
+    await expect(fileInfo(join(root, "nope.txt"), root)).rejects.toThrow();
   });
 });
 
@@ -204,7 +204,7 @@ describe("findFiles", () => {
 describe("readFile", () => {
   it("reads full file content under cap", async () => {
     await fs.writeFile(join(root, "hello.txt"), "line1\nline2\nline3");
-    const result = await readFile(join(root, "hello.txt"), {
+    const result = await readFile(join(root, "hello.txt"), root, {
       max_file_size_kb: 100,
     });
 
@@ -215,7 +215,7 @@ describe("readFile", () => {
   it("throws FILE_TOO_LARGE for full read over cap", async () => {
     await fs.writeFile(join(root, "big.txt"), "x".repeat(2048));
 
-    const err = await readFile(join(root, "big.txt"), {
+    const err = await readFile(join(root, "big.txt"), root, {
       max_file_size_kb: 1,
     }).catch((e) => e);
 
@@ -226,7 +226,7 @@ describe("readFile", () => {
     const lines = Array.from({ length: 10 }, (_, i) => `line${i + 1}`);
     await fs.writeFile(join(root, "multi.txt"), lines.join("\n"));
 
-    const result = await readFile(join(root, "multi.txt"), {
+    const result = await readFile(join(root, "multi.txt"), root, {
       start_line: 3,
       end_line: 5,
       max_file_size_kb: 100,
@@ -238,7 +238,7 @@ describe("readFile", () => {
 
   it("reads to EOF when end_line is omitted", async () => {
     await fs.writeFile(join(root, "f.txt"), "a\nb\nc");
-    const result = await readFile(join(root, "f.txt"), {
+    const result = await readFile(join(root, "f.txt"), root, {
       start_line: 2,
       max_file_size_kb: 100,
     });
@@ -251,7 +251,7 @@ describe("readFile", () => {
     const content = Array.from({ length: 60 }, () => line).join("\n");
     await fs.writeFile(join(root, "large.txt"), content);
 
-    const result = await readFile(join(root, "large.txt"), {
+    const result = await readFile(join(root, "large.txt"), root, {
       start_line: 1,
       end_line: 3,
       max_file_size_kb: 1,
@@ -267,13 +267,42 @@ describe("readFile", () => {
     const content = Array.from({ length: 60 }, () => line).join("\n");
     await fs.writeFile(join(root, "large.txt"), content);
 
-    const err = await readFile(join(root, "large.txt"), {
+    const err = await readFile(join(root, "large.txt"), root, {
       start_line: 1,
       end_line: 60,
       max_file_size_kb: 1,
     }).catch((e) => e);
 
     expect(err.code).toBe("READ_TOO_LARGE");
+  });
+
+  // Simulates the window between an earlier realpath-based validation and this
+  // call: a symlink now sits at the exact path the caller was told was safe.
+  it("rejects reading through a symlink planted at the target path (O_NOFOLLOW)", async () => {
+    await fs.writeFile(join(root, "real.txt"), "secret elsewhere", "utf8");
+    const target = join(root, "target.txt");
+    await fs.symlink(join(root, "real.txt"), target);
+
+    const err = await readFile(target, root, { max_file_size_kb: 100 }).catch((e) => e);
+
+    expect(err.code).toBe("ELOOP");
+  });
+
+  it("rejects reading when an intermediate directory component is swapped for a symlink (TOCTOU)", async () => {
+    await fs.mkdir(join(root, "sub"));
+    await fs.writeFile(join(root, "sub", "secret.txt"), "sensitive");
+    const outside = join(root, "..", "outside-read");
+    await fs.mkdir(outside).catch(() => {});
+    try {
+      // Swap root/sub → symlink pointing outside the share
+      await fs.rm(join(root, "sub"), { recursive: true });
+      await fs.symlink(outside, join(root, "sub"));
+
+      const err = await readFile(join(root, "sub", "secret.txt"), root, { max_file_size_kb: 100 }).catch((e) => e);
+      expect(err.code).toBe("PATH_REJECTED");
+    } finally {
+      await fs.rm(outside, { recursive: true, force: true });
+    }
   });
 });
 
@@ -346,19 +375,19 @@ describe("grepFiles", () => {
 
 describe("writeFile", () => {
   it("creates a new file with content", async () => {
-    await writeFile(join(root, "new.txt"), { content: "hello" });
+    await writeFile(join(root, "new.txt"), root, { content: "hello" });
     expect(await fs.readFile(join(root, "new.txt"), "utf8")).toBe("hello");
   });
 
   it("overwrites existing file content", async () => {
     await fs.writeFile(join(root, "existing.txt"), "old");
-    await writeFile(join(root, "existing.txt"), { content: "new" });
+    await writeFile(join(root, "existing.txt"), root, { content: "new" });
     expect(await fs.readFile(join(root, "existing.txt"), "utf8")).toBe("new");
   });
 
   it("appends to existing file", async () => {
     await fs.writeFile(join(root, "log.txt"), "line1\n");
-    await writeFile(join(root, "log.txt"), {
+    await writeFile(join(root, "log.txt"), root, {
       content: "line2\n",
       mode: "append",
     });
@@ -366,8 +395,43 @@ describe("writeFile", () => {
   });
 
   it("creates parent directories on write", async () => {
-    await writeFile(join(root, "deep", "nested", "file.txt"), { content: "x" });
+    await writeFile(join(root, "deep", "nested", "file.txt"), root, { content: "x" });
     expect(await fs.readFile(join(root, "deep", "nested", "file.txt"), "utf8")).toBe("x");
+  });
+
+  // Simulates the window between an earlier realpath-based validation and this
+  // call: a symlink now sits at the exact path the caller was told was safe.
+  it("rejects (overwrite) writing through a symlink planted at the target path (O_NOFOLLOW)", async () => {
+    const target = join(root, "target.txt");
+    await fs.symlink(join(root, "..", "outside-target.txt"), target);
+
+    const err = await writeFile(target, root, { content: "pwned" }).catch((e) => e);
+
+    expect(err.code).toBe("ELOOP");
+  });
+
+  it("rejects (append) writing through a symlink planted at the target path (O_NOFOLLOW)", async () => {
+    const target = join(root, "target.txt");
+    await fs.symlink(join(root, "..", "outside-target.txt"), target);
+
+    const err = await writeFile(target, root, { content: "pwned", mode: "append" }).catch((e) => e);
+
+    expect(err.code).toBe("ELOOP");
+  });
+
+  it("rejects writing when an intermediate directory component is swapped for a symlink (TOCTOU)", async () => {
+    await fs.mkdir(join(root, "sub"));
+    const outside = join(root, "..", "outside-write");
+    await fs.mkdir(outside).catch(() => {});
+    try {
+      await fs.rm(join(root, "sub"), { recursive: true });
+      await fs.symlink(outside, join(root, "sub"));
+
+      const err = await writeFile(join(root, "sub", "pwned.txt"), root, { content: "x" }).catch((e) => e);
+      expect(err.code).toBe("PATH_REJECTED");
+    } finally {
+      await fs.rm(outside, { recursive: true, force: true });
+    }
   });
 });
 
@@ -378,7 +442,7 @@ describe("writeFile", () => {
 describe("editFile", () => {
   it("applies a single edit", async () => {
     await fs.writeFile(join(root, "f.txt"), "hello world");
-    await editFile(join(root, "f.txt"), "f.txt", {
+    await editFile(join(root, "f.txt"), root, "f.txt", {
       edits: [{ old_text: "hello", new_text: "goodbye" }],
     });
     expect(await fs.readFile(join(root, "f.txt"), "utf8")).toBe("goodbye world");
@@ -386,7 +450,7 @@ describe("editFile", () => {
 
   it("applies multiple edits in order", async () => {
     await fs.writeFile(join(root, "f.txt"), "aaa bbb ccc");
-    await editFile(join(root, "f.txt"), "f.txt", {
+    await editFile(join(root, "f.txt"), root, "f.txt", {
       edits: [
         { old_text: "aaa", new_text: "AAA" },
         { old_text: "bbb", new_text: "BBB" },
@@ -397,7 +461,7 @@ describe("editFile", () => {
 
   it("throws EDIT_NO_MATCH when old_text not found", async () => {
     await fs.writeFile(join(root, "f.txt"), "original content");
-    const err = await editFile(join(root, "f.txt"), "f.txt", {
+    const err = await editFile(join(root, "f.txt"), root, "f.txt", {
       edits: [{ old_text: "NOTFOUND", new_text: "x" }],
     }).catch((e) => e);
 
@@ -407,7 +471,7 @@ describe("editFile", () => {
 
   it("throws EDIT_AMBIGUOUS when old_text matches multiple times", async () => {
     await fs.writeFile(join(root, "f.txt"), "foo bar foo");
-    const err = await editFile(join(root, "f.txt"), "f.txt", {
+    const err = await editFile(join(root, "f.txt"), root, "f.txt", {
       edits: [{ old_text: "foo", new_text: "baz" }],
     }).catch((e) => e);
 
@@ -417,7 +481,7 @@ describe("editFile", () => {
 
   it("leaves file untouched when a later edit fails", async () => {
     await fs.writeFile(join(root, "f.txt"), "aaa bbb ccc");
-    await editFile(join(root, "f.txt"), "f.txt", {
+    await editFile(join(root, "f.txt"), root, "f.txt", {
       edits: [
         { old_text: "aaa", new_text: "AAA" },
         { old_text: "NOTFOUND", new_text: "x" },
@@ -430,7 +494,7 @@ describe("editFile", () => {
 
   it("dry_run returns diff without writing", async () => {
     await fs.writeFile(join(root, "f.txt"), "before");
-    const result = await editFile(join(root, "f.txt"), "f.txt", {
+    const result = await editFile(join(root, "f.txt"), root, "f.txt", {
       edits: [{ old_text: "before", new_text: "after" }],
       dry_run: true,
     });
@@ -442,11 +506,44 @@ describe("editFile", () => {
 
   it("returns a unified diff on successful edit", async () => {
     await fs.writeFile(join(root, "f.txt"), "original");
-    const result = await editFile(join(root, "f.txt"), "f.txt", {
+    const result = await editFile(join(root, "f.txt"), root, "f.txt", {
       edits: [{ old_text: "original", new_text: "modified" }],
     });
     expect(typeof result.diff).toBe("string");
     expect(result.diff.length).toBeGreaterThan(0);
+  });
+
+  // Simulates the window between an earlier realpath-based validation and this
+  // call: a symlink now sits at the exact path the caller was told was safe.
+  it("rejects editing through a symlink planted at the target path (O_NOFOLLOW)", async () => {
+    await fs.writeFile(join(root, "real.txt"), "hello world", "utf8");
+    const target = join(root, "target.txt");
+    await fs.symlink(join(root, "real.txt"), target);
+
+    const err = await editFile(target, root, "target.txt", {
+      edits: [{ old_text: "hello", new_text: "goodbye" }],
+    }).catch((e) => e);
+
+    expect(err.code).toBe("ELOOP");
+    expect(await fs.readFile(join(root, "real.txt"), "utf8")).toBe("hello world");
+  });
+
+  it("rejects editing when an intermediate directory component is swapped for a symlink (TOCTOU)", async () => {
+    await fs.mkdir(join(root, "sub"));
+    await fs.writeFile(join(root, "sub", "f.txt"), "original");
+    const outside = join(root, "..", "outside-edit");
+    await fs.mkdir(outside).catch(() => {});
+    try {
+      await fs.rm(join(root, "sub"), { recursive: true });
+      await fs.symlink(outside, join(root, "sub"));
+
+      const err = await editFile(join(root, "sub", "f.txt"), root, "sub/f.txt", {
+        edits: [{ old_text: "original", new_text: "pwned" }],
+      }).catch((e) => e);
+      expect(err.code).toBe("PATH_REJECTED");
+    } finally {
+      await fs.rm(outside, { recursive: true, force: true });
+    }
   });
 });
 
@@ -457,7 +554,7 @@ describe("editFile", () => {
 describe("copyPath", () => {
   it("copies a file", async () => {
     await fs.writeFile(join(root, "src.txt"), "content");
-    await copyPath(join(root, "src.txt"), join(root, "dst.txt"), { dst_relative_path: "dst.txt" });
+    await copyPath(join(root, "src.txt"), join(root, "dst.txt"), root, root, { dst_relative_path: "dst.txt" });
 
     expect(await fs.readFile(join(root, "dst.txt"), "utf8")).toBe("content");
     // Source still exists
@@ -469,7 +566,7 @@ describe("copyPath", () => {
     await fs.writeFile(join(root, "srcdir", "a.txt"), "a");
     await fs.writeFile(join(root, "srcdir", "b.txt"), "b");
 
-    await copyPath(join(root, "srcdir"), join(root, "dstdir"), { dst_relative_path: "dstdir" });
+    await copyPath(join(root, "srcdir"), join(root, "dstdir"), root, root, { dst_relative_path: "dstdir" });
 
     expect(await fs.readFile(join(root, "dstdir", "a.txt"), "utf8")).toBe("a");
     expect(await fs.readFile(join(root, "dstdir", "b.txt"), "utf8")).toBe("b");
@@ -479,11 +576,23 @@ describe("copyPath", () => {
     await fs.writeFile(join(root, "src.txt"), "a");
     await fs.writeFile(join(root, "dst.txt"), "b");
 
-    const err = await copyPath(join(root, "src.txt"), join(root, "dst.txt"), {
+    const err = await copyPath(join(root, "src.txt"), join(root, "dst.txt"), root, root, {
       dst_relative_path: "dst.txt",
     }).catch((e) => e);
 
     expect(err.code).toBe("DEST_EXISTS");
+  });
+
+  it("throws SRC_IS_SYMLINK when the top-level source is a symlink", async () => {
+    await fs.writeFile(join(root, "real.txt"), "content");
+    await fs.symlink(join(root, "real.txt"), join(root, "link.txt"));
+
+    const err = await copyPath(join(root, "link.txt"), join(root, "dst.txt"), root, root, {
+      dst_relative_path: "dst.txt",
+    }).catch((e) => e);
+
+    expect(err.code).toBe("SRC_IS_SYMLINK");
+    await expect(fs.access(join(root, "dst.txt"))).rejects.toThrow();
   });
 
   it("skips symlinks found during a recursive directory copy", async () => {
@@ -493,7 +602,7 @@ describe("copyPath", () => {
     await fs.writeFile(join(root, "srcdir", "a.txt"), "a");
     await fs.symlink(join(root, "secret", "id_rsa"), join(root, "srcdir", "link.txt"));
 
-    await copyPath(join(root, "srcdir"), join(root, "dstdir"), { dst_relative_path: "dstdir" });
+    await copyPath(join(root, "srcdir"), join(root, "dstdir"), root, root, { dst_relative_path: "dstdir" });
 
     expect(await fs.readFile(join(root, "dstdir", "a.txt"), "utf8")).toBe("a");
     await expect(fs.access(join(root, "dstdir", "link.txt"))).rejects.toThrow();
@@ -507,7 +616,7 @@ describe("copyPath", () => {
 describe("movePath", () => {
   it("moves a file", async () => {
     await fs.writeFile(join(root, "src.txt"), "data");
-    await movePath(join(root, "src.txt"), join(root, "dst.txt"), { dst_relative_path: "dst.txt" });
+    await movePath(join(root, "src.txt"), join(root, "dst.txt"), root, root, { dst_relative_path: "dst.txt" });
 
     expect(await fs.readFile(join(root, "dst.txt"), "utf8")).toBe("data");
     await expect(fs.access(join(root, "src.txt"))).rejects.toThrow();
@@ -517,7 +626,7 @@ describe("movePath", () => {
     await fs.writeFile(join(root, "src.txt"), "a");
     await fs.writeFile(join(root, "dst.txt"), "b");
 
-    const err = await movePath(join(root, "src.txt"), join(root, "dst.txt"), {
+    const err = await movePath(join(root, "src.txt"), join(root, "dst.txt"), root, root, {
       dst_relative_path: "dst.txt",
     }).catch((e) => e);
 
@@ -527,7 +636,7 @@ describe("movePath", () => {
   it("creates destination parent directories", async () => {
     await fs.writeFile(join(root, "file.txt"), "x");
     const dstRelativePath = join("deep", "nested", "file.txt");
-    await movePath(join(root, "file.txt"), join(root, dstRelativePath), {
+    await movePath(join(root, "file.txt"), join(root, dstRelativePath), root, root, {
       dst_relative_path: dstRelativePath,
     });
     expect(
@@ -546,7 +655,7 @@ describe("movePath EXDEV fallback", () => {
     vi.spyOn(fs, "rename").mockRejectedValueOnce(Object.assign(new Error("cross-device link"), { code: "EXDEV" }));
     vi.spyOn(fs, "copyFile").mockRejectedValueOnce(new Error("ENOSPC: no space left on device"));
 
-    const err = await movePath(join(root, "src.txt"), join(root, "dst.txt"), {
+    const err = await movePath(join(root, "src.txt"), join(root, "dst.txt"), root, root, {
       dst_relative_path: "dst.txt",
     }).catch((e) => e);
 
@@ -563,7 +672,7 @@ describe("movePath EXDEV fallback", () => {
     vi.spyOn(fs, "rename").mockRejectedValueOnce(Object.assign(new Error("cross-device link"), { code: "EXDEV" }));
     vi.spyOn(fs, "rm").mockRejectedValueOnce(new Error("EBUSY: resource busy or locked"));
 
-    const err = await movePath(join(root, "src.txt"), join(root, "dst.txt"), {
+    const err = await movePath(join(root, "src.txt"), join(root, "dst.txt"), root, root, {
       dst_relative_path: "dst.txt",
     }).catch((e) => e);
 
@@ -581,20 +690,20 @@ describe("movePath EXDEV fallback", () => {
 
 describe("createDirectory", () => {
   it("creates a single directory", async () => {
-    await createDirectory(join(root, "newdir"));
+    await createDirectory(join(root, "newdir"), root);
     const stat = await fs.stat(join(root, "newdir"));
     expect(stat.isDirectory()).toBe(true);
   });
 
   it("creates nested directories", async () => {
-    await createDirectory(join(root, "a", "b", "c"));
+    await createDirectory(join(root, "a", "b", "c"), root);
     const stat = await fs.stat(join(root, "a", "b", "c"));
     expect(stat.isDirectory()).toBe(true);
   });
 
   it("does not throw if directory already exists", async () => {
     await fs.mkdir(join(root, "exists"));
-    await expect(createDirectory(join(root, "exists"))).resolves.toBeUndefined();
+    await expect(createDirectory(join(root, "exists"), root)).resolves.toBeUndefined();
   });
 });
 
@@ -605,7 +714,7 @@ describe("createDirectory", () => {
 describe("deletePath", () => {
   it("deletes a file", async () => {
     await fs.writeFile(join(root, "del.txt"), "x");
-    await deletePath(join(root, "del.txt"), { relative_path: "del.txt" });
+    await deletePath(join(root, "del.txt"), root, { relative_path: "del.txt" });
     await expect(fs.access(join(root, "del.txt"))).rejects.toThrow();
   });
 
@@ -614,7 +723,7 @@ describe("deletePath", () => {
     await fs.writeFile(join(root, "mydir", "a.txt"), "hello");
     await fs.writeFile(join(root, "mydir", "b.txt"), "world");
 
-    const result = await deletePath(join(root, "mydir"), { relative_path: "mydir" });
+    const result = await deletePath(join(root, "mydir"), root, { relative_path: "mydir" });
 
     expect(result).toMatchObject({
       requires_confirmation: true,
@@ -629,7 +738,7 @@ describe("deletePath", () => {
     await fs.mkdir(join(root, "mydir"));
     await fs.writeFile(join(root, "mydir", "file.txt"), "x");
 
-    await deletePath(join(root, "mydir"), { relative_path: "mydir", recursive: true });
+    await deletePath(join(root, "mydir"), root, { relative_path: "mydir", recursive: true });
     await expect(fs.access(join(root, "mydir"))).rejects.toThrow();
   });
 });

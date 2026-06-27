@@ -66,3 +66,8 @@ exposes usable credentials. Rejected.
   that token. Useful for auditing stale tokens.
 - Rotation is exposed via `constellation node rotate` (CLI) and the Danger Zone in
   the node GUI. The relay management API exposes only revocation, not rotation.
+- `constellation hub rotate-token` follows this same protocol (see
+  [ADR 0019](0019-hub-live-token-rotation.md) for hub-specific details: it persists
+  to `env_file` instead of `node.yaml`, and a daemon-reachability check via a
+  loopback control channel comes first, since a second hub connection authenticated
+  with the same token would evict the running daemon's live connection).

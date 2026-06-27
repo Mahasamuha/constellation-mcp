@@ -76,8 +76,9 @@ on mobile and non-claude.ai clients, which are a primary target per
 
 ## Consequences
 
-- `TODO_DEFERRED.md`'s "Unbundle highlight.js from the File Viewer" entry is stale
-  (written before the switch to Prism) and should be retired or rewritten against
-  Prism if CDN whitelisting ever becomes consistent enough to revisit.
+- The project's private deferred-work backlog (not part of this repo) has a stale
+  "Unbundle highlight.js from the File Viewer" entry, written before the switch to
+  Prism — it should be retired or rewritten against Prism if CDN whitelisting ever
+  becomes consistent enough to revisit.
 - Adding a new language requires a `packages/telescope` rebuild (`dist/app.html` is
   copied into the relay image at Docker build time — see `packages/relay/Dockerfile`).

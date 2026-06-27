@@ -28,11 +28,15 @@ class FakeChild extends EventEmitter {
    * succeeds, matching real OS signal semantics where SIGKILL can't be caught.
    */
   ignoreSigterm = false;
+  /** The most recent "init" message sent to this worker — lets tests assert what
+   * SubnodePool actually threads through (e.g. max_file_size_kb from HubConfig). */
+  lastInit: Record<string, unknown> | null = null;
   private requests = new Map<string, () => void>();
 
   send(msg: unknown): boolean {
     const m = msg as Record<string, unknown>;
     if (m["type"] === "init") {
+      this.lastInit = m;
       queueMicrotask(() => this.emit("message", { type: "ready" }));
     } else if (m["type"] === "request") {
       const requestId = m["request_id"] as string;
@@ -100,17 +104,23 @@ function workersConfig(overrides: Partial<SubnodeWorkersConfig> = {}): SubnodeWo
   };
 }
 
-function configWith(subnode_uid: SubnodeUidConfig, workers?: Partial<SubnodeWorkersConfig>): HubConfig {
+function configWith(
+  subnode_uid: SubnodeUidConfig,
+  workers?: Partial<SubnodeWorkersConfig>,
+  maxConcurrentSubnodes = 0
+): HubConfig {
   return {
     relay_url: "https://relay.example.com",
     hub_name: "test-hub",
     subnode_workers: workersConfig(workers),
+    max_concurrent_subnodes: maxConcurrentSubnodes,
     subnode_rpc_timeout_seconds: 30,
     subnode_uid,
     subnode_gid: {},
     shares: [],
     identity: { claims: [], user_map: [], allow_preferred_username: false },
     audit_log: "/var/log/constellation/audit.jsonl",
+    max_file_size_kb: 100,
   };
 }
 
@@ -203,6 +213,19 @@ describe("SubnodePool.dispatch", () => {
     expect(isDispatchError(result)).toBe(false);
     expect(result).toEqual({ result: { ok: true }, error: undefined });
 
+    await pool.shutdown(0);
+  });
+
+  it("sends the configured max_file_size_kb to the spawned worker, not a hardcoded default", async () => {
+    const pool = new SubnodePool(makeConfig({ max_file_size_kb: 250 }), {});
+
+    const dispatchPromise = pool.dispatch(identity, "list_directory", "docs", {}, "req-1");
+    await waitUntil(() => forkedChildren[0]?.hasPending("req-1") ?? false);
+
+    expect(forkedChildren[0]!.lastInit).toMatchObject({ max_file_size_kb: 250 });
+
+    forkedChildren[0]!.respond("req-1");
+    await dispatchPromise;
     await pool.shutdown(0);
   });
 
@@ -311,6 +334,40 @@ describe("SubnodePool.dispatch", () => {
     expect(isDispatchError(r1)).toBe(false);
     expect(isDispatchError(r2)).toBe(true);
     expect((r2 as { kind: string }).kind).toBe("timeout");
+  });
+
+  // Regression test for the queue-sweep fix: a queued request used to only ever
+  // time out as a side effect of some other request completing (onRequestComplete's
+  // opportunistic deadline check) — if the worker holding the only slot never
+  // finished anything, the queue timeout never actually fired on schedule.
+  it("expires a queued request on its own timer, with no other request ever completing to trigger it", async () => {
+    const pool = new SubnodePool(
+      makeConfig({
+        subnode_rpc_timeout_seconds: 1,
+        subnode_workers: workersConfig({ min: 1, max: 1, queue_timeout: 0.02 }), // 20ms
+      }),
+      {}
+    );
+
+    const d1 = pool.dispatch(identity, "list_directory", "docs", {}, "req-1");
+    const d2 = pool.dispatch(identity, "list_directory", "docs", {}, "req-2");
+
+    await waitUntil(() => forkedChildren[0]?.hasPending("req-1") ?? false);
+
+    // req-1 is never responded to here — simulates a worker stuck on a long-but-
+    // in-budget operation. Nothing ever calls onRequestComplete, so req-2 must
+    // expire on its own timer rather than hang forever.
+    const r2 = await d2;
+    expect(isDispatchError(r2)).toBe(true);
+    expect((r2 as { kind: string }).kind).toBe("timeout");
+
+    // req-1 is untouched — confirms req-2's own timer fired, not some side effect
+    // of req-1 having completed.
+    expect(forkedChildren[0]!.hasPending("req-1")).toBe(true);
+
+    forkedChildren[0]!.respond("req-1");
+    await d1;
+    await pool.shutdown(0);
   });
 
   it("warm worker gets warm_idle_seconds timer; burst worker gets burst_idle_seconds timer", async () => {
@@ -450,5 +507,48 @@ describe("SubnodePool.dispatch", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  describe("max_concurrent_subnodes", () => {
+    const bob: ResolvedIdentity = { username: "bob", uid: 1001, gid: 1000, home: "/home/bob" };
+    const carol: ResolvedIdentity = { username: "carol", uid: 1002, gid: 1000, home: "/home/carol" };
+
+    it("rejects a new identity once the global cap is reached, without disturbing identities already tracked", async () => {
+      const pool = new SubnodePool(configWith({}, undefined, 1), {});
+
+      const d1 = pool.dispatch(identity, "list_directory", "docs", {}, "req-1");
+      await waitUntil(() => forkedChildren[0]?.hasPending("req-1") ?? false);
+      forkedChildren[0]!.respond("req-1");
+      expect(isDispatchError(await d1)).toBe(false);
+
+      // alice's subnode now occupies the one slot the cap allows — bob, a new
+      // identity, must be rejected rather than spawning a second one.
+      const bobResult = await pool.dispatch(bob, "list_directory", "docs", {}, "req-2");
+      expect(isDispatchError(bobResult)).toBe(true);
+      expect((bobResult as { kind: string }).kind).toBe("subnode_limit");
+      expect(forkedChildren.length).toBe(1);
+
+      // alice is already tracked, so the cap must not block her further requests.
+      const d3 = pool.dispatch(identity, "list_directory", "docs", {}, "req-3");
+      await waitUntil(() => forkedChildren[0]!.hasPending("req-3"));
+      forkedChildren[0]!.respond("req-3");
+      expect(isDispatchError(await d3)).toBe(false);
+
+      await pool.shutdown(0);
+    });
+
+    it("treats 0 (the default) as unlimited", async () => {
+      const pool = new SubnodePool(configWith({}, undefined, 0), {});
+
+      for (const [id, reqId] of [[identity, "req-1"], [bob, "req-2"], [carol, "req-3"]] as const) {
+        const d = pool.dispatch(id, "list_directory", "docs", {}, reqId);
+        await waitUntil(() => forkedChildren.at(-1)?.hasPending(reqId) ?? false);
+        forkedChildren.at(-1)!.respond(reqId);
+        expect(isDispatchError(await d)).toBe(false);
+      }
+      expect(forkedChildren.length).toBe(3);
+
+      await pool.shutdown(0);
+    });
   });
 });

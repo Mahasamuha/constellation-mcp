@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { confirm } from "@tauri-apps/plugin-dialog";
 import "./Settings.css";
 
 interface NodeConfig {
@@ -69,6 +70,11 @@ export default function Settings() {
   }
 
   async function deregister() {
+    const ok = await confirm(
+      "Deregister this node? This will revoke your relay token and stop the daemon. You will need to go through the registration flow again to use Constellation.",
+      { title: "Deregister Node", kind: "warning" }
+    );
+    if (!ok) return;
     setDeregistering(true);
     setError("");
     try {

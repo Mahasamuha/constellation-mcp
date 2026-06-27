@@ -1,5 +1,5 @@
 import express, { Express, NextFunction, Request, Response } from "express";
-import { randomUUID } from "node:crypto";
+import { randomUUID, randomBytes } from "node:crypto";
 import cookieParser from "cookie-parser";
 import cors from "cors";
 import { rateLimit } from "express-rate-limit";
@@ -11,6 +11,7 @@ import { setupRouter, setupMiddleware } from "./setup.js";
 import { prisma } from "./db.js";
 import { createLogger } from "@constellation/shared";
 import { config } from "./config.js";
+import { classifyHttpRoute } from "./rate-limit-classify.js";
 
 const log = createLogger("app");
 
@@ -53,10 +54,22 @@ app.use(cors({
 
 app.use(express.json({ limit: "1mb" }));
 app.use(express.urlencoded({ extended: true, limit: "1mb" }));
-app.use(cookieParser());
+
+// COOKIE_SECRET signs flow-state cookies (login_pending, oidc_pending, activate_pending,
+// csrf_activate) so their redirectUri and PKCE state can't be tampered with. An
+// ephemeral random secret is generated at startup if not provided — this protects
+// within-process integrity; set COOKIE_SECRET for cross-restart consistency.
+const cookieSecret = process.env["COOKIE_SECRET"] ?? (() => {
+  const ephemeral = randomBytes(32).toString("hex");
+  process.stderr.write("WARNING: COOKIE_SECRET is not set — using an ephemeral secret. Set COOKIE_SECRET for cross-restart cookie integrity.\n");
+  return ephemeral;
+})();
+app.use(cookieParser(cookieSecret));
 
 app.use((req, res, next) => {
-  const id = (req.headers["x-request-id"] as string | undefined) ?? randomUUID();
+  const raw = req.headers["x-request-id"] as string | undefined;
+  // Strip non-printable ASCII and clamp length to prevent log injection.
+  const id = raw ? raw.replace(/[^\x20-\x7E]/g, "").slice(0, 64) || randomUUID() : randomUUID();
   (req as Request & { id: string }).id = id;
   res.set("X-Request-Id", id);
   next();
@@ -68,17 +81,10 @@ app.use((_req, res, next) => {
   res.set("Referrer-Policy", "strict-origin-when-cross-origin");
   // Inline styles are used in server-rendered auth/setup pages; no JS or external resources.
   res.set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'");
+  if (config.secureCookies) res.set("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
   next();
 });
 
-app.get("/healthz", async (_req: Request, res: Response) => {
-  try {
-    await prisma.$queryRaw`SELECT 1`;
-    res.json({ status: "ok" });
-  } catch {
-    res.status(503).json({ status: "error", reason: "database_unavailable" });
-  }
-});
 
 export const oauthLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -90,28 +96,73 @@ export const oauthLimiter = rateLimit({
 
 // Device code polling is high-frequency by design (5s interval, 15min TTL ≈ 180 polls).
 // Give it a separate, higher-capacity bucket so it doesn't exhaust the strict OAuth limit.
+// On trip, this bucket alone emits RFC 8628 §3.5's "slow_down" token-error response
+// (400 + {error: "slow_down"}) instead of a generic 429 — it's the only bucket whose
+// traffic is exclusively device-flow polling, so existing pollers that already
+// understand authorization_pending/access_denied can back off instead of hard-failing.
 export const devicePollLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   limit: config.rateLimits.devicePollPer15Min,
   standardHeaders: "draft-7",
   legacyHeaders: false,
+  statusCode: 400,
+  message: { error: "slow_down" },
+});
+
+// The device-authorization consent flow (/activate*) — a separate bucket from
+// oauthLimiter since one flow spans several requests (code entry, login or OIDC
+// callback, consent), not the single round-trip oauthPer15Min is sized for.
+export const deviceAuthLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: config.rateLimits.deviceAuthPer15Min,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
   message: { error: "rate_limit_exceeded" },
 });
 
-app.use("/oauth/token", (req, res, next) => {
-  const grant = (req.body as Record<string, unknown>)?.["grant_type"];
-  if (grant === "urn:ietf:params:oauth:grant-type:device_code") {
-    devicePollLimiter(req, res, next);
-  } else {
-    oauthLimiter(req, res, next);
+// Catch-all for any route not explicitly classified in the dispatcher below.
+export const defaultLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: config.rateLimits.defaultPer15Min,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  message: { error: "rate_limit_exceeded" },
+});
+
+/** Single rate-limit dispatcher — every request that reaches this point hits exactly
+ * one bucket, decided by classifyHttpRoute() (rate-limit-classify.ts). See that
+ * function for the exemptions and the unclassified-falls-through-to-strict rule. */
+app.use((req: Request, res: Response, next: NextFunction) => {
+  const bucket = classifyHttpRoute(req.path, (req.body as Record<string, unknown> | undefined)?.["grant_type"]);
+  switch (bucket) {
+    case "exempt": return next();
+    case "oauth": return oauthLimiter(req, res, next);
+    case "device-poll": return devicePollLimiter(req, res, next);
+    case "device-auth": return deviceAuthLimiter(req, res, next);
+    case "default": return defaultLimiter(req, res, next);
   }
 });
-app.use("/oauth/register", oauthLimiter);
-app.use("/oauth/device/code", oauthLimiter);
-app.use("/setup", oauthLimiter);
-app.use("/auth/login", oauthLimiter);
 
 app.use(setupMiddleware);
+
+// /healthz is after the rate-limit dispatcher (not before it) so it can't be used
+// to exhaust the PG connection pool unchecked. It gets its own generous bucket
+// (120/min) to avoid breaking load-balancer health checks.
+const healthzLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 120,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  message: { error: "rate_limit_exceeded" },
+});
+app.get("/healthz", healthzLimiter, async (_req: Request, res: Response) => {
+  try {
+    await prisma.$queryRaw`SELECT 1`;
+    res.json({ status: "ok" });
+  } catch {
+    res.status(503).json({ status: "error", reason: "database_unavailable" });
+  }
+});
 
 app.use("/", setupRouter);
 app.use("/", oauthRouter);

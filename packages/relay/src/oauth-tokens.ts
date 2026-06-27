@@ -36,6 +36,7 @@ export function makeTokenPair(): TokenPair {
 }
 
 export function sendTokenResponse(res: Response, tokens: TokenPair): void {
+  res.set("Cache-Control", "no-store");
   res.json({
     access_token: tokens.accessToken,
     token_type: "Bearer",

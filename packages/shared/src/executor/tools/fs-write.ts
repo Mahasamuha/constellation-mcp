@@ -3,6 +3,8 @@ import {
   constants as fsConstants,
 } from "node:fs";
 import { join, dirname } from "node:path";
+import { openNoFollow } from "./safe-open.js";
+import { assertPathStable } from "./safe-path.js";
 
 // ---------------------------------------------------------------------------
 // write_file
@@ -11,14 +13,33 @@ import { join, dirname } from "node:path";
 export interface WriteFileParams {
   content: string;
   mode?: "overwrite" | "append";
+  maxFileSizeKb?: number;
 }
 
-export async function writeFile(absolutePath: string, params: WriteFileParams): Promise<void> {
+export async function writeFile(absolutePath: string, boundaryRoot: string, params: WriteFileParams): Promise<void> {
+  if (params.maxFileSizeKb !== undefined) {
+    const writeSizeKb = Buffer.byteLength(params.content, "utf8") / 1024;
+    if (writeSizeKb > params.maxFileSizeKb) {
+      throw Object.assign(
+        new Error(`Write content exceeds limit: ${Math.ceil(writeSizeKb)} KB > ${params.maxFileSizeKb} KB`),
+        { code: "WRITE_TOO_LARGE", write_size_kb: Math.ceil(writeSizeKb), max_file_size_kb: params.maxFileSizeKb }
+      );
+    }
+  }
+  await assertPathStable(absolutePath, boundaryRoot);
   await fs.mkdir(dirname(absolutePath), { recursive: true });
-  if (params.mode === "append") {
-    await fs.appendFile(absolutePath, params.content, "utf8");
-  } else {
-    await fs.writeFile(absolutePath, params.content, "utf8");
+  // Re-validate after mkdir: a TOCTOU race could have swapped an intermediate
+  // component to a symlink during the recursive mkdir, creating dirs outside the
+  // share. openNoFollow still protects the file write, but catching it here
+  // prevents the write attempt entirely.
+  await assertPathStable(absolutePath, boundaryRoot);
+  const flags = fsConstants.O_WRONLY | fsConstants.O_CREAT |
+    (params.mode === "append" ? fsConstants.O_APPEND : fsConstants.O_TRUNC);
+  const handle = await openNoFollow(absolutePath, flags);
+  try {
+    await handle.writeFile(params.content, "utf8");
+  } finally {
+    await handle.close();
   }
 }
 
@@ -26,8 +47,11 @@ export async function writeFile(absolutePath: string, params: WriteFileParams): 
 // create_directory
 // ---------------------------------------------------------------------------
 
-export async function createDirectory(absolutePath: string): Promise<void> {
+export async function createDirectory(absolutePath: string, boundaryRoot: string): Promise<void> {
+  await assertPathStable(absolutePath, boundaryRoot);
   await fs.mkdir(absolutePath, { recursive: true });
+  // Re-validate after mkdir for the same TOCTOU reason as in writeFile.
+  await assertPathStable(absolutePath, boundaryRoot);
 }
 
 // ---------------------------------------------------------------------------
@@ -49,8 +73,10 @@ export interface DeleteSummary {
 
 export async function deletePath(
   absolutePath: string,
+  boundaryRoot: string,
   params: DeleteParams
 ): Promise<DeleteSummary | void> {
+  await assertPathStable(absolutePath, boundaryRoot);
   const stat = await fs.lstat(absolutePath);
 
   if (stat.isDirectory() && !params.recursive) {
@@ -71,7 +97,7 @@ async function dirStats(dir: string): Promise<{ size: number; count: number }> {
       size += sub.size;
       count += sub.count;
     } else {
-      const s = await fs.stat(full);
+      const s = await fs.lstat(full);
       size += s.size;
       count++;
     }
@@ -89,7 +115,9 @@ export interface MoveParams {
   dst_relative_path: string;
 }
 
-export async function movePath(srcAbsolutePath: string, dstAbsolutePath: string, params: MoveParams): Promise<void> {
+export async function movePath(srcAbsolutePath: string, dstAbsolutePath: string, srcRoot: string, dstRoot: string, params: MoveParams): Promise<void> {
+  await assertPathStable(srcAbsolutePath, srcRoot);
+  await assertPathStable(dstAbsolutePath, dstRoot);
   await assertNotExists(dstAbsolutePath, params.dst_relative_path);
   await fs.mkdir(dirname(dstAbsolutePath), { recursive: true });
   try {
@@ -142,19 +170,25 @@ export interface CopyParams {
   dst_relative_path: string;
 }
 
-export async function copyPath(srcAbsolutePath: string, dstAbsolutePath: string, params: CopyParams): Promise<void> {
+export async function copyPath(srcAbsolutePath: string, dstAbsolutePath: string, srcRoot: string, dstRoot: string, params: CopyParams): Promise<void> {
+  await assertPathStable(srcAbsolutePath, srcRoot);
+  await assertPathStable(dstAbsolutePath, dstRoot);
+  const srcStat = await fs.lstat(srcAbsolutePath);
+  if (srcStat.isSymbolicLink()) {
+    throw Object.assign(new Error("Source path is a symlink — copy is not supported for symlinks"), { code: "SRC_IS_SYMLINK" });
+  }
   await assertNotExists(dstAbsolutePath, params.dst_relative_path);
   await fs.mkdir(dirname(dstAbsolutePath), { recursive: true });
   await copyRecursive(srcAbsolutePath, dstAbsolutePath);
 }
 
 /**
- * `src`/`dst` at the top level are already realpath-resolved and boundary-checked by the
- * executor dispatcher, so they can never be symlinks themselves. Entries discovered via
- * `readdir` during the walk are not re-validated against the share root, so a symlink
- * encountered here is skipped outright rather than dereferenced (which would copy whatever
- * it points to, including paths outside the share root) or recreated as a symlink at the
- * destination (which would let the destination point outside the share root too).
+ * Top-level `src` is guaranteed non-symlink by the `lstat` check in `copyPath`.
+ * Entries discovered via `readdir` during the walk are not re-validated against the share
+ * root, so a symlink encountered here is skipped outright rather than dereferenced (which
+ * would copy whatever it points to, including paths outside the share root) or recreated
+ * as a symlink at the destination (which would let the destination point outside the
+ * share root too).
  */
 async function copyRecursive(src: string, dst: string): Promise<void> {
   const stat = await fs.lstat(src);
@@ -165,6 +199,11 @@ async function copyRecursive(src: string, dst: string): Promise<void> {
       await copyRecursive(join(src, entry), join(dst, entry));
     }
   } else {
+    // Verify dst is not a symlink before writing — COPYFILE_EXCL uses O_EXCL which
+    // rejects an existing symlink, but a defense-in-depth lstat check here makes the
+    // intent explicit and guards against libuv behavior changes.
+    const dstStat = await fs.lstat(dst).catch(() => null);
+    if (dstStat?.isSymbolicLink()) return;
     await fs.copyFile(src, dst, fsConstants.COPYFILE_EXCL);
   }
 }
