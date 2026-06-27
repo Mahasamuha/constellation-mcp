@@ -594,7 +594,19 @@ function isAllowedRedirectUri(uri: string): boolean {
     const host = parsed.hostname;
     return host === "localhost" || host === "127.0.0.1" || host === "::1";
   }
-  return true;
+  if (scheme === "https:") {
+    // Allow only origins explicitly listed in config (defaults cover documented MCP clients;
+    // operators extend via OAUTH_ALLOWED_REDIRECT_ORIGINS). Prevents arbitrary redirect-URI
+    // registration from being used for authorization-code phishing.
+    return config.oauthAllowedRedirectOrigins.some((origin) => {
+      try {
+        return new URL(origin).hostname === parsed.hostname;
+      } catch {
+        return false;
+      }
+    });
+  }
+  return false;
 }
 
 function asStringArray(val: unknown): string[] {

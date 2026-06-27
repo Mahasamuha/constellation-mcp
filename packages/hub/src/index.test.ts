@@ -50,8 +50,16 @@ describe("resolveDstShare", () => {
     expect(resolveDstShare(envelope({ dst_root: "/srv/other" }), "move", registry)).toBe("other");
   });
 
-  it("returns null when dst_root doesn't match any registered share", () => {
-    expect(resolveDstShare(envelope({ dst_root: "/srv/unregistered" }), "copy", registry)).toBeNull();
+  it("returns the normalized path (not null) when dst_root doesn't match any registered share", () => {
+    // Fail-closed: an unrecognised dst_root returns the path itself so checkPermission
+    // rejects it as an unknown share, rather than null which would skip the check entirely.
+    expect(resolveDstShare(envelope({ dst_root: "/srv/unregistered" }), "copy", registry)).toBe("/srv/unregistered");
+  });
+
+  it("returns the normalized path when dst_root is a symlink-style non-canonical path", () => {
+    // path.resolve strips trailing slashes; a symlink pointing at a share root still
+    // won't match guessShare (no symlink resolution), so we get the normalized path back.
+    expect(resolveDstShare(envelope({ dst_root: "/srv/unregistered/" }), "copy", registry)).toBe("/srv/unregistered");
   });
 });
 

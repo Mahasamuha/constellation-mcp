@@ -571,11 +571,20 @@ export function resolveDstShare(
 ): string | null {
   if (tool !== "copy" && tool !== "move") return null;
   if (typeof envelope.params["dst_share"] === "string") return envelope.params["dst_share"];
-  if (typeof envelope.params["dst_root"] === "string") return guessShare(resolve(envelope.params["dst_root"]), registry) || null;
+  if (typeof envelope.params["dst_root"] === "string") {
+    const normalized = resolve(envelope.params["dst_root"]);
+    // Fail closed: if dst_root doesn't map to a known share (e.g. it's a symlink pointing at
+    // one), return the normalized path itself. checkPermission will reject it as an unrecognised
+    // share name rather than silently skipping the destination permission check (null would).
+    return guessShare(normalized, registry) || normalized;
+  }
   return null;
 }
 
 function writeTokenToEnvFile(envFile: string, token: string): void {
+  if (/[\r\n]/.test(token)) {
+    throw new Error("Received token contains newline characters — rotation rejected");
+  }
   let existing: string[] = [];
   try {
     existing = readFileSync(envFile, "utf8").split("\n");
