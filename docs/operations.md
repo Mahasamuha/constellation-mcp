@@ -125,11 +125,13 @@ needs you to.
 
 ```bash
 cd docker/standard   # or docker/cloudflare-tunnel
+# 1. Edit docker-compose.yml and bump the image tag to the new release version:
+#    image: mahasamuha/constellation-relay:<new-version>
 docker compose pull
 docker compose up -d
 ```
 
-Migrations apply automatically on every start, so this is the entire
+Migrations apply automatically on every start, so beyond bumping the tag this is the entire
 procedure for routine updates — no manual migration step. As with any
 schema change, taking a fresh backup immediately before pulling a new image
 is cheap insurance, particularly across a large version jump; check the

@@ -71,6 +71,8 @@ Open your tunnel URL in a browser. The first-run setup wizard will guide you thr
 
 ```bash
 cd docker/cloudflare-tunnel
+# 1. Edit docker-compose.yml and bump the image tag to the new release version:
+#    image: mahasamuha/constellation-relay:<new-version>
 docker compose pull
 docker compose up -d
 ```
