@@ -65,6 +65,7 @@ setupRouter.get("/setup", async (_req: Request, res: Response) => {
     secure: config.secureCookies,
     sameSite: "strict",
     maxAge: 30 * 60 * 1000,
+    signed: true,
   });
   res.send(setupFormPage([], csrfToken));
 });
@@ -98,6 +99,7 @@ setupRouter.post("/setup", async (req: Request, res: Response) => {
       secure: config.secureCookies,
       sameSite: "strict",
       maxAge: 30 * 60 * 1000,
+      signed: true,
     });
     res.send(setupFormPage(errors, newToken));
   }

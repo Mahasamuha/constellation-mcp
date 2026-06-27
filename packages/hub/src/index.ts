@@ -1,6 +1,6 @@
 import { checkSharePath } from "./paths.js";
 import { readFileSync, writeFileSync, statSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, resolve } from "node:path";
 import { userInfo } from "node:os";
 import {
   createLogger,
@@ -571,7 +571,7 @@ export function resolveDstShare(
 ): string | null {
   if (tool !== "copy" && tool !== "move") return null;
   if (typeof envelope.params["dst_share"] === "string") return envelope.params["dst_share"];
-  if (typeof envelope.params["dst_root"] === "string") return guessShare(envelope.params["dst_root"], registry) || null;
+  if (typeof envelope.params["dst_root"] === "string") return guessShare(resolve(envelope.params["dst_root"]), registry) || null;
   return null;
 }
 
