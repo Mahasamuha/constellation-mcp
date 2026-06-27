@@ -392,7 +392,7 @@ Requires `RELAY_ADMIN_TOKEN` env var on the relay, passed as `Authorization: Bea
 
 | Status | Meaning |
 |---|---|
-| `200` | Role updated |
+| `204` | Role updated |
 | `404` | User not found |
 
 ---
@@ -401,7 +401,7 @@ Requires `RELAY_ADMIN_TOKEN` env var on the relay, passed as `Authorization: Bea
 
 List all hub shares synced to the relay from hubs. Paginated by executor.
 
-**Query params**: `executor` — filter by executor ID (optional).
+**Query params**: `executor_id` — filter by executor ID (optional).
 
 **Response `200`**
 ```json

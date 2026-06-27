@@ -933,7 +933,7 @@ Revoke admin role from a user. Same auth requirements as promote.
 
 List all hub shares synced to the relay from hubs. Requires an elevated admin session.
 
-**Query params**: `executor` — filter to a specific hub by ID (optional).
+**Query params**: `executor_id` — filter to a specific hub by ID (optional).
 
 **Response `200`**
 ```json

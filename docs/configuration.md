@@ -58,7 +58,7 @@ The relay constructs both callback URLs from `RELAY_URL` automatically — there
 | Variable | Default | Description |
 |---|---|---|
 | `PORT` | `3000` | TCP port the HTTP server binds to |
-| `NODE_ENV` | — | Set to `production` to enable `Secure` flag on cookies |
+| `NODE_ENV` | — | Passed to Express and Node.js internals (e.g. disables verbose error details in production). Not used by the relay for the `Secure` cookie flag — that is controlled by the protocol of `RELAY_URL` (https → Secure, http → not Secure). |
 | `ALLOWED_ORIGINS` | — | Comma-separated list of origins allowed to make cross-origin requests to the relay (e.g. the URL of a reverse proxy or browser-based tool in front of the relay). Defaults to no cross-origin access if unset. |
 | `LOG_LEVEL` | `warn` | Pino log level: `trace`, `debug`, `info`, `warn`, `error`, `fatal` |
 
