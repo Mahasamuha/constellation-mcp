@@ -323,9 +323,9 @@ constellation relay --relay <url> user demote <identifier> [--admin-token <token
 
 Revokes admin role from a user. Same auth requirements as `relay user promote`.
 
-### `relay hub-shares list [--executor <id>] [--limit <n>] [--offset <n>] [--json]`
+### `relay hub-shares list [--executor <id>] [--json]`
 
-Lists all hub shares synced to the relay. Requires an elevated admin session (`relay elevate` first). `--executor` filters to a specific hub by ID. Paginated — see `relay executors list` above.
+Lists all hub shares synced to the relay. Requires an elevated admin session (`relay elevate` first). `--executor` filters to a specific hub by ID.
 
 ### `relay token create --shared`
 
