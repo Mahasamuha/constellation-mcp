@@ -41,4 +41,22 @@ describe("highlightForPath", () => {
     const result = highlightForPath(payload, "script.py");
     expect(result.html).not.toContain("<img");
   });
+
+  // prism-markdown and prism-php both process inline HTML (via prism-markup-templating)
+  // and are not entity-escaped like most other language grammars. These tests pin the
+  // secondary escaping layer so a Prism update can't silently introduce an XSS path.
+  it("neutralizes <script> in a markdown file", () => {
+    const result = highlightForPath("<script>alert(1)</script>", "readme.md");
+    expect(result.html).not.toContain("<script");
+  });
+
+  it("neutralizes <img onerror> in a markdown file", () => {
+    const result = highlightForPath("<img src=x onerror=alert(1)>", "readme.md");
+    expect(result.html).not.toContain("<img");
+  });
+
+  it("neutralizes <script> in a PHP file", () => {
+    const result = highlightForPath("<?php ?><script>alert(1)</script>", "index.php");
+    expect(result.html).not.toContain("<script");
+  });
 });
