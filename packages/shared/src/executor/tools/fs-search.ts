@@ -1,5 +1,6 @@
-import { promises as fs } from "node:fs";
+import { promises as fs, constants as fsConstants } from "node:fs";
 import { join, relative } from "node:path";
+import { openNoFollow } from "./safe-open.js";
 import picomatch from "picomatch";
 import safeRegex from "safe-regex2";
 
@@ -105,9 +106,22 @@ export async function grepFiles(
   async function searchInFile(filePath: string): Promise<void> {
     if (truncated) return;
     const relPath = relative(root, filePath);
-    const fstat = await fs.stat(filePath);
+    const fstat = await fs.lstat(filePath);
+    if (!fstat.isFile()) return; // TOCTOU: file may have been swapped for a symlink
     if (fstat.size > fileSizeCap) return;
-    const content = await fs.readFile(filePath, "utf8");
+    // O_NOFOLLOW closes the remaining TOCTOU window between lstat and read
+    let handle: fs.FileHandle;
+    try {
+      handle = await openNoFollow(filePath, fsConstants.O_RDONLY);
+    } catch {
+      return; // swapped to a symlink after lstat — skip silently
+    }
+    let content: string;
+    try {
+      content = await handle.readFile("utf8");
+    } finally {
+      await handle.close();
+    }
     const lines = content.split("\n");
 
     for (let i = 0; i < lines.length; i++) {

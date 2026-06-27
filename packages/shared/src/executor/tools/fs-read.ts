@@ -3,7 +3,7 @@ import {
   constants as fsConstants,
 } from "node:fs";
 import { createInterface } from "node:readline";
-import { join, relative } from "node:path";
+import { join, relative, dirname, sep } from "node:path";
 import { openNoFollow } from "./safe-open.js";
 import { assertPathStable } from "./safe-path.js";
 
@@ -109,7 +109,16 @@ export async function fileInfo(absolutePath: string, boundaryRoot: string): Prom
   };
 
   if (type === "symlink") {
-    result.target = await fs.readlink(absolutePath);
+    const rawTarget = await fs.readlink(absolutePath);
+    // Resolve relative symlinks against the symlink's own directory before boundary-checking
+    const resolvedTarget = rawTarget.startsWith(sep)
+      ? rawTarget
+      : join(dirname(absolutePath), rawTarget);
+    // Only expose the target when it stays within the share — prevents leaking
+    // paths like /etc/shadow for out-of-share symlinks planted before validation
+    if (resolvedTarget === boundaryRoot || resolvedTarget.startsWith(boundaryRoot + sep)) {
+      result.target = rawTarget;
+    }
   }
 
   return result;
