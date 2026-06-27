@@ -723,12 +723,11 @@ export function registerRelayCommands(program: Command): void {
   userAdmin
     .command("promote")
     .argument("<identifier>", "OIDC sub or (local mode) username to promote to admin")
-    .description("Grant admin role — requires RELAY_ADMIN_TOKEN env var or --admin-token flag")
-    .option("--admin-token <token>", "Relay admin token (defaults to RELAY_ADMIN_TOKEN env var)")
-    .action(async (identifier: string, opts: { adminToken?: string }) => {
-      const adminToken = opts.adminToken ?? process.env["RELAY_ADMIN_TOKEN"];
+    .description("Grant admin role — requires RELAY_ADMIN_TOKEN env var")
+    .action(async (identifier: string) => {
+      const adminToken = process.env["RELAY_ADMIN_TOKEN"];
       if (!adminToken) {
-        console.error("RELAY_ADMIN_TOKEN is not set. Pass --admin-token or set the env var.");
+        console.error("RELAY_ADMIN_TOKEN is not set.");
         process.exit(1);
       }
       const relayUrl = resolveRelayUrl(getRelayFlag(), getConfigDir);
@@ -744,12 +743,11 @@ export function registerRelayCommands(program: Command): void {
   userAdmin
     .command("demote")
     .argument("<identifier>", "OIDC sub or (local mode) username to demote")
-    .description("Revoke admin role — requires RELAY_ADMIN_TOKEN env var or --admin-token flag")
-    .option("--admin-token <token>", "Relay admin token (defaults to RELAY_ADMIN_TOKEN env var)")
-    .action(async (identifier: string, opts: { adminToken?: string }) => {
-      const adminToken = opts.adminToken ?? process.env["RELAY_ADMIN_TOKEN"];
+    .description("Revoke admin role — requires RELAY_ADMIN_TOKEN env var")
+    .action(async (identifier: string) => {
+      const adminToken = process.env["RELAY_ADMIN_TOKEN"];
       if (!adminToken) {
-        console.error("RELAY_ADMIN_TOKEN is not set. Pass --admin-token or set the env var.");
+        console.error("RELAY_ADMIN_TOKEN is not set.");
         process.exit(1);
       }
       const relayUrl = resolveRelayUrl(getRelayFlag(), getConfigDir);

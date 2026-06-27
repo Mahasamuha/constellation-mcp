@@ -37,7 +37,7 @@ pub async fn add_path(share: String, path: String, instructions: Option<String>)
     if !meta.is_dir() {
         return Err(format!("'{}' is not a directory", path));
     }
-    let mut args = vec!["node", "paths", "add", &share, &path];
+    let mut args = vec!["node", "paths", "add", "--", &share, &path];
     if let Some(ref text) = instructions {
         if !text.trim().is_empty() {
             args.push("--instructions");
@@ -50,6 +50,6 @@ pub async fn add_path(share: String, path: String, instructions: Option<String>)
 
 #[tauri::command]
 pub async fn remove_path(share: String) -> Result<Vec<PathEntry>, String> {
-    crate::cli::run(&["node", "paths", "remove", &share])?;
+    crate::cli::run(&["node", "paths", "remove", "--", &share])?;
     Ok(load_paths())
 }

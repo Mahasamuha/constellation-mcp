@@ -638,12 +638,14 @@ describe("relay user promote/demote", () => {
       return new Response(null, { status: 200 });
     });
     vi.stubGlobal("fetch", fetchMock);
+    process.env["RELAY_ADMIN_TOKEN"] = "tok";
 
     const { exitCode, out } = await runCli(
-      ["relay", "--relay", "https://relay.example.com", "user", "promote", "alice", "--admin-token", "tok"],
+      ["relay", "--relay", "https://relay.example.com", "user", "promote", "alice"],
       dir
     );
 
+    delete process.env["RELAY_ADMIN_TOKEN"];
     expect(exitCode).toBe(0);
     expect(out).toContain("promoted to admin");
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -655,22 +657,26 @@ describe("relay user promote/demote", () => {
       return new Response(null, { status: 200 });
     });
     vi.stubGlobal("fetch", fetchMock);
+    process.env["RELAY_ADMIN_TOKEN"] = "tok";
 
     const { exitCode, out } = await runCli(
-      ["relay", "--relay", "https://relay.example.com", "user", "demote", "alice", "--admin-token", "tok"],
+      ["relay", "--relay", "https://relay.example.com", "user", "demote", "alice"],
       dir
     );
 
+    delete process.env["RELAY_ADMIN_TOKEN"];
     expect(exitCode).toBe(0);
     expect(out).toContain("demoted to regular user");
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("errors with the relay-URL hint when neither flag nor config provides one", async () => {
+    process.env["RELAY_ADMIN_TOKEN"] = "tok";
     const { exitCode, err } = await runCli(
-      ["relay", "user", "promote", "alice", "--admin-token", "tok"],
+      ["relay", "user", "promote", "alice"],
       dir
     );
+    delete process.env["RELAY_ADMIN_TOKEN"];
 
     expect(exitCode).toBe(1);
     expect(err).toContain("No relay URL configured");

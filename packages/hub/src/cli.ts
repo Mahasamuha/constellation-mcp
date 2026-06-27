@@ -1,7 +1,7 @@
 import { Command } from "commander";
 import { hostname } from "node:os";
 import { execFileSync } from "node:child_process";
-import { readFileSync, writeFileSync, mkdirSync, statSync, statfsSync } from "node:fs";
+import { readFileSync, writeFileSync, chmodSync, mkdirSync, statSync, statfsSync } from "node:fs";
 import { dirname } from "node:path";
 import WebSocket from "ws";
 import open from "open";
@@ -494,6 +494,10 @@ function writeEnvToken(envFile: string, token: string): void {
   const updated = existing.filter((line) => !line.startsWith(`${key}=`) && line !== "");
   updated.push(`${key}=${token}`);
 
+  // chmodSync before writing: writeFileSync's mode option only applies when creating
+  // the file, not when overwriting an existing one. A pre-existing file at 0o644
+  // would have the new token written to it before mode is corrected.
+  try { chmodSync(envFile, 0o600); } catch { /* file may not exist yet — writeFileSync will create it with mode */ }
   writeFileSync(envFile, updated.join("\n") + "\n", { mode: 0o600 });
 }
 
