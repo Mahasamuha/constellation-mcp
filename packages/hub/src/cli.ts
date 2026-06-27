@@ -5,7 +5,7 @@ import { readFileSync, writeFileSync, mkdirSync, statSync, statfsSync } from "no
 import { dirname } from "node:path";
 import WebSocket from "ws";
 import open from "open";
-import { poll, assertSecureRelayUrl, requestRotateViaControlChannel } from "@constellation/shared";
+import { poll, assertSecureRelayUrl, assertSecureHttpUrl, isSameOrigin, requestRotateViaControlChannel } from "@constellation/shared";
 import { loadHubConfig, validateHubConfig } from "./config.js";
 import { getpwnam } from "./identity.js";
 import { runHub, sourceEnvFile } from "./index.js";
@@ -81,6 +81,13 @@ export function registerHubCommands(program: Command): void {
         process.exit(1);
       }
 
+      try {
+        assertSecureHttpUrl(relayUrl);
+      } catch (err) {
+        console.error("Error:", (err as Error).message);
+        process.exit(1);
+      }
+
       console.log(`\nRegistering hub '${hostName}' with relay: ${relayUrl}`);
       console.log("An admin must approve this request in the browser.\n");
 
@@ -105,7 +112,9 @@ export function registerHubCommands(program: Command): void {
       console.log(`  ${dc.verification_uri_complete}\n`);
       console.log(`If the browser did not open, the admin should enter this code: ${dc.user_code}\n`);
       console.log("Waiting for admin approval...\n");
-      try { await open(dc.verification_uri_complete); } catch { /* ignore */ }
+      if (isSameOrigin(relayUrl, dc.verification_uri_complete)) {
+        try { await open(dc.verification_uri_complete); } catch { /* ignore */ }
+      }
 
       const result = await poll(
         async ({ intervalMs, setIntervalMs }) => {

@@ -44,6 +44,32 @@ export function assertSecureRelayUrl(wsUrl: string): void {
   );
 }
 
+/** Throws if `httpUrl` is a plaintext http:// URL targeting a non-localhost host.
+ * Bearer tokens sent in Authorization headers must never cross the network
+ * unencrypted. Call this before any fetch() that carries an access token. */
+export function assertSecureHttpUrl(httpUrl: string): void {
+  if (!httpUrl.startsWith("http://")) return;
+  const hostname = new URL(httpUrl).hostname;
+  if (isLocalHostname(hostname)) return;
+  throw new Error(
+    `Refusing to connect: relay URL uses http:// for a non-localhost host (${hostname}). Use https:// to protect the access token.`
+  );
+}
+
+/** Returns true if `targetUrl` shares the same origin as `relayUrl`.
+ * Use this to validate server-supplied redirect/verification URLs before
+ * opening them in a browser, preventing a compromised relay from redirecting
+ * to an arbitrary URI scheme or host. */
+export function isSameOrigin(relayUrl: string, targetUrl: string): boolean {
+  try {
+    const relay = new URL(relayUrl);
+    const target = new URL(targetUrl);
+    return relay.origin === target.origin;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Shared transport for the relay WebSocket connection.
  *

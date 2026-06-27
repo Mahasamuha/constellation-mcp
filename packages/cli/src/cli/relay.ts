@@ -8,7 +8,7 @@ import {
   deleteRelaySession,
   type RelaySession,
 } from "@constellation/node/config";
-import { poll, confirm, type ExecutorEntry } from "@constellation/shared";
+import { poll, confirm, type ExecutorEntry, assertSecureHttpUrl, isSameOrigin } from "@constellation/shared";
 
 // ---------------------------------------------------------------------------
 // API response types
@@ -75,15 +75,21 @@ interface ListOpts {
 // ---------------------------------------------------------------------------
 
 function resolveRelayUrl(flagUrl: string | undefined, getConfigDir: () => string): string {
-  if (flagUrl) return flagUrl;
+  const url = flagUrl ?? (() => {
+    try {
+      return loadNodeConfig(getConfigDir()).relay_url;
+    } catch {
+      console.error("No relay URL configured. Pass --relay <url> or run constellation node init first.");
+      process.exit(1);
+    }
+  })();
   try {
-    return loadNodeConfig(getConfigDir()).relay_url;
-  } catch {
-    console.error(
-      "No relay URL configured. Pass --relay <url> or run constellation node init first."
-    );
+    assertSecureHttpUrl(url);
+  } catch (err) {
+    console.error("Error:", (err as Error).message);
     process.exit(1);
   }
+  return url;
 }
 
 /** Wraps `fetch` so a network failure (DNS, connection refused, timeout) surfaces with
@@ -259,19 +265,6 @@ export async function die(res: Response): Promise<never> {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/** Validate that a server-supplied OAuth URL shares the same origin as the relay
- * before opening it in the browser, preventing a compromised relay from
- * redirecting to an arbitrary URL. */
-function isSameOrigin(relayUrl: string, targetUrl: string): boolean {
-  try {
-    const relay = new URL(relayUrl);
-    const target = new URL(targetUrl);
-    return relay.origin === target.origin;
-  } catch {
-    return false;
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Register all relay commands

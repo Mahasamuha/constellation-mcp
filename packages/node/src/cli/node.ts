@@ -21,6 +21,7 @@ import {
   poll,
   confirm,
   assertSecureRelayUrl,
+  isSameOrigin,
   requestRotateViaControlChannel,
   requestConfigUpdateViaControlChannel,
   requestUpdateHostViaControlChannel,
@@ -83,7 +84,9 @@ export function registerNodeCommands(program: Command): void {
       console.log(`  ${dc.verification_uri_complete}\n`);
       console.log(`If the browser did not open, enter this code: ${dc.user_code}\n`);
 
-      try { await open(dc.verification_uri_complete); } catch { /* ignore */ }
+      if (isSameOrigin(relayUrl, dc.verification_uri_complete)) {
+        try { await open(dc.verification_uri_complete); } catch { /* ignore */ }
+      }
 
       const outcome = await pollDeviceToken(relayUrl, dc.device_code, dc.interval * 1000, dc.expires_in * 1000);
 
