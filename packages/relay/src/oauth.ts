@@ -210,7 +210,18 @@ oauthRouter.get("/oauth/authorize", async (req: Request, res: Response) => {
 
 oauthRouter.get("/auth/login", (req: Request, res: Response) => {
   const pendingId = typeof req.query["pending"] === "string" ? req.query["pending"] : "";
-  res.send(loginPage(pendingId));
+  let clientInfo: { clientId: string; redirectDomain: string } | undefined;
+  if (pendingId) {
+    const cookieVal = (req.cookies as Record<string, string>)[`login_pending_${pendingId}`];
+    if (cookieVal) {
+      try {
+        const pending = JSON.parse(cookieVal) as LoginPending;
+        const redirectDomain = new URL(pending.redirectUri).hostname;
+        clientInfo = { clientId: pending.clientId, redirectDomain };
+      } catch { /* show form without client info */ }
+    }
+  }
+  res.send(loginPage(pendingId, undefined, clientInfo));
 });
 
 // ---------------------------------------------------------------------------
@@ -520,7 +531,10 @@ async function handleRefreshTokenGrant(
 // helpers
 // ---------------------------------------------------------------------------
 
-function loginPage(pendingId: string, error?: string): string {
+function loginPage(pendingId: string, error?: string, clientInfo?: { clientId: string; redirectDomain: string }): string {
+  const clientBanner = clientInfo
+    ? `<p class="client-info">Signing in to grant <strong>${escHtml(clientInfo.clientId)}</strong> access (redirects to <strong>${escHtml(clientInfo.redirectDomain)}</strong>)</p>`
+    : "";
   return `<!DOCTYPE html>
 <html lang="en">
 <head><meta charset="utf-8"><title>Constellation — Sign in</title>
@@ -533,11 +547,14 @@ ${FAVICON_LINK}
   input { width: 100%; box-sizing: border-box; padding: .5rem; font-size: 1rem; border: 1px solid #ccc; border-radius: 4px; }
   button { margin-top: 1.2rem; padding: .6rem 1.4rem; font-size: 1rem; border: none; border-radius: 4px; cursor: pointer; background: #2563eb; color: #fff; }
   .error { color: #dc2626; background: #fee2e2; padding: .6rem; border-radius: 4px; margin-bottom: .5rem; }
+  .client-info { font-size: .85rem; color: #555; background: #f0f4ff; border: 1px solid #c7d7fe; padding: .5rem .7rem; border-radius: 4px; margin-bottom: .5rem; }
+  .client-info strong { color: #1d4ed8; }
 </style>
 </head>
 <body>
   <div class="card">
     <h1>Sign in</h1>
+    ${clientBanner}
     ${error ? `<p class="error">${escHtml(error)}</p>` : ""}
     <form method="POST" action="/auth/login">
       <input type="hidden" name="pending" value="${escHtml(pendingId)}">
