@@ -15,6 +15,7 @@ export interface Edit {
 export interface EditFileParams {
   edits: Edit[];
   dry_run?: boolean;
+  maxFileSizeKb?: number;
 }
 
 export interface EditFileResult {
@@ -51,6 +52,16 @@ export async function editFile(absolutePath: string, boundaryRoot: string, displ
         );
       }
       content = content.replace(edit.old_text, () => edit.new_text);
+    }
+
+    if (!params.dry_run && params.maxFileSizeKb !== undefined) {
+      const writeSizeKb = Buffer.byteLength(content, "utf8") / 1024;
+      if (writeSizeKb > params.maxFileSizeKb) {
+        throw Object.assign(
+          new Error(`Edited content exceeds limit: ${Math.ceil(writeSizeKb)} KB > ${params.maxFileSizeKb} KB`),
+          { code: "WRITE_TOO_LARGE", write_size_kb: Math.ceil(writeSizeKb), max_file_size_kb: params.maxFileSizeKb }
+        );
+      }
     }
 
     const diff = createPatch(displayPath, original, content);

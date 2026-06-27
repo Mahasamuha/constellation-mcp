@@ -14,7 +14,7 @@ export interface ToolResult {
   isError?: boolean;
 }
 
-const KNOWN_CODES = new Set(["FILE_TOO_LARGE", "READ_TOO_LARGE", "EDIT_NO_MATCH", "EDIT_AMBIGUOUS", "DEST_EXISTS", "MOVE_INCOMPLETE", "SRC_IS_SYMLINK"]);
+const KNOWN_CODES = new Set(["FILE_TOO_LARGE", "READ_TOO_LARGE", "WRITE_TOO_LARGE", "EDIT_NO_MATCH", "EDIT_AMBIGUOUS", "DEST_EXISTS", "MOVE_INCOMPLETE", "SRC_IS_SYMLINK"]);
 
 // MOVE_INCOMPLETE is "known" in the sense that its message is deliberately constructed and
 // caller-safe (see crossDeviceMove in fs-write.ts), but unlike the other known codes it
@@ -106,7 +106,7 @@ export class FileExecutor {
       create_directory: ["relative_path"],
       delete:           ["relative_path"],
       move:             ["src_relative_path", "dst_relative_path"],
-      copy:             ["dst_relative_path"],
+      copy:             ["src_relative_path", "dst_relative_path"],
     };
     const mutationFields = MUTATION_ROOT_FIELDS[tool];
     if (mutationFields) {
@@ -217,6 +217,7 @@ export class FileExecutor {
         await writeFile(relPath!, root, {
           content: req(p, "content"),
           mode: p["mode"] as "overwrite" | "append" | undefined,
+          maxFileSizeKb: this.maxFileSizeKb,
         });
         return { ok: true };
 
@@ -224,6 +225,7 @@ export class FileExecutor {
         return editFile(relPath!, root, req(p, "relative_path"), {
           edits: p["edits"] as Array<{ old_text: string; new_text: string }>,
           dry_run: b(p, "dry_run"),
+          maxFileSizeKb: this.maxFileSizeKb,
         });
 
       case "copy":
@@ -283,7 +285,7 @@ function b(p: Record<string, unknown>, key: string): boolean | undefined {
 
 function arr(p: Record<string, unknown>, key: string): string[] | undefined {
   const v = p[key];
-  return Array.isArray(v) ? (v as string[]) : undefined;
+  return Array.isArray(v) ? v.filter((e): e is string => typeof e === "string") : undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -307,6 +309,7 @@ function buildError(e: Error & {
   edit_index?: number;
   match_count?: number;
   read_size_kb?: number;
+  write_size_kb?: number;
   max_file_size_kb?: number;
   path?: string;
 }): object {
@@ -321,6 +324,7 @@ function buildError(e: Error & {
     if (e.edit_index !== undefined)       err["edit_index"]       = e.edit_index;
     if (e.match_count !== undefined)      err["match_count"]      = e.match_count;
     if (e.read_size_kb !== undefined)     err["read_size_kb"]     = e.read_size_kb;
+    if (e.write_size_kb !== undefined)    err["write_size_kb"]    = e.write_size_kb;
     if (e.max_file_size_kb !== undefined) err["max_file_size_kb"] = e.max_file_size_kb;
     if (e.path !== undefined)             err["path"]             = e.path;
   }

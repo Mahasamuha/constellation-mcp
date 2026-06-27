@@ -13,9 +13,19 @@ import { assertPathStable } from "./safe-path.js";
 export interface WriteFileParams {
   content: string;
   mode?: "overwrite" | "append";
+  maxFileSizeKb?: number;
 }
 
 export async function writeFile(absolutePath: string, boundaryRoot: string, params: WriteFileParams): Promise<void> {
+  if (params.maxFileSizeKb !== undefined) {
+    const writeSizeKb = Buffer.byteLength(params.content, "utf8") / 1024;
+    if (writeSizeKb > params.maxFileSizeKb) {
+      throw Object.assign(
+        new Error(`Write content exceeds limit: ${Math.ceil(writeSizeKb)} KB > ${params.maxFileSizeKb} KB`),
+        { code: "WRITE_TOO_LARGE", write_size_kb: Math.ceil(writeSizeKb), max_file_size_kb: params.maxFileSizeKb }
+      );
+    }
+  }
   await assertPathStable(absolutePath, boundaryRoot);
   await fs.mkdir(dirname(absolutePath), { recursive: true });
   const flags = fsConstants.O_WRONLY | fsConstants.O_CREAT |
