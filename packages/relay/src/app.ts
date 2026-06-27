@@ -57,7 +57,9 @@ app.use(express.urlencoded({ extended: true, limit: "1mb" }));
 app.use(cookieParser());
 
 app.use((req, res, next) => {
-  const id = (req.headers["x-request-id"] as string | undefined) ?? randomUUID();
+  const raw = req.headers["x-request-id"] as string | undefined;
+  // Strip non-printable ASCII and clamp length to prevent log injection.
+  const id = raw ? raw.replace(/[^\x20-\x7E]/g, "").slice(0, 64) || randomUUID() : randomUUID();
   (req as Request & { id: string }).id = id;
   res.set("X-Request-Id", id);
   next();

@@ -47,7 +47,9 @@ export async function setupMiddleware(req: Request, res: Response, next: NextFun
 
 setupRouter.get("/setup", async (_req: Request, res: Response) => {
   if (config.authMode !== "local") {
-    res.send(oidcSetupPage());
+    // In OIDC mode setup is not applicable; redirect to home rather than
+    // exposing which environment variables are or are not configured.
+    res.redirect("/");
     return;
   }
 

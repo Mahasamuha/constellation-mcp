@@ -66,6 +66,7 @@ export const config = {
       postgres: process.env["ACTIVITY_SINK_POSTGRES"] !== "false",
       stdout: process.env["ACTIVITY_SINK_STDOUT"] === "true",
       webhookUrl: process.env["ACTIVITY_SINK_WEBHOOK_URL"] ?? null,
+      webhookSecret: process.env["ACTIVITY_SINK_WEBHOOK_SECRET"] ?? null,
     },
   },
 };

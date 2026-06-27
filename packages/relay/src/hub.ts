@@ -583,6 +583,26 @@ async function handleHubShareSync(conn: ConnectedExecutor, msg: HubShareSyncMess
       send(conn.ws, { type: "hub_share_sync_error", error: `Share '${entry.name}': permission_blob must be an object` });
       return;
     }
+    const blob = entry.permission_blob as Record<string, unknown>;
+    const validAccess = new Set(["none", "read", "read-write"]);
+    if (!validAccess.has(blob["default"] as string)) {
+      send(conn.ws, { type: "hub_share_sync_error", error: `Share '${entry.name}': permission_blob.default must be "none", "read", or "read-write"` });
+      return;
+    }
+    if (blob["overrides"] !== undefined) {
+      if (!Array.isArray(blob["overrides"])) {
+        send(conn.ws, { type: "hub_share_sync_error", error: `Share '${entry.name}': permission_blob.overrides must be an array` });
+        return;
+      }
+      for (const o of blob["overrides"] as unknown[]) {
+        if (typeof o !== "object" || o === null ||
+            typeof (o as Record<string, unknown>)["oidc_sub"] !== "string" ||
+            !validAccess.has((o as Record<string, unknown>)["access"] as string)) {
+          send(conn.ws, { type: "hub_share_sync_error", error: `Share '${entry.name}': each permission_blob.overrides entry must have oidc_sub (string) and access ("none"|"read"|"read-write")` });
+          return;
+        }
+      }
+    }
     if (entry.instructions !== undefined && typeof entry.instructions !== "string") {
       send(conn.ws, { type: "hub_share_sync_error", error: `Share '${entry.name}': instructions must be a string` });
       return;
