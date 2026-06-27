@@ -1,4 +1,3 @@
-import { promises as fs } from "node:fs";
 import { join, sep } from "node:path";
 import { createLogger } from "../logger.js";
 import { listDirectory, fileInfo, readFile } from "./tools/fs-read.js";

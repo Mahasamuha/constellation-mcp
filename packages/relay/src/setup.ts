@@ -209,32 +209,6 @@ function setupFormPage(errors: string[], csrfToken?: string): string {
 </html>`;
 }
 
-function oidcSetupPage(): string {
-  const checks = [
-    ["OIDC_ISSUER", process.env["OIDC_ISSUER"]],
-    ["OIDC_CLIENT_ID", process.env["OIDC_CLIENT_ID"]],
-    ["OIDC_CLIENT_SECRET", process.env["OIDC_CLIENT_SECRET"]],
-    ["RELAY_URL", process.env["RELAY_URL"]],
-  ];
-
-  const rows = checks.map(([name, val]) =>
-    `<li class="${val ? "ok" : "missing"}">${val ? "✓" : "✗"} <code>${escHtml(name!)}</code>${val ? "" : " — not set"}</li>`
-  ).join("\n");
-
-  return `<!DOCTYPE html>
-<html lang="en">
-<head><meta charset="utf-8"><title>Constellation — OIDC Setup</title>${pageStyle()}</head>
-<body>
-  <div class="card">
-    <h1>OIDC Configuration</h1>
-    <p>The relay is running in <code>AUTH_MODE=oidc</code>. Check the environment variables below:</p>
-    <ul class="checklist">${rows}</ul>
-    <p>Set all required variables and restart the relay.</p>
-  </div>
-</body>
-</html>`;
-}
-
 function gonePage(): string {
   return `<!DOCTYPE html>
 <html lang="en">
