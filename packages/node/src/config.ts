@@ -94,7 +94,7 @@ export function loadNodeConfig(dir: string): NodeConfig {
   const relay_url = str(parsed, "relay_url");
   const node_token = str(parsed, "node_token");
   const host = str(parsed, "host");
-  const max_file_size_kb = typeof parsed["max_file_size_kb"] === "number"
+  const max_file_size_kb = typeof parsed["max_file_size_kb"] === "number" && parsed["max_file_size_kb"] >= 1
     ? parsed["max_file_size_kb"]
     : 100;
 
