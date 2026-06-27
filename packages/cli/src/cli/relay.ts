@@ -257,6 +257,23 @@ export async function die(res: Response): Promise<never> {
 }
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/** Validate that a server-supplied OAuth URL shares the same origin as the relay
+ * before opening it in the browser, preventing a compromised relay from
+ * redirecting to an arbitrary URL. */
+function isSameOrigin(relayUrl: string, targetUrl: string): boolean {
+  try {
+    const relay = new URL(relayUrl);
+    const target = new URL(targetUrl);
+    return relay.origin === target.origin;
+  } catch {
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Register all relay commands
 // ---------------------------------------------------------------------------
 
@@ -306,7 +323,9 @@ export function registerRelayCommands(program: Command): void {
       console.log(`\nOpen the following URL to authenticate (opening browser automatically):`);
       console.log(`  ${dc.verification_uri_complete}\n`);
       console.log(`If the browser did not open, enter this code: ${dc.user_code}\n`);
-      try { await open(dc.verification_uri_complete); } catch { /* ignore */ }
+      if (isSameOrigin(relayUrl, dc.verification_uri_complete)) {
+        try { await open(dc.verification_uri_complete); } catch { /* ignore */ }
+      }
 
       const result = await poll(
         async ({ intervalMs, setIntervalMs }) => {
@@ -419,7 +438,7 @@ export function registerRelayCommands(program: Command): void {
       const ok = await confirm(`Revoke token for executor ${executorId}? The executor will go offline.`);
       if (!ok) { console.log("Cancelled."); return; }
       const session = await getValidSession(cfgDir);
-      await apiDelete(session, `/api/executors/${executorId}/token`);
+      await apiDelete(session, `/api/executors/${encodeURIComponent(executorId)}/token`);
       console.log("Token revoked.");
     });
 
@@ -497,7 +516,7 @@ export function registerRelayCommands(program: Command): void {
       const ok = await confirm(`Remove deny filter ${filterId}? This widens access — anything it was blocking becomes reachable again.`);
       if (!ok) { console.log("Cancelled."); return; }
       const session = await getValidSession(cfgDir);
-      await apiDelete(session, `/api/filters/${filterId}`);
+      await apiDelete(session, `/api/filters/${encodeURIComponent(filterId)}`);
       console.log("Filter removed.");
     });
 
@@ -532,7 +551,7 @@ export function registerRelayCommands(program: Command): void {
       const ok = await confirm(`Revoke session ${sessionId}? The MCP client will need to re-authenticate.`);
       if (!ok) { console.log("Cancelled."); return; }
       const session = await getValidSession(cfgDir);
-      await apiDelete(session, `/api/sessions/${sessionId}`);
+      await apiDelete(session, `/api/sessions/${encodeURIComponent(sessionId)}`);
       console.log("Session revoked.");
     });
 
@@ -661,7 +680,9 @@ export function registerRelayCommands(program: Command): void {
       console.log(`\nOpen the following URL to approve admin access (opening browser automatically):`);
       console.log(`  ${dc.verification_uri_complete}\n`);
       console.log(`If the browser did not open, enter this code: ${dc.user_code}\n`);
-      try { await open(dc.verification_uri_complete); } catch { /* ignore */ }
+      if (isSameOrigin(relayUrl, dc.verification_uri_complete)) {
+        try { await open(dc.verification_uri_complete); } catch { /* ignore */ }
+      }
 
       const result = await poll(
         async ({ intervalMs, setIntervalMs }) => {
