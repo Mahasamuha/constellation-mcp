@@ -39,7 +39,7 @@ export function isIdentityError(v: ResolvedIdentity | IdentityResolutionError): 
 export async function getpwnam(username: string): Promise<{ uid: number; gid: number; home: string } | null> {
   if (!username) return null;
   try {
-    const { stdout } = await execFileAsync("getent", ["passwd", username]);
+    const { stdout } = await execFileAsync("getent", ["passwd", "--", username]);
     const out = stdout.trim();
     if (!out) return null;
     // passwd format: name:passwd:uid:gid:gecos:home:shell
@@ -68,7 +68,7 @@ export async function getpwnam(username: string): Promise<{ uid: number; gid: nu
 export async function getGroupIds(username: string): Promise<number[] | null> {
   if (!username) return null;
   try {
-    const { stdout } = await execFileAsync("id", ["-G", username]);
+    const { stdout } = await execFileAsync("id", ["-G", "--", username]);
     const ids = stdout
       .trim()
       .split(/\s+/)

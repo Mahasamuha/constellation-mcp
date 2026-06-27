@@ -219,6 +219,7 @@ function parseShares(parsed: Record<string, unknown>): ShareConfig[] {
 
     if (!name) throw new Error(`hub config: shares[${i}].name is required`);
     if (!path) throw new Error(`hub config: shares[${i}].path is required`);
+    if (!path.startsWith("/")) throw new Error(`hub config: shares[${i}].path must be absolute (got '${path}')`);
     if (!perms) throw new Error(`hub config: shares[${i}].permissions is required`);
 
     const defaultAccess = str(perms, "default") as AccessLevel;

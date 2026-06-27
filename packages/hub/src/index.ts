@@ -67,7 +67,9 @@ export function sourceEnvFile(path: string): void {
     const eq = trimmed.indexOf("=");
     if (eq === -1) continue;
     const key = trimmed.slice(0, eq).trim();
-    const value = trimmed.slice(eq + 1).trim();
+    const rawValue = trimmed.slice(eq + 1).trim();
+    // Strip a single pair of matching surrounding quotes (bash/dotenv convention).
+    const value = /^(["']).*\1$/.test(rawValue) ? rawValue.slice(1, -1) : rawValue;
     if (key && !(key in process.env)) {
       process.env[key] = value;
     }
@@ -211,7 +213,7 @@ export class HubSocket extends RelaySocket implements RotatableConnection {
   }
 
   protected onMessage(msg: Record<string, unknown>): void {
-    if (typeof msg["request_id"] === "string" && typeof msg["tool"] === "string") {
+    if (typeof msg["request_id"] === "string" && msg["request_id"].length <= 200 && typeof msg["tool"] === "string") {
       if (this.shuttingDown) {
         const requestId = msg["request_id"] as string;
         const tool = msg["tool"] as string;
