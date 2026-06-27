@@ -1,10 +1,11 @@
 import { promises as fs } from "node:fs";
-import { join, basename, dirname, sep } from "node:path";
+import { join, sep } from "node:path";
 import { createLogger } from "../logger.js";
 import { listDirectory, fileInfo, readFile } from "./tools/fs-read.js";
 import { writeFile, createDirectory, deletePath, movePath, copyPath } from "./tools/fs-write.js";
 import { findFiles, grepFiles } from "./tools/fs-search.js";
 import { editFile } from "./tools/fs-edit.js";
+import { safeRealpath } from "./tools/safe-path.js";
 
 const log = createLogger("executor");
 
@@ -145,7 +146,7 @@ export class FileExecutor {
     }
 
     try {
-      const content = await this.dispatch(tool, root, p, resolvedPaths);
+      const content = await this.dispatch(tool, root, resolvedDstRoot, p, resolvedPaths);
       return { content };
     } catch (err) {
       const e = err as Error & {
@@ -166,6 +167,7 @@ export class FileExecutor {
   private async dispatch(
     tool: string,
     root: string,
+    resolvedDstRoot: string | undefined,
     p: Record<string, unknown>,
     resolvedPaths: Map<string, string>
   ): Promise<object> {
@@ -189,7 +191,7 @@ export class FileExecutor {
         });
 
       case "file_info":
-        return fileInfo(relPath!);
+        return fileInfo(relPath!, root);
 
       case "find_files":
         return findFiles(root, relPath ?? root, {
@@ -198,7 +200,7 @@ export class FileExecutor {
         });
 
       case "read_file":
-        return readFile(relPath!, {
+        return readFile(relPath!, root, {
           start_line: n(p, "start_line"),
           end_line: n(p, "end_line"),
           max_file_size_kb: this.maxFileSizeKb,
@@ -212,30 +214,30 @@ export class FileExecutor {
         });
 
       case "write_file":
-        await writeFile(relPath!, {
+        await writeFile(relPath!, root, {
           content: req(p, "content"),
           mode: p["mode"] as "overwrite" | "append" | undefined,
         });
         return { ok: true };
 
       case "edit_file":
-        return editFile(relPath!, req(p, "relative_path"), {
+        return editFile(relPath!, root, req(p, "relative_path"), {
           edits: p["edits"] as Array<{ old_text: string; new_text: string }>,
           dry_run: b(p, "dry_run"),
         });
 
       case "copy":
-        await copyPath(srcPath!, dstPath!, {
+        await copyPath(srcPath!, dstPath!, root, resolvedDstRoot ?? root, {
           dst_relative_path: req(p, "dst_relative_path"),
         });
         return { ok: true };
 
       case "create_directory":
-        await createDirectory(relPath!);
+        await createDirectory(relPath!, root);
         return { ok: true };
 
       case "delete": {
-        const summary = await deletePath(relPath!, {
+        const summary = await deletePath(relPath!, root, {
           relative_path: req(p, "relative_path"),
           recursive: b(p, "recursive"),
         });
@@ -243,7 +245,7 @@ export class FileExecutor {
       }
 
       case "move":
-        await movePath(srcPath!, dstPath!, {
+        await movePath(srcPath!, dstPath!, root, resolvedDstRoot ?? root, {
           dst_relative_path: req(p, "dst_relative_path"),
         });
         return { ok: true };
@@ -326,27 +328,3 @@ function buildError(e: Error & {
   return err;
 }
 
-// ---------------------------------------------------------------------------
-// Path safety
-// ---------------------------------------------------------------------------
-
-/**
- * Resolves a path to its real path. For paths that don't exist yet (e.g. write
- * targets), resolves the nearest existing parent and reconstructs the rest.
- */
-async function safeRealpath(path: string, boundaryRoot: string): Promise<string> {
-  try {
-    return await fs.realpath(path);
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-
-    const parent = dirname(path);
-    if (parent === path) throw new Error("Cannot resolve path", { cause: err });
-
-    const resolvedParent = await safeRealpath(parent, boundaryRoot);
-    if (!resolvedParent.startsWith(boundaryRoot + sep) && resolvedParent !== boundaryRoot) {
-      throw new Error("Cannot resolve path", { cause: err });
-    }
-    return join(resolvedParent, basename(path));
-  }
-}

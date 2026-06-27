@@ -4,6 +4,7 @@ import {
 } from "node:fs";
 import { join, dirname } from "node:path";
 import { openNoFollow } from "./safe-open.js";
+import { assertPathStable } from "./safe-path.js";
 
 // ---------------------------------------------------------------------------
 // write_file
@@ -14,7 +15,8 @@ export interface WriteFileParams {
   mode?: "overwrite" | "append";
 }
 
-export async function writeFile(absolutePath: string, params: WriteFileParams): Promise<void> {
+export async function writeFile(absolutePath: string, boundaryRoot: string, params: WriteFileParams): Promise<void> {
+  await assertPathStable(absolutePath, boundaryRoot);
   await fs.mkdir(dirname(absolutePath), { recursive: true });
   const flags = fsConstants.O_WRONLY | fsConstants.O_CREAT |
     (params.mode === "append" ? fsConstants.O_APPEND : fsConstants.O_TRUNC);
@@ -30,7 +32,8 @@ export async function writeFile(absolutePath: string, params: WriteFileParams): 
 // create_directory
 // ---------------------------------------------------------------------------
 
-export async function createDirectory(absolutePath: string): Promise<void> {
+export async function createDirectory(absolutePath: string, boundaryRoot: string): Promise<void> {
+  await assertPathStable(absolutePath, boundaryRoot);
   await fs.mkdir(absolutePath, { recursive: true });
 }
 
@@ -53,8 +56,10 @@ export interface DeleteSummary {
 
 export async function deletePath(
   absolutePath: string,
+  boundaryRoot: string,
   params: DeleteParams
 ): Promise<DeleteSummary | void> {
+  await assertPathStable(absolutePath, boundaryRoot);
   const stat = await fs.lstat(absolutePath);
 
   if (stat.isDirectory() && !params.recursive) {
@@ -93,7 +98,9 @@ export interface MoveParams {
   dst_relative_path: string;
 }
 
-export async function movePath(srcAbsolutePath: string, dstAbsolutePath: string, params: MoveParams): Promise<void> {
+export async function movePath(srcAbsolutePath: string, dstAbsolutePath: string, srcRoot: string, dstRoot: string, params: MoveParams): Promise<void> {
+  await assertPathStable(srcAbsolutePath, srcRoot);
+  await assertPathStable(dstAbsolutePath, dstRoot);
   await assertNotExists(dstAbsolutePath, params.dst_relative_path);
   await fs.mkdir(dirname(dstAbsolutePath), { recursive: true });
   try {
@@ -146,7 +153,9 @@ export interface CopyParams {
   dst_relative_path: string;
 }
 
-export async function copyPath(srcAbsolutePath: string, dstAbsolutePath: string, params: CopyParams): Promise<void> {
+export async function copyPath(srcAbsolutePath: string, dstAbsolutePath: string, srcRoot: string, dstRoot: string, params: CopyParams): Promise<void> {
+  await assertPathStable(srcAbsolutePath, srcRoot);
+  await assertPathStable(dstAbsolutePath, dstRoot);
   await assertNotExists(dstAbsolutePath, params.dst_relative_path);
   await fs.mkdir(dirname(dstAbsolutePath), { recursive: true });
   await copyRecursive(srcAbsolutePath, dstAbsolutePath);

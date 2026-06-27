@@ -5,6 +5,7 @@ import {
 import { createInterface } from "node:readline";
 import { join, relative } from "node:path";
 import { openNoFollow } from "./safe-open.js";
+import { assertPathStable } from "./safe-path.js";
 
 // ---------------------------------------------------------------------------
 // list_directory
@@ -96,7 +97,8 @@ export interface FileInfoResult {
   target?: string;
 }
 
-export async function fileInfo(absolutePath: string): Promise<FileInfoResult> {
+export async function fileInfo(absolutePath: string, boundaryRoot: string): Promise<FileInfoResult> {
+  await assertPathStable(absolutePath, boundaryRoot);
   const stat = await fs.lstat(absolutePath);
 
   const type = stat.isSymbolicLink() ? "symlink" : stat.isDirectory() ? "directory" : "file";
@@ -130,8 +132,10 @@ export interface ReadFileResult {
 
 export async function readFile(
   absolutePath: string,
+  boundaryRoot: string,
   params: ReadFileParams
 ): Promise<ReadFileResult> {
+  await assertPathStable(absolutePath, boundaryRoot);
   const handle = await openNoFollow(absolutePath, fsConstants.O_RDONLY);
   try {
     const stat = await handle.stat();

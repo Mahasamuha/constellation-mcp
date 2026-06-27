@@ -1,6 +1,7 @@
 import { constants as fsConstants } from "node:fs";
 import { createPatch } from "diff";
 import { openNoFollow } from "./safe-open.js";
+import { assertPathStable } from "./safe-path.js";
 
 // ---------------------------------------------------------------------------
 // edit_file
@@ -25,7 +26,8 @@ export interface EditFileResult {
  * filename label, never the resolved absolute path, which would leak the
  * host's filesystem layout.
  */
-export async function editFile(absolutePath: string, displayPath: string, params: EditFileParams): Promise<EditFileResult> {
+export async function editFile(absolutePath: string, boundaryRoot: string, displayPath: string, params: EditFileParams): Promise<EditFileResult> {
+  await assertPathStable(absolutePath, boundaryRoot);
   // dry_run only ever reads — open read-only for it so a preview against a
   // read-only-permissioned file still works, matching pre-existing behavior.
   const handle = await openNoFollow(absolutePath, params.dry_run ? fsConstants.O_RDONLY : fsConstants.O_RDWR);
