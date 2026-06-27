@@ -184,6 +184,7 @@ deviceRouter.get("/activate", async (req: Request, res: Response) => {
     secure: config.secureCookies,
     maxAge: 10 * 60 * 1000,
     sameSite: "lax",
+    signed: true,
   });
 
   url.searchParams.set("state", `${state}:${pendingId}`);
@@ -228,6 +229,7 @@ deviceRouter.post("/activate/login", async (req: Request, res: Response) => {
     secure: config.secureCookies,
     sameSite: "strict",
     maxAge: 15 * 60 * 1000,
+    signed: true,
   });
   res.send(consentPage(entry.userCode, entry.scope as DeviceScope, entry.hostName, undefined, csrfToken));
 });
@@ -247,7 +249,7 @@ deviceRouter.get("/activate/callback", async (req: Request, res: Response) => {
   const upstreamState = rawState.slice(0, colonIdx);
   const pendingId = rawState.slice(colonIdx + 1);
   const cookieName = `activate_pending_${pendingId}`;
-  const cookieVal = (req.cookies as Record<string, string>)[cookieName];
+  const cookieVal = (req.signedCookies as Record<string, string>)[cookieName];
 
   if (!cookieVal) {
     res.status(400).send("Session expired. Please start again.");
@@ -298,6 +300,7 @@ deviceRouter.get("/activate/callback", async (req: Request, res: Response) => {
     secure: config.secureCookies,
     sameSite: "strict",
     maxAge: 15 * 60 * 1000,
+    signed: true,
   });
   res.send(consentPage(entry.userCode, entry.scope as DeviceScope, entry.hostName, undefined, csrfToken));
 });

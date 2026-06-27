@@ -165,6 +165,7 @@ oauthRouter.get("/oauth/authorize", async (req: Request, res: Response) => {
       secure: config.secureCookies,
       maxAge: 10 * 60 * 1000,
       sameSite: "strict",
+      signed: true,
     });
     log.info({ clientId: client_id }, "Authorization redirected to local login");
     res.redirect(`/auth/login?pending=${pendingId}`);
@@ -195,6 +196,7 @@ oauthRouter.get("/oauth/authorize", async (req: Request, res: Response) => {
     secure: config.secureCookies,
     maxAge: 10 * 60 * 1000, // 10 minutes
     sameSite: "lax",
+    signed: true,
   });
 
   // Embed pendingId in upstream state so callback can look up the cookie
@@ -212,7 +214,7 @@ oauthRouter.get("/auth/login", (req: Request, res: Response) => {
   const pendingId = typeof req.query["pending"] === "string" ? req.query["pending"] : "";
   let clientInfo: { clientId: string; redirectDomain: string } | undefined;
   if (pendingId) {
-    const cookieVal = (req.cookies as Record<string, string>)[`login_pending_${pendingId}`];
+    const cookieVal = (req.signedCookies as Record<string, string>)[`login_pending_${pendingId}`];
     if (cookieVal) {
       try {
         const pending = JSON.parse(cookieVal) as LoginPending;
@@ -253,7 +255,7 @@ oauthRouter.post("/auth/login", async (req: Request, res: Response) => {
   }
 
   const cookieName = `login_pending_${pendingId}`;
-  const cookieVal = (req.cookies as Record<string, string>)[cookieName];
+  const cookieVal = (req.signedCookies as Record<string, string>)[cookieName];
   if (!cookieVal) {
     res.status(400).send(loginPage("", "Login session expired. Please try again."));
     return;
@@ -329,7 +331,7 @@ oauthRouter.get("/oauth/callback", async (req: Request, res: Response) => {
   const upstreamState = rawState.slice(0, colonIdx);
   const pendingId = rawState.slice(colonIdx + 1);
   const cookieName = `oidc_pending_${pendingId}`;
-  const cookieVal = (req.cookies as Record<string, string>)[cookieName];
+  const cookieVal = (req.signedCookies as Record<string, string>)[cookieName];
 
   if (!cookieVal) {
     res.status(400).send("Authorization session expired or not found");

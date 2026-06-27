@@ -40,7 +40,7 @@ export async function lookupOAuthSession(token: string): Promise<{
  * Caller is responsible for clearing the cookie on success.
  */
 export function verifyCsrfToken(req: Request, cookieName: string): boolean {
-  const cookie = (req.cookies as Record<string, string>)[cookieName];
+  const cookie = (req.signedCookies as Record<string, string>)[cookieName];
   const body = (req.body as Record<string, string>)["csrf_token"] ?? "";
   if (!cookie) return false;
   return safeEqual(cookie, body);

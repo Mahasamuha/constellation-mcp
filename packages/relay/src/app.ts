@@ -1,5 +1,5 @@
 import express, { Express, NextFunction, Request, Response } from "express";
-import { randomUUID } from "node:crypto";
+import { randomUUID, randomBytes } from "node:crypto";
 import cookieParser from "cookie-parser";
 import cors from "cors";
 import { rateLimit } from "express-rate-limit";
@@ -54,7 +54,17 @@ app.use(cors({
 
 app.use(express.json({ limit: "1mb" }));
 app.use(express.urlencoded({ extended: true, limit: "1mb" }));
-app.use(cookieParser());
+
+// COOKIE_SECRET signs flow-state cookies (login_pending, oidc_pending, activate_pending,
+// csrf_activate) so their redirectUri and PKCE state can't be tampered with. An
+// ephemeral random secret is generated at startup if not provided — this protects
+// within-process integrity; set COOKIE_SECRET for cross-restart consistency.
+const cookieSecret = process.env["COOKIE_SECRET"] ?? (() => {
+  const ephemeral = randomBytes(32).toString("hex");
+  process.stderr.write("WARNING: COOKIE_SECRET is not set — using an ephemeral secret. Set COOKIE_SECRET for cross-restart cookie integrity.\n");
+  return ephemeral;
+})();
+app.use(cookieParser(cookieSecret));
 
 app.use((req, res, next) => {
   const raw = req.headers["x-request-id"] as string | undefined;

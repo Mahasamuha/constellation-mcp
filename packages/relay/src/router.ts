@@ -70,6 +70,10 @@ function sanitizeExecutorError(error: RpcError): RpcError {
 // that never reach routeToolCall() below.
 // ---------------------------------------------------------------------------
 
+// NOTE: these are in-process Maps — rate-limit windows reset on restart and are
+// not shared across relay instances. This is intentional for the single-instance
+// deployment model. For multi-instance deployments, back these with a Redis store
+// using express-rate-limit's store interface instead.
 const toolCallTimestamps = new Map<string, number[]>();
 const expensiveToolTimestamps = new Map<string, number[]>();
 
