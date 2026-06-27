@@ -49,6 +49,10 @@ export function startControlServer(dir: string, conn: RotatableConnection): Serv
     let buf = "";
     socket.on("data", (chunk: Buffer) => {
       buf += chunk.toString("utf8");
+      if (buf.length > 65_536) {
+        socket.destroy();
+        return;
+      }
       const nl = buf.indexOf("\n");
       if (nl === -1) return;
       const line = buf.slice(0, nl);
@@ -106,8 +110,18 @@ async function handleRequest(line: string, socket: Socket, conn: RotatableConnec
       socket.end(JSON.stringify({ ok: false, error: "Invalid paths payload" }) + "\n");
       return;
     }
+    const validPaths = paths.filter(
+      (el): el is PathEntry =>
+        typeof el === "object" && el !== null &&
+        typeof (el as Record<string, unknown>)["share"] === "string" &&
+        typeof (el as Record<string, unknown>)["path"] === "string"
+    );
+    if (validPaths.length !== paths.length) {
+      socket.end(JSON.stringify({ ok: false, error: "Invalid paths payload" }) + "\n");
+      return;
+    }
     try {
-      await conn.configUpdate(paths as PathEntry[]);
+      await conn.configUpdate(validPaths);
       socket.end(JSON.stringify({ ok: true }) + "\n");
     } catch (err) {
       socket.end(JSON.stringify({ ok: false, error: err instanceof Error ? err.message : String(err) }) + "\n");
@@ -172,6 +186,11 @@ function requestViaControlChannel(dir: string, message: Record<string, unknown>)
     let buf = "";
     socket.on("data", (chunk: Buffer) => {
       buf += chunk.toString("utf8");
+      if (buf.length > 65_536) {
+        socket.destroy();
+        finish(null);
+        return;
+      }
       const nl = buf.indexOf("\n");
       if (nl === -1) return;
       try {
