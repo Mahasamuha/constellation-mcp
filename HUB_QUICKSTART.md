@@ -34,7 +34,8 @@ On a fresh relay, set `RELAY_ADMIN_TOKEN=<your-token>` in your relay's environme
 
 ```sh
 # On the machine running the relay CLI (must have RELAY_ADMIN_TOKEN set):
-RELAY_ADMIN_TOKEN=<your-token> constellation relay user promote <oidc-sub>
+RELAY_ADMIN_TOKEN=<your-token> constellation relay user promote \
+  --relay https://relay.example.com <oidc-sub>
 ```
 
 The OIDC subject identifier (`sub`) for a user can be found in your OIDC provider's user directory. Once you have at least one admin, future promotions can be done through the web UI or with `constellation relay elevate` + `constellation relay user promote`.
