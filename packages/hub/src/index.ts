@@ -296,7 +296,7 @@ export class HubSocket extends RelaySocket implements RotatableConnection {
   }
 
   private async handleRpc(envelope: IncomingRpcEnvelope): Promise<object> {
-    const { request_id, tool, params, user_oidc_sub: userOidcSub, user_claims: userClaims } = envelope;
+    const { request_id, tool, params, user_oidc_sub: userOidcSub } = envelope;
     const share = envelope.share || guessShare(envelope.absolute_root, this.shareRegistry);
 
     // onMessage casts the raw WS message to IncomingRpcEnvelope after checking only that
@@ -321,8 +321,32 @@ export class HubSocket extends RelaySocket implements RotatableConnection {
       return { request_id, error: { message } };
     }
 
+    // Coerce user_claims to a safe object — a compromised relay could send null,
+    // which would throw inside resolveIdentity and bypass all audit writes.
+    const rawClaims = envelope.user_claims as unknown;
+    const safeUserClaims: Record<string, unknown> =
+      (typeof rawClaims === "object" && rawClaims !== null && !Array.isArray(rawClaims))
+        ? rawClaims as Record<string, unknown>
+        : {};
+    if (rawClaims !== safeUserClaims) {
+      const message = "Malformed request: user_claims must be an object";
+      this.log.warn({ request_id, tool, share }, message);
+      this.audit.write({
+        ts: new Date().toISOString(),
+        hub_name: this.cfg.hub_name,
+        request_id,
+        user_oidc_sub: userOidcSub,
+        local_username: null,
+        share,
+        tool,
+        outcome: "exec_error",
+        error: message,
+      });
+      return { request_id, error: { message } };
+    }
+
     // Resolve OS identity
-    const identity = await resolveIdentity(userClaims, userOidcSub, this.cfg.identity);
+    const identity = await resolveIdentity(safeUserClaims, userOidcSub, this.cfg.identity);
 
     if (isIdentityError(identity)) {
       this.log.warn({ request_id, tool, share, error: identity.message }, "Identity resolution failed");

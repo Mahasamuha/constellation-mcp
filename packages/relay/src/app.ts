@@ -71,6 +71,7 @@ app.use((_req, res, next) => {
   res.set("Referrer-Policy", "strict-origin-when-cross-origin");
   // Inline styles are used in server-rendered auth/setup pages; no JS or external resources.
   res.set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'");
+  if (config.secureCookies) res.set("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
   next();
 });
 

@@ -80,7 +80,7 @@ describe("AuditWriter", () => {
     expect(() => writer.write(entry())).not.toThrow();
     await expect(writer.flush()).resolves.toBeUndefined();
 
-    expect(stderr).toHaveBeenCalledWith(expect.stringContaining("Failed to write audit entry"));
+    expect(stderr).toHaveBeenCalledWith(expect.stringContaining("audit write failed"));
     stderr.mockRestore();
   });
 

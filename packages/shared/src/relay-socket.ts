@@ -169,6 +169,7 @@ export abstract class RelaySocket {
 
     const ws = new WebSocket(wsUrl + this.path, {
       headers: { Authorization: `Bearer ${this.getToken()}` },
+      maxPayload: 1_048_576,
     });
     this.ws = ws;
 

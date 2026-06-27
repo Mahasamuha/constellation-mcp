@@ -306,7 +306,7 @@ describe("HubSocket — dispatch-error kind in the audit log", () => {
     const [conn] = await nextConnection(wss);
     await waitForMessage(conn); // the initial hub_share_sync sent from onOpen()
 
-    conn.send(JSON.stringify({ request_id: "req-1", tool: "read_file", share: "docs", absolute_root: "/srv/docs", params: {} }));
+    conn.send(JSON.stringify({ request_id: "req-1", tool: "read_file", share: "docs", absolute_root: "/srv/docs", params: {}, user_claims: {} }));
     const response = await waitForMessage(conn);
 
     expect(response).toEqual({ request_id: "req-1", error: { message: `synthetic ${kind} failure` } });

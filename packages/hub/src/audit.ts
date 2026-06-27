@@ -40,6 +40,7 @@ export interface AuditEntry {
 export class AuditWriter {
   private handle: Promise<FileHandle> | null = null;
   private queue: Promise<void> = Promise.resolve();
+  private consecutiveFailures = 0;
 
   constructor(private readonly logPath: string) {}
 
@@ -76,9 +77,19 @@ export class AuditWriter {
       });
       const fh = await this.handle;
       await fh.appendFile(JSON.stringify(entry) + "\n");
+      this.consecutiveFailures = 0;
     } catch (err) {
       this.handle = null;
-      process.stderr.write(`[audit] Failed to write audit entry to '${this.logPath}': ${(err as Error).message}\n`);
+      this.consecutiveFailures++;
+      // Emit a structured ERROR line on every failure so alerting/log-forwarding can
+      // detect disk-full or permission issues that are silently fail-open otherwise.
+      process.stderr.write(JSON.stringify({
+        level: "error",
+        msg: "audit write failed",
+        logPath: this.logPath,
+        consecutiveFailures: this.consecutiveFailures,
+        err: { message: (err as Error).message, code: (err as NodeJS.ErrnoException).code },
+      }) + "\n");
     }
   }
 }
