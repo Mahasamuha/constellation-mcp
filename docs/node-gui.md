@@ -114,7 +114,7 @@ Auth results are delivered to the frontend via Tauri events on the `auth-result`
 Shows live node state. Polls the same data sources as the tray.
 
 **Connection section**
-- Status badge (Connected / Connecting / Stopped / Disconnected / Not set up)
+- Status badge (Connected / Connecting / Stopped / Disconnected / Not set up) — reflects the live WebSocket connection state, which is distinct from the OS service state shown in the Service section below. A node can be service-running but Connection-Connecting (still establishing the WebSocket) or Connection-Stopped (service stopped cleanly).
 - Relay URL
 - Last heartbeat timestamp
 - Disconnect reason (if applicable)
