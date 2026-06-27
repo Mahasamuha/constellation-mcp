@@ -62,6 +62,7 @@ interface QueuedRequest {
   share: string;
   params: unknown;
   requestId: string;
+  identity: ResolvedIdentity;
   resolve: (r: DispatchResult | DispatchError) => void;
   /** Date.now() + resolveQueueTimeoutMs(cfg), set at enqueue time. */
   deadline: number;
@@ -382,7 +383,7 @@ export class SubnodePool {
       // opportunistically, when some other request happens to complete.
       const queueTimeoutMs = resolveQueueTimeoutMs(this.cfg);
       const entry: QueuedRequest = {
-        tool, share, params, requestId,
+        tool, share, params, requestId, identity,
         resolve: resultResolve,
         deadline: Date.now() + queueTimeoutMs,
         timer: setTimeout(() => this.expireQueued(subnode, entry), queueTimeoutMs),
@@ -501,7 +502,7 @@ export class SubnodePool {
       worker.pending.set(requestId, {
         resolve: (resp) => {
           clearTimeout(timer);
-          this.onRequestComplete(subnode, worker);
+          void this.onRequestComplete(subnode, worker);
           resolve({ result: resp.result, error: resp.error });
         },
         reject: (e) => {
@@ -535,14 +536,28 @@ export class SubnodePool {
 
   /**
    * Called when a worker finishes a request. Drains the subnode queue first
-   * (skipping expired entries), then resets the idle timer if nothing is waiting.
+   * (skipping expired entries and entries whose UID/GID policy now blocks them),
+   * then resets the idle timer if nothing is waiting.
    */
-  private onRequestComplete(subnode: Subnode, worker: Worker): void {
+  private async onRequestComplete(subnode: Subnode, worker: Worker): Promise<void> {
     while (subnode.queue.length > 0) {
       const entry = subnode.queue.shift()!;
       clearTimeout(entry.timer);
       if (Date.now() > entry.deadline) {
         entry.resolve({ kind: "timeout", message: "Request timed out waiting for a free worker" });
+        continue;
+      }
+      const uidBlock = checkUidRestrictions(entry.identity.uid, this.cfg);
+      if (uidBlock) {
+        log.warn({ username: entry.identity.username, uid: entry.identity.uid, restriction: uidBlock, request_id: entry.requestId }, "Queued request rejected — UID newly blocked");
+        this.evictSubnodeWorkers(entry.identity.username, "uid newly blocked by policy");
+        entry.resolve({ kind: "uid_blocked", message: `Access denied: your account is not permitted to use this hub. Contact your administrator with reference ID: ${entry.requestId}` });
+        continue;
+      }
+      const gidBlock = await checkGidRestrictions(entry.identity, this.cfg, entry.requestId);
+      if (gidBlock) {
+        this.evictSubnodeWorkers(entry.identity.username, "gid newly blocked by policy");
+        entry.resolve(gidBlock);
         continue;
       }
       void this.sendRequest(subnode, worker, entry.tool, entry.share, entry.params, entry.requestId)
