@@ -37,11 +37,19 @@ function execPrefix(): string[] {
   return [process.execPath, process.argv[1]!];
 }
 
+function sysdQuote(s: string): string {
+  return `"${s.replace(/"/g, '\\"')}"`;
+}
+
+function xmlEscape(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
 function installSystemd(_exec: string): void {
   const unitDir = join(homedir(), ".config", "systemd", "user");
   mkdirSync(unitDir, { recursive: true });
 
-  const execLine = execPrefix().join(" ");
+  const execLine = execPrefix().map(sysdQuote).join(" ");
 
   const unitPath = join(unitDir, `${SERVICE_NAME}.service`);
   const unit = `[Unit]
@@ -71,7 +79,7 @@ function installLaunchd(_exec: string): void {
   const plistPath = join(plistDir, `${label}.plist`);
   const programArgs = execPrefix()
     .concat(["node", "start", "--foreground"])
-    .map((a) => `    <string>${a}</string>`)
+    .map((a) => `    <string>${xmlEscape(a)}</string>`)
     .join("\n");
   const plist = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -110,8 +118,8 @@ function installTaskScheduler(_exec: string): void {
   </Triggers>
   <Actions Context="Author">
     <Exec>
-      <Command>${command}</Command>
-      <Arguments>${args}</Arguments>
+      <Command>${xmlEscape(command)}</Command>
+      <Arguments>${xmlEscape(args)}</Arguments>
     </Exec>
   </Actions>
   <Settings>

@@ -97,7 +97,7 @@ function buildHubShareSyncPayload(cfg: HubConfig, shareRegistry: Record<string, 
           try {
             instructions = readFileSync(s.context_file, "utf8");
           } catch {
-            log.info({ share: s.name, context_file: s.context_file }, "context_file is set but could not be read — omitting instructions");
+            log.warn({ share: s.name }, "context_file is set but could not be read — omitting instructions");
           }
         }
 

@@ -298,9 +298,10 @@ export function registerHubCommands(program: Command): void {
       }
 
       const isPkg = (process as typeof process & { pkg?: unknown }).pkg !== undefined;
+      const q = (s: string) => `"${s.replace(/"/g, '\\"')}"`;
       const execLine = isPkg
-        ? `${process.execPath} hub start --config-file ${opts.configFile}`
-        : `${process.execPath} ${process.argv[1]} hub start --config-file ${opts.configFile}`;
+        ? `${q(process.execPath)} hub start --config-file ${q(opts.configFile)}`
+        : `${q(process.execPath)} ${q(process.argv[1]!)} hub start --config-file ${q(opts.configFile)}`;
       // The control channel's socket file lives next to the audit log (always present,
       // already covered below) — only a live-rotated token's persistence to env_file
       // needs a write grant of its own, and only when env_file is actually configured.
