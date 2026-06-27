@@ -503,8 +503,13 @@ async function syncPaths(dir: string, candidatePaths?: PathEntry[]): Promise<voi
   // WebSocket here would evict it (relay enforces one connection per executor).
   const viaControl = await requestConfigUpdateViaControlChannel(dir, paths);
   if (viaControl !== null) {
-    if (!viaControl.ok) { console.error("Error:", viaControl.error); process.exit(1); }
-    return;
+    // Daemon is running but not connected to the relay — fall through to direct
+    // connection below (safe to open one since there is no live connection to evict).
+    if (!viaControl.ok && viaControl.error !== "Not connected to relay") {
+      console.error("Error:", viaControl.error);
+      process.exit(1);
+    }
+    if (viaControl.ok) return;
   }
 
   // No daemon running — open a direct relay connection.

@@ -128,6 +128,10 @@ export abstract class RelaySocket {
     });
   }
 
+  protected isConnected(): boolean {
+    return this.ws?.readyState === WebSocket.OPEN;
+  }
+
   protected send(msg: object): void {
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(msg));

@@ -53,6 +53,9 @@ export class NodeConnection extends RelaySocket {
     if (this.configUpdateState) {
       return Promise.reject(new Error("A config update is already in progress"));
     }
+    if (!this.isConnected()) {
+      return Promise.reject(new Error("Not connected to relay"));
+    }
     return new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.configUpdateState = null;
