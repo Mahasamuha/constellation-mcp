@@ -83,9 +83,10 @@ either spawns the subnode with the user's full, OS-resolved group list (the
 only option `initgroups()` supports; see [ADR 0014](adr/0014-subnode-worker-explicit-env.md)) or it doesn't spawn at all.
 So **before every dispatch** (not just at first spawn — group membership is
 re-resolved on each call so admin changes take effect without restarting the
-hub or waiting for a pooled worker to be torn down), the hub resolves the
-target user's complete group list and refuses to proceed if *any* member is on
-the blocked set:
+hub or waiting for a pooled worker to be torn down; this includes requests
+that were queued while all workers were busy, which are re-checked at dequeue
+time), the hub resolves the target user's complete group list and refuses to
+proceed if *any* member is on the blocked set:
 
 - GID 0 (`root`'s group) — always blocked, not configurable
 - The hub's own primary GID — always blocked
