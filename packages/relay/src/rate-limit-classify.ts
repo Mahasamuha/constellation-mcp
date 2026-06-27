@@ -16,8 +16,8 @@ export type RateLimitBucket = "exempt" | "oauth" | "device-poll" | "device-auth"
  * tool call already goes through checkToolRateLimit, a per-user limiter suited to
  * that traffic shape — a normal session legitimately makes far more requests to
  * this one endpoint than the default bucket allows for an arbitrary route.
- * (/healthz needs no entry here at all — its route is registered in app.ts before
- * the rate-limit dispatcher is mounted, so it never reaches this function at all.)
+ * (/healthz has its own dedicated limiter mounted after this dispatcher — it gets
+ * a generous per-minute cap rather than the strict default bucket.)
  */
 export function classifyHttpRoute(path: string, grantType?: unknown): RateLimitBucket {
   if (path === "/mcp") return "exempt";

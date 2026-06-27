@@ -435,16 +435,10 @@ async function handleAuthorizationCodeGrant(
     return;
   }
 
-  try {
-    await prisma.authCode.delete({ where: { codeHash } });
-  } catch (err) {
-    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2025") {
-      res.status(400).json({ error: "invalid_grant", error_description: "Authorization code already redeemed" });
-      return;
-    }
-    throw err;
-  }
-
+  // Look up the OAuth client and verify client_secret BEFORE consuming the code.
+  // Doing it after would let an attacker who intercepts a code submit it with a wrong
+  // secret — the code is consumed but no token issued, so the legitimate client's code
+  // is gone (targeted DoS).
   const oauthClient = await prisma.oauthClient.findUnique({ where: { id: client_id } });
   if (!oauthClient) {
     res.status(400).json({ error: "invalid_client" });
@@ -457,6 +451,16 @@ async function handleAuthorizationCodeGrant(
       res.status(401).json({ error: "invalid_client", error_description: "client_secret required for confidential clients" });
       return;
     }
+  }
+
+  try {
+    await prisma.authCode.delete({ where: { codeHash } });
+  } catch (err) {
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2025") {
+      res.status(400).json({ error: "invalid_grant", error_description: "Authorization code already redeemed" });
+      return;
+    }
+    throw err;
   }
 
   const tokens = await issueOAuthSession(entry.userId, client_id);

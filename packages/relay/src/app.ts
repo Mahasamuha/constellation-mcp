@@ -75,14 +75,6 @@ app.use((_req, res, next) => {
   next();
 });
 
-app.get("/healthz", async (_req: Request, res: Response) => {
-  try {
-    await prisma.$queryRaw`SELECT 1`;
-    res.json({ status: "ok" });
-  } catch {
-    res.status(503).json({ status: "error", reason: "database_unavailable" });
-  }
-});
 
 export const oauthLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -142,6 +134,25 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 });
 
 app.use(setupMiddleware);
+
+// /healthz is after the rate-limit dispatcher (not before it) so it can't be used
+// to exhaust the PG connection pool unchecked. It gets its own generous bucket
+// (120/min) to avoid breaking load-balancer health checks.
+const healthzLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 120,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  message: { error: "rate_limit_exceeded" },
+});
+app.get("/healthz", healthzLimiter, async (_req: Request, res: Response) => {
+  try {
+    await prisma.$queryRaw`SELECT 1`;
+    res.json({ status: "ok" });
+  } catch {
+    res.status(503).json({ status: "error", reason: "database_unavailable" });
+  }
+});
 
 app.use("/", setupRouter);
 app.use("/", oauthRouter);

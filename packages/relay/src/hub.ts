@@ -607,6 +607,10 @@ async function handleHubShareSync(conn: ConnectedExecutor, msg: HubShareSyncMess
       send(conn.ws, { type: "hub_share_sync_error", error: `Share '${entry.name}': instructions must be a string` });
       return;
     }
+    if (typeof entry.instructions === "string" && entry.instructions.length > 4096) {
+      send(conn.ws, { type: "hub_share_sync_error", error: `Share '${entry.name}': instructions must not exceed 4096 characters` });
+      return;
+    }
   }
 
   // Upsert shares and remove stale entries in a transaction
