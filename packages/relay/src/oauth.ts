@@ -477,6 +477,20 @@ async function handleRefreshTokenGrant(
     return;
   }
 
+  const oauthClient = await prisma.oauthClient.findUnique({ where: { id: client_id } });
+  if (!oauthClient) {
+    res.status(400).json({ error: "invalid_client" });
+    return;
+  }
+
+  if (oauthClient.clientSecretHash !== null) {
+    const { client_secret } = body;
+    if (!client_secret || !safeEqual(hashToken(client_secret), oauthClient.clientSecretHash)) {
+      res.status(401).json({ error: "invalid_client", error_description: "client_secret required for confidential clients" });
+      return;
+    }
+  }
+
   const tokens = makeTokenPair();
 
   await prisma.oauthSession.update({
