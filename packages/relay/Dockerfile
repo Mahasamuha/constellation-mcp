@@ -1,5 +1,5 @@
 # --- build stage ---
-FROM node:24-alpine AS builder
+FROM node:24.15.0-alpine AS builder
 WORKDIR /app
 
 # Required to compile native addons (re2) from source on Alpine (musl libc)
@@ -32,7 +32,7 @@ RUN npm run build -w packages/telescope
 RUN npm prune --omit=dev
 
 # --- runtime stage ---
-FROM node:24-alpine
+FROM node:24.15.0-alpine
 WORKDIR /app
 
 # Remove BusyBox's wget (CVE-2025-60876, CRLF/header injection in the request
