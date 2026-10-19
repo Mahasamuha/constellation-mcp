@@ -3,6 +3,7 @@ import { app } from "./app.js";
 import { attachHub, closeHub, pruneReconnectTimestamps, pruneExpiredOrphanedTokens } from "./hub.js";
 import { pruneDeviceCodes } from "./device.js";
 import { pruneAuthCodes, pruneUnactivatedDynamicClients } from "./oauth.js";
+import { pruneUnactivatedMetadataDocumentClients } from "./oauth-clients.js";
 import { pruneRateLimits } from "./router.js";
 import { pruneLoginFailures } from "./local-auth.js";
 import { initActivitySinks, pruneActivityLog } from "./activity.js";
@@ -27,6 +28,7 @@ setInterval(() => {
   pruneDeviceCodes().catch((err) => log.warn({ err }, "pruneDeviceCodes failed"));
   pruneAuthCodes().catch((err) => log.warn({ err }, "pruneAuthCodes failed"));
   pruneUnactivatedDynamicClients().catch((err) => log.warn({ err }, "pruneUnactivatedDynamicClients failed"));
+  pruneUnactivatedMetadataDocumentClients().catch((err) => log.warn({ err }, "pruneUnactivatedMetadataDocumentClients failed"));
   pruneExpiredOrphanedTokens().catch((err) => log.warn({ err }, "pruneExpiredOrphanedTokens failed"));
   pruneRateLimits();
   pruneReconnectTimestamps();

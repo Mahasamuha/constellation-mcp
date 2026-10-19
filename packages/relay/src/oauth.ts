@@ -9,7 +9,8 @@ import { generateToken, hashToken, safeEqual, createLogger, requireEnv } from "@
 import { checkBruteForce, recordFailure, validateLocalUser } from "./local-auth.js";
 import { config } from "./config.js";
 import { issueOAuthSession, makeTokenPair, sendTokenResponse } from "./oauth-tokens.js";
-import { FAVICON_LINK } from "./page-style.js";
+import { FAVICON_LINK, pageStyle } from "./page-style.js";
+import { clientDisclosure, InvalidClientError, isAllowedRedirectUri, resolveOauthClient, type ClientDisclosure } from "./oauth-clients.js";
 
 const log = createLogger("oauth");
 
@@ -45,6 +46,7 @@ oauthRouter.get("/.well-known/oauth-authorization-server", (_req: Request, res: 
     ],
     code_challenge_methods_supported: ["S256"],
     token_endpoint_auth_methods_supported: ["none"],
+    client_id_metadata_document_supported: true,
   });
 });
 
@@ -127,7 +129,16 @@ oauthRouter.get("/oauth/authorize", async (req: Request, res: Response) => {
     return;
   }
 
-  const oauthClient = await prisma.oauthClient.findUnique({ where: { id: client_id } });
+  let oauthClient;
+  try {
+    oauthClient = await resolveOauthClient(client_id);
+  } catch (err) {
+    if (err instanceof InvalidClientError) {
+      res.status(400).json({ error: "invalid_client", error_description: err.message });
+      return;
+    }
+    throw err;
+  }
   if (!oauthClient) {
     res.status(400).json({ error: "invalid_client" });
     return;
@@ -159,8 +170,80 @@ oauthRouter.get("/oauth/authorize", async (req: Request, res: Response) => {
     return;
   }
 
-  // OIDC mode: redirect to upstream provider
-  const usePkce = !!code_challenge;
+  // OIDC mode: the upstream provider shows nothing about the MCP client, so the relay
+  // renders its own consent interstitial first — the MCP spec requires the redirect
+  // hostname to be displayed during authorization.
+  const pendingId = randomBytes(16).toString("hex");
+  const csrfToken = generateToken();
+  const pending: AuthorizePending = {
+    clientId: client_id,
+    redirectUri: redirect_uri,
+    downstreamCodeChallenge: code_challenge,
+    downstreamCodeChallengeMethod: req.query["code_challenge_method"] as string | undefined,
+    downstreamState: req.query["state"] as string | undefined,
+    csrfToken,
+  };
+  res.cookie(`authz_pending_${pendingId}`, JSON.stringify(pending), {
+    httpOnly: true,
+    secure: config.secureCookies,
+    maxAge: 10 * 60 * 1000,
+    sameSite: "strict",
+    signed: true,
+  });
+  res.send(consentPage(pendingId, csrfToken, clientDisclosure(oauthClient, redirect_uri)));
+});
+
+// ---------------------------------------------------------------------------
+// POST /oauth/authorize/consent — OIDC-mode consent interstitial submission
+// ---------------------------------------------------------------------------
+
+interface AuthorizePending {
+  clientId: string;
+  redirectUri: string;
+  downstreamCodeChallenge: string;
+  downstreamCodeChallengeMethod?: string;
+  downstreamState?: string;
+  csrfToken: string;
+}
+
+oauthRouter.post("/oauth/authorize/consent", async (req: Request, res: Response) => {
+  const body = req.body as Record<string, string>;
+  const pendingId = body["pending"] ?? "";
+  const cookieName = `authz_pending_${pendingId}`;
+  const cookieVal = (req.signedCookies as Record<string, string>)[cookieName];
+  if (!cookieVal) {
+    res.status(400).send("Authorization session expired or not found");
+    return;
+  }
+  res.clearCookie(cookieName);
+
+  let pending: AuthorizePending;
+  try {
+    pending = JSON.parse(cookieVal) as AuthorizePending;
+  } catch {
+    res.status(400).send("Malformed authorization session");
+    return;
+  }
+
+  if (!safeEqual(pending.csrfToken, body["csrf_token"] ?? "")) {
+    res.status(403).send("Invalid or missing CSRF token. Please go back and try again.");
+    return;
+  }
+
+  if (body["action"] !== "approve") {
+    // redirectUri was validated against the client's registered URIs at /oauth/authorize.
+    const params = new URLSearchParams({ error: "access_denied" });
+    if (pending.downstreamState) params.set("state", pending.downstreamState);
+    log.info({ clientId: pending.clientId }, "Authorization denied at consent");
+    res.redirect(`${pending.redirectUri}?${params.toString()}`);
+    return;
+  }
+
+  await redirectToUpstreamOidc(pending, res);
+});
+
+async function redirectToUpstreamOidc(pending: AuthorizePending, res: Response): Promise<void> {
+  const usePkce = !!pending.downstreamCodeChallenge;
   const callbackUrl = `${requireEnv("RELAY_URL")}/oauth/callback`;
   const { url, state, codeVerifier } = await buildAuthorizationUrl(callbackUrl, usePkce);
 
@@ -171,13 +254,13 @@ oauthRouter.get("/oauth/authorize", async (req: Request, res: Response) => {
   res.cookie(`oidc_pending_${pendingId}`, JSON.stringify({
     state,
     codeVerifier,
-    clientId: client_id,
-    redirectUri: redirect_uri,
+    clientId: pending.clientId,
+    redirectUri: pending.redirectUri,
     // Carry the downstream client's PKCE challenge through so we can re-verify
     // it when issuing our own code to the MCP client.
-    downstreamCodeChallenge: req.query["code_challenge"],
-    downstreamCodeChallengeMethod: req.query["code_challenge_method"],
-    downstreamState: req.query["state"],
+    downstreamCodeChallenge: pending.downstreamCodeChallenge,
+    downstreamCodeChallengeMethod: pending.downstreamCodeChallengeMethod,
+    downstreamState: pending.downstreamState,
   }), {
     httpOnly: true,
     secure: config.secureCookies,
@@ -189,24 +272,27 @@ oauthRouter.get("/oauth/authorize", async (req: Request, res: Response) => {
   // Embed pendingId in upstream state so callback can look up the cookie
   url.searchParams.set("state", `${state}:${pendingId}`);
 
-  log.info({ clientId: client_id }, "Authorization redirected to upstream OIDC");
+  log.info({ clientId: pending.clientId }, "Authorization redirected to upstream OIDC");
   res.redirect(url.toString());
-});
+}
 
 // ---------------------------------------------------------------------------
 // GET /auth/login — local auth login form
 // ---------------------------------------------------------------------------
 
-oauthRouter.get("/auth/login", (req: Request, res: Response) => {
+oauthRouter.get("/auth/login", async (req: Request, res: Response) => {
   const pendingId = typeof req.query["pending"] === "string" ? req.query["pending"] : "";
-  let clientInfo: { clientId: string; redirectDomain: string } | undefined;
+  let clientInfo: ClientDisclosure | undefined;
   if (pendingId) {
     const cookieVal = (req.signedCookies as Record<string, string>)[`login_pending_${pendingId}`];
     if (cookieVal) {
       try {
         const pending = JSON.parse(cookieVal) as LoginPending;
-        const redirectDomain = new URL(pending.redirectUri).hostname;
-        clientInfo = { clientId: pending.clientId, redirectDomain };
+        const client = await prisma.oauthClient.findUnique({
+          where: { id: pending.clientId },
+          select: { id: true, clientName: true, isMetadataDocument: true },
+        });
+        if (client) clientInfo = clientDisclosure(client, pending.redirectUri);
       } catch { /* show form without client info */ }
     }
   }
@@ -524,10 +610,48 @@ async function handleRefreshTokenGrant(
 // helpers
 // ---------------------------------------------------------------------------
 
-function loginPage(pendingId: string, error?: string, clientInfo?: { clientId: string; redirectDomain: string }): string {
-  const clientBanner = clientInfo
-    ? `<p class="client-info">Signing in to grant <strong>${escHtml(clientInfo.clientId)}</strong> access (redirects to <strong>${escHtml(clientInfo.redirectDomain)}</strong>)</p>`
+/** Client identity, redirect host, and loopback warning shared by the login and consent pages. */
+function clientDisclosureHtml(info: ClientDisclosure): string {
+  const name = info.clientName ?? info.clientId;
+  const identity = info.verifiedHost
+    ? `Client identity published by <strong>${escHtml(info.verifiedHost)}</strong>.`
+    : "This client registered itself; its name and identity are not verified.";
+  const loopbackWarning = info.isLoopbackRedirect
+    ? `<p class="error">Access will be returned to an application running on this computer. Only continue if you started this connection yourself.</p>`
     : "";
+  return `<div class="client-info">
+      <p>Signing in to grant <strong>${escHtml(name)}</strong> access to your Constellation files.</p>
+      <p>${identity}</p>
+      <p>After sign-in you will be redirected to <strong>${escHtml(info.redirectHost)}</strong>.</p>
+    </div>
+    ${loopbackWarning}`;
+}
+
+function consentPage(pendingId: string, csrfToken: string, info: ClientDisclosure): string {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Constellation — Authorize access</title>${pageStyle()}
+<style>.client-info p { margin: .4rem 0; } .client-info { background: #f0f4ff; border: 1px solid #c7d7fe; padding: .5rem .7rem; border-radius: 4px; margin-bottom: .5rem; }</style>
+</head>
+<body>
+  <div class="card">
+    <h1>Authorize access</h1>
+    ${clientDisclosureHtml(info)}
+    <form method="POST" action="/oauth/authorize/consent">
+      <input type="hidden" name="pending" value="${escHtml(pendingId)}">
+      <input type="hidden" name="csrf_token" value="${escHtml(csrfToken)}">
+      <div class="actions">
+        <button type="submit" name="action" value="approve">Continue to sign in</button>
+        <button type="submit" name="action" value="deny" class="secondary">Deny</button>
+      </div>
+    </form>
+  </div>
+</body>
+</html>`;
+}
+
+function loginPage(pendingId: string, error?: string, clientInfo?: ClientDisclosure): string {
+  const clientBanner = clientInfo ? clientDisclosureHtml(clientInfo) : "";
   return `<!DOCTYPE html>
 <html lang="en">
 <head><meta charset="utf-8"><title>Constellation — Sign in</title>
@@ -541,6 +665,7 @@ ${FAVICON_LINK}
   button { margin-top: 1.2rem; padding: .6rem 1.4rem; font-size: 1rem; border: none; border-radius: 4px; cursor: pointer; background: #2563eb; color: #fff; }
   .error { color: #dc2626; background: #fee2e2; padding: .6rem; border-radius: 4px; margin-bottom: .5rem; }
   .client-info { font-size: .85rem; color: #555; background: #f0f4ff; border: 1px solid #c7d7fe; padding: .5rem .7rem; border-radius: 4px; margin-bottom: .5rem; }
+  .client-info p { margin: .3rem 0; }
   .client-info strong { color: #1d4ed8; }
 </style>
 </head>
@@ -562,39 +687,6 @@ ${FAVICON_LINK}
 </html>`;
 }
 
-
-/**
- * Rejects javascript:, data:, and vbscript: URIs. Allows https:, custom schemes
- * (native app callbacks), and http: only for loopback addresses.
- */
-function isAllowedRedirectUri(uri: string): boolean {
-  let parsed: URL;
-  try {
-    parsed = new URL(uri);
-  } catch {
-    return false;
-  }
-  const scheme = parsed.protocol;
-  if (scheme === "javascript:" || scheme === "data:" || scheme === "vbscript:") return false;
-  if (scheme === "http:") {
-    // Allow http only for loopback — native app dev servers on localhost.
-    const host = parsed.hostname;
-    return host === "localhost" || host === "127.0.0.1" || host === "::1";
-  }
-  if (scheme === "https:") {
-    // Allow only origins explicitly listed in config (defaults cover documented MCP clients;
-    // operators extend via OAUTH_ALLOWED_REDIRECT_ORIGINS). Prevents arbitrary redirect-URI
-    // registration from being used for authorization-code phishing.
-    return config.oauthAllowedRedirectOrigins.some((origin) => {
-      try {
-        return new URL(origin).hostname === parsed.hostname;
-      } catch {
-        return false;
-      }
-    });
-  }
-  return false;
-}
 
 function asStringArray(val: unknown): string[] {
   if (Array.isArray(val)) return val.filter((v): v is string => typeof v === "string");
