@@ -2,18 +2,19 @@ import { createServer } from "node:http";
 import { app } from "./app.js";
 import { attachHub, closeHub, pruneReconnectTimestamps, pruneExpiredOrphanedTokens } from "./hub.js";
 import { pruneDeviceCodes } from "./device.js";
-import { pruneAuthCodes, pruneUnactivatedDynamicClients } from "./oauth.js";
-import { pruneUnactivatedMetadataDocumentClients } from "./oauth-clients.js";
+import { pruneAuthCodes } from "./oauth.js";
+import { pruneUnactivatedDynamicClients, pruneUnactivatedMetadataDocumentClients } from "./oauth-clients.js";
 import { pruneRateLimits } from "./router.js";
 import { pruneLoginFailures } from "./local-auth.js";
 import { initActivitySinks, pruneActivityLog } from "./activity.js";
 import { prisma } from "./db.js";
 import { createLogger } from "@constellation/shared";
-import { assertRelayUrlIsOrigin, config } from "./config.js";
+import { assertDynamicClientTtl, assertRelayUrlIsOrigin, config } from "./config.js";
 
 const log = createLogger("relay");
 
 assertRelayUrlIsOrigin();
+assertDynamicClientTtl();
 
 const port = config.port;
 const server = createServer(app);

@@ -300,7 +300,7 @@ apiRouter.get("/api/sessions", async (req: Request, res: Response) => {
   const [sessions, total] = await Promise.all([
     prisma.oauthSession.findMany({
       where,
-      include: { mcpClient: { select: { isDynamic: true } } },
+      include: { mcpClient: { select: { isDynamic: true, isMetadataDocument: true, clientName: true } } },
       orderBy: { issuedAt: "desc" },
       take: limit,
       skip: offset,
@@ -313,6 +313,8 @@ apiRouter.get("/api/sessions", async (req: Request, res: Response) => {
       id: s.id,
       mcp_client_id: s.mcpClientId,
       is_dynamic_client: s.mcpClient.isDynamic,
+      is_metadata_document_client: s.mcpClient.isMetadataDocument,
+      client_name: s.mcpClient.clientName,
       issued_at: s.issuedAt.toISOString(),
       expires_at: s.expiresAt.toISOString(),
       has_refresh_token: s.refreshTokenHash !== null,

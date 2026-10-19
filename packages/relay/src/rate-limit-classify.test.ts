@@ -7,7 +7,7 @@ describe("classifyHttpRoute", () => {
   });
 
   it("routes plain oauth endpoints to the oauth bucket", () => {
-    for (const path of ["/oauth/register", "/oauth/device/code", "/setup", "/auth/login"]) {
+    for (const path of ["/oauth/register", "/oauth/device/code", "/setup", "/auth/login", "/oauth/authorize/consent"]) {
       expect(classifyHttpRoute(path)).toBe("oauth");
     }
   });

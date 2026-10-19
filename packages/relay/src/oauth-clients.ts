@@ -15,6 +15,11 @@ const METADATA_MAX_TTL_MS = 24 * 60 * 60 * 1000;
 const CLIENT_ID_URL_MAX_LENGTH = 2000;
 const CLIENT_NAME_MAX_LENGTH = 200;
 
+/** Grant types this relay can actually issue; anything else in a client's registration is meaningless here. */
+export const SUPPORTED_GRANT_TYPES: readonly string[] = ["authorization_code", "refresh_token"];
+// The relay issues a refresh token on authorization_code, so that is the default pair.
+export const DEFAULT_GRANT_TYPES: string[] = ["authorization_code", "refresh_token"];
+
 /** Thrown when a client cannot be resolved; the message is safe to return as error_description. */
 export class InvalidClientError extends Error {
   constructor(message: string) {
@@ -24,7 +29,7 @@ export class InvalidClientError extends Error {
 }
 
 /** True when a client_id should be resolved as a Client ID Metadata Document URL. DCR ids are cuids and never match. */
-export function isMetadataDocumentClientId(clientId: string): boolean {
+function isMetadataDocumentClientId(clientId: string): boolean {
   return clientId.startsWith("https://");
 }
 
@@ -45,6 +50,8 @@ export async function resolveOauthClient(clientId: string): Promise<OauthClient 
   validateClientIdUrl(clientId);
 
   const cached = await prisma.oauthClient.findUnique({ where: { id: clientId } });
+  // Never upsert over a row that was not created from a metadata document.
+  if (cached && !cached.isMetadataDocument) throw new InvalidClientError("client_id is not a valid metadata document URL");
   if (cached?.isMetadataDocument && cached.metadataExpiresAt && cached.metadataExpiresAt > new Date()) {
     return cached;
   }
@@ -54,8 +61,10 @@ export async function resolveOauthClient(clientId: string): Promise<OauthClient 
     fetched = await safeFetchJson(clientId, { maxBytes: METADATA_MAX_BYTES, timeoutMs: METADATA_FETCH_TIMEOUT_MS });
   } catch (err) {
     if (err instanceof SafeFetchError) {
-      log.warn({ clientId, reason: err.message }, "Client metadata document fetch failed");
-      throw new InvalidClientError(`client metadata document could not be fetched: ${err.message}`);
+      // The specific reason (and network cause) stays in the log: returning it would let a
+      // caller use this endpoint to probe internal hosts and ports.
+      log.warn({ clientId, reason: err.message, cause: describeCause(err.cause) }, "Client metadata document fetch failed");
+      throw new InvalidClientError("client metadata document could not be retrieved");
     }
     throw err;
   }
@@ -78,6 +87,14 @@ export async function resolveOauthClient(clientId: string): Promise<OauthClient 
   return client;
 }
 
+function describeCause(cause: unknown): string | undefined {
+  if (cause instanceof Error) {
+    const code = (cause as NodeJS.ErrnoException).code;
+    return code ? `${code}: ${cause.message}` : `${cause.name}: ${cause.message}`;
+  }
+  return undefined;
+}
+
 /** Throws unless the client_id is a well-formed Client Identifier URL (CIMD draft §3). */
 export function validateClientIdUrl(clientId: string): void {
   if (clientId.length > CLIENT_ID_URL_MAX_LENGTH) throw new InvalidClientError("client_id URL is too long");
@@ -92,6 +109,7 @@ export function validateClientIdUrl(clientId: string): void {
   if (parsed.href !== clientId) throw new InvalidClientError("client_id URL must be in canonical form");
   if (parsed.username || parsed.password) throw new InvalidClientError("client_id URL must not contain userinfo");
   if (clientId.includes("#")) throw new InvalidClientError("client_id URL must not contain a fragment");
+  if (parsed.hostname.endsWith(".")) throw new InvalidClientError("client_id URL host must not end with a dot");
   if (parsed.pathname === "/") throw new InvalidClientError("client_id URL must contain a path");
 }
 
@@ -143,15 +161,18 @@ export function parseMetadataDocument(clientId: string, body: string): ParsedMet
   }
 
   const rawGrants = d["grant_types"];
-  // The relay issues a refresh token on authorization_code, so that is the default pair.
+  // Unsupported grant types are dropped; the flow this relay serves requires authorization_code.
   const grantTypes = Array.isArray(rawGrants)
-    ? rawGrants.filter((g): g is string => typeof g === "string")
-    : ["authorization_code", "refresh_token"];
+    ? rawGrants.filter((g): g is string => typeof g === "string" && SUPPORTED_GRANT_TYPES.includes(g))
+    : DEFAULT_GRANT_TYPES;
+  if (!grantTypes.includes("authorization_code")) {
+    throw new InvalidClientError("client metadata document grant_types must include authorization_code");
+  }
 
   return { clientName: clientName.trim(), redirectUris, grantTypes };
 }
 
-/** Cache lifetime from Cache-Control, clamped to configured bounds. no-store, no-cache and max-age=0 force a re-fetch on every authorization. */
+/** Cache lifetime from Cache-Control, clamped to fixed bounds. no-store, no-cache and max-age=0 force a re-fetch on every authorization. */
 export function cacheLifetimeMs(cacheControl: string | undefined): number {
   if (!cacheControl) return METADATA_DEFAULT_TTL_MS;
   const directives = cacheControl.toLowerCase().split(",").map((s) => s.trim());
@@ -164,9 +185,29 @@ export function cacheLifetimeMs(cacheControl: string | undefined): number {
   return Math.min(Math.max(seconds * 1000, METADATA_MIN_TTL_MS), METADATA_MAX_TTL_MS);
 }
 
+function unactivatedCutoff(): Date {
+  return new Date(Date.now() - config.oauthDynamicClientTtlHours * 60 * 60 * 1000);
+}
+
+/** Removes dynamically registered OAuth clients that have never completed an auth flow (no
+ * OauthSession was ever issued for them) and were registered more than the TTL ago.
+ * /oauth/register is open per the MCP spec (RFC 7591), so unbounded registration is a DB
+ * growth vector — this bounds it without capping registrations outright (a hard cap would
+ * itself be a DoS vector: an attacker fills it and blocks legitimate clients).
+ * Called periodically from index.ts. */
+export async function pruneUnactivatedDynamicClients(): Promise<void> {
+  const cutoff = unactivatedCutoff();
+  const result = await prisma.oauthClient.deleteMany({
+    where: { isDynamic: true, createdAt: { lt: cutoff }, oauthSessions: { none: {} } },
+  });
+  if (result.count > 0) {
+    log.info({ count: result.count }, "Pruned unactivated dynamic OAuth clients");
+  }
+}
+
 /** Removes metadata-document clients that never completed an auth flow, on the same TTL as dynamic clients. Called periodically from index.ts. */
 export async function pruneUnactivatedMetadataDocumentClients(): Promise<void> {
-  const cutoff = new Date(Date.now() - config.oauthDynamicClientTtlHours * 60 * 60 * 1000);
+  const cutoff = unactivatedCutoff();
   // Keyed on metadataExpiresAt, not createdAt: any authorization after expiry re-fetches
   // and bumps it, so a row expired for longer than the TTL has no flow in progress.
   const result = await prisma.oauthClient.deleteMany({
@@ -200,12 +241,13 @@ export function clientDisclosure(client: Pick<OauthClient, "id" | "clientName" |
 }
 
 function isLoopbackHost(host: string): boolean {
-  return host === "localhost" || host === "127.0.0.1" || host === "[::1]" || host === "::1";
+  return host === "localhost" || host === "127.0.0.1" || host === "[::1]";
 }
 
 /**
- * Allows https: only for origins in OAUTH_ALLOWED_REDIRECT_ORIGINS, and http: only for
- * loopback addresses. All other schemes, including custom native-app schemes, are rejected.
+ * Allows https: only for origins in OAUTH_ALLOWED_REDIRECT_ORIGINS (full origin match,
+ * including port), and http: only for loopback addresses. All other schemes, including
+ * custom native-app schemes, are rejected, as are URIs with a fragment (RFC 6749 §3.1.2).
  */
 export function isAllowedRedirectUri(uri: string): boolean {
   let parsed: URL;
@@ -214,23 +256,47 @@ export function isAllowedRedirectUri(uri: string): boolean {
   } catch {
     return false;
   }
-  const scheme = parsed.protocol;
-  if (scheme === "javascript:" || scheme === "data:" || scheme === "vbscript:") return false;
-  if (scheme === "http:") {
+  if (parsed.hash || uri.includes("#")) return false;
+  if (parsed.protocol === "http:") {
     // Allow http only for loopback — native app dev servers on localhost.
     return isLoopbackHost(parsed.hostname);
   }
-  if (scheme === "https:") {
-    // Allow only origins explicitly listed in config (defaults cover documented MCP clients;
-    // operators extend via OAUTH_ALLOWED_REDIRECT_ORIGINS). Prevents arbitrary redirect-URI
-    // registration from being used for authorization-code phishing.
+  if (parsed.protocol === "https:") {
+    // Allow only origins explicitly listed in config (empty by default; operators set
+    // OAUTH_ALLOWED_REDIRECT_ORIGINS). Prevents arbitrary redirect-URI registration from
+    // being used for authorization-code phishing.
     return config.oauthAllowedRedirectOrigins.some((origin) => {
       try {
-        return new URL(origin).hostname === parsed.hostname;
+        return new URL(origin).origin === parsed.origin;
       } catch {
         return false;
       }
     });
   }
   return false;
+}
+
+/**
+ * True when the requested redirect_uri matches a registered one. Matching is exact except
+ * for http: loopback URIs, where the port is ignored (RFC 8252 §7.3) since native apps bind
+ * an ephemeral port; a registered loopback URI may omit the port.
+ */
+export function isRegisteredRedirectUri(registered: string[], requested: string): boolean {
+  if (registered.includes(requested)) return true;
+  let req: URL;
+  try {
+    req = new URL(requested);
+  } catch {
+    return false;
+  }
+  if (req.protocol !== "http:" || !isLoopbackHost(req.hostname)) return false;
+  return registered.some((r) => {
+    try {
+      const reg = new URL(r);
+      return reg.protocol === "http:" && isLoopbackHost(reg.hostname)
+        && reg.hostname === req.hostname && reg.pathname === req.pathname && reg.search === req.search;
+    } catch {
+      return false;
+    }
+  });
 }

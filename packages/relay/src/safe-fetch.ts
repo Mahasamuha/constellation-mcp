@@ -3,10 +3,14 @@ import type { IncomingMessage } from "node:http";
 import { lookup as dnsLookup, type LookupAddress } from "node:dns";
 import { BlockList, isIP, type LookupFunction } from "node:net";
 
-/** Thrown when a guarded fetch is refused or fails; the message is safe to surface to clients. */
+/**
+ * Thrown when a guarded fetch is refused or fails. The message is generic; the underlying
+ * network error (e.g. ENOTFOUND, ECONNREFUSED, a timeout) is kept on `cause` for server-side
+ * logging only and must not be returned to clients.
+ */
 export class SafeFetchError extends Error {
-  constructor(message: string) {
-    super(message);
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
     this.name = "SafeFetchError";
   }
 }
@@ -99,37 +103,47 @@ export async function safeFetchJson(url: string, opts: { maxBytes: number; timeo
     });
   } catch (err) {
     if (err instanceof SafeFetchError) throw err;
-    throw new SafeFetchError("fetch failed");
+    throw new SafeFetchError("fetch failed", { cause: err });
   }
 
   try {
-    if (res.statusCode !== 200) {
-      throw new SafeFetchError(`unexpected HTTP status ${res.statusCode ?? "unknown"}`);
-    }
-    const contentType = res.headers["content-type"] ?? "";
-    if (!/^application\/([\w.+-]+\+)?json\s*(;|$)/i.test(contentType)) {
-      throw new SafeFetchError("response is not JSON");
-    }
-    const declaredLength = Number(res.headers["content-length"]);
-    if (Number.isFinite(declaredLength) && declaredLength > opts.maxBytes) {
-      throw new SafeFetchError("response too large");
-    }
-
-    const chunks: Buffer[] = [];
-    let total = 0;
-    try {
-      for await (const chunk of res as AsyncIterable<Buffer>) {
-        total += chunk.length;
-        if (total > opts.maxBytes) throw new SafeFetchError("response too large");
-        chunks.push(chunk);
-      }
-    } catch (err) {
-      if (err instanceof SafeFetchError) throw err;
-      throw new SafeFetchError("fetch failed");
-    }
-
-    return { body: Buffer.concat(chunks).toString("utf8"), cacheControl: res.headers["cache-control"] };
+    return await readJsonResponse(res, opts.maxBytes);
   } finally {
     res.destroy();
   }
 }
+
+/**
+ * Checks a response for the guarded-fetch contract and reads its body. A non-200 status
+ * (including any 3xx, which is never followed) is refused, as is a non-JSON content type or
+ * a body over maxBytes, whether declared by Content-Length or discovered while streaming.
+ */
+export async function readJsonResponse(res: IncomingMessage, maxBytes: number): Promise<SafeFetchResult> {
+  if (res.statusCode !== 200) {
+    throw new SafeFetchError(`unexpected HTTP status ${res.statusCode ?? "unknown"}`);
+  }
+  const contentType = res.headers["content-type"] ?? "";
+  if (!/^application\/([\w.+-]+\+)?json\s*(;|$)/i.test(contentType)) {
+    throw new SafeFetchError("response is not JSON");
+  }
+  const declaredLength = Number(res.headers["content-length"]);
+  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+    throw new SafeFetchError("response too large");
+  }
+
+  const chunks: Buffer[] = [];
+  let total = 0;
+  try {
+    for await (const chunk of res as AsyncIterable<Buffer>) {
+      total += chunk.length;
+      if (total > maxBytes) throw new SafeFetchError("response too large");
+      chunks.push(chunk);
+    }
+  } catch (err) {
+    if (err instanceof SafeFetchError) throw err;
+    throw new SafeFetchError("fetch failed", { cause: err });
+  }
+
+  return { body: Buffer.concat(chunks).toString("utf8"), cacheControl: res.headers["cache-control"] };
+}
+

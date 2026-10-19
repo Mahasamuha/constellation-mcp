@@ -55,7 +55,7 @@ app.use(cors({
 app.use(express.json({ limit: "1mb" }));
 app.use(express.urlencoded({ extended: true, limit: "1mb" }));
 
-// COOKIE_SECRET signs flow-state cookies (login_pending, oidc_pending, activate_pending,
+// COOKIE_SECRET signs flow-state cookies (authz_pending, login_pending, oidc_pending, activate_pending,
 // csrf_activate) so their redirectUri and PKCE state can't be tampered with. An
 // ephemeral random secret is generated at startup if not provided — this protects
 // within-process integrity; set COOKIE_SECRET for cross-restart consistency.
