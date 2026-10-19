@@ -8,9 +8,11 @@ import { pruneLoginFailures } from "./local-auth.js";
 import { initActivitySinks, pruneActivityLog } from "./activity.js";
 import { prisma } from "./db.js";
 import { createLogger } from "@constellation/shared";
-import { config } from "./config.js";
+import { assertRelayUrlIsOrigin, config } from "./config.js";
 
 const log = createLogger("relay");
+
+assertRelayUrlIsOrigin();
 
 const port = config.port;
 const server = createServer(app);

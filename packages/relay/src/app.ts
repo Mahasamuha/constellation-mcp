@@ -48,7 +48,7 @@ app.use(cors({
     : false,
   methods: ["GET", "POST", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization", "Mcp-Session-Id"],
-  exposedHeaders: ["Mcp-Session-Id"],
+  exposedHeaders: ["Mcp-Session-Id", "WWW-Authenticate"],
   credentials: true,
 }));
 

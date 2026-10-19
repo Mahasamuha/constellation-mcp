@@ -117,7 +117,7 @@ mcpRouter.all("/mcp", async (req: Request, res: Response) => {
   const session = await lookupOAuthSession(token);
   if (!session) {
     const relayUrl = requireEnv("RELAY_URL");
-    res.set("WWW-Authenticate", `Bearer realm="${relayUrl}", error="invalid_token"`);
+    res.set("WWW-Authenticate", `Bearer realm="${relayUrl}", error="invalid_token", resource_metadata="${relayUrl}/.well-known/oauth-protected-resource"`);
     res.status(401).json({ error: "invalid_token" });
     return;
   }

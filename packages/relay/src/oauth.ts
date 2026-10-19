@@ -44,7 +44,7 @@ oauthRouter.get("/.well-known/oauth-authorization-server", (_req: Request, res: 
       "urn:ietf:params:oauth:grant-type:device_code",
     ],
     code_challenge_methods_supported: ["S256"],
-    token_endpoint_auth_methods_supported: ["client_secret_post", "none"],
+    token_endpoint_auth_methods_supported: ["none"],
   });
 });
 
@@ -70,18 +70,18 @@ oauthRouter.post("/oauth/register", async (req: Request, res: Response) => {
 
   const grantTypesRaw = asStringArray(body["grant_types"]);
   const grantTypes = grantTypesRaw.length > 0 ? grantTypesRaw : ["authorization_code"];
-  const tokenEndpointAuthMethod = typeof body["token_endpoint_auth_method"] === "string"
-    ? body["token_endpoint_auth_method"]
-    : "client_secret_basic";
 
-  // Public clients (e.g. PKCE-only) send token_endpoint_auth_method=none
-  const isPublic = tokenEndpointAuthMethod === "none";
-  let clientSecret: string | undefined;
-  let clientSecretHash: string | undefined;
-
-  if (!isPublic) {
-    clientSecret = generateToken();
-    clientSecretHash = hashToken(clientSecret);
+  // Dynamic registration is public-client only (PKCE, no secret). Issuing secrets would
+  // oblige the token endpoint to support client_secret_basic (RFC 6749 §2.3.1). An omitted
+  // method is replaced with "none" rather than the RFC 7591 client_secret_basic default,
+  // which §3.2.1 permits since the response states the value the client must use.
+  const requestedAuthMethod = body["token_endpoint_auth_method"];
+  if (requestedAuthMethod !== undefined && requestedAuthMethod !== "none") {
+    res.status(400).json({
+      error: "invalid_client_metadata",
+      error_description: "token_endpoint_auth_method must be \"none\"; only public clients may register dynamically",
+    });
+    return;
   }
 
   const oauthClient = await prisma.oauthClient.create({
@@ -89,33 +89,20 @@ oauthRouter.post("/oauth/register", async (req: Request, res: Response) => {
       redirectUris,
       grantTypes,
       isDynamic: true,
-      clientSecretHash: clientSecretHash ?? null,
+      clientSecretHash: null,
     },
     select: { id: true, createdAt: true },
   });
 
   log.info({ clientId: oauthClient.id }, "Dynamic client registered");
 
-  const response: {
-    client_id: string;
-    client_id_issued_at: number;
-    redirect_uris: string[];
-    grant_types: string[];
-    token_endpoint_auth_method: string;
-    client_secret?: string;
-  } = {
+  res.status(201).json({
     client_id: oauthClient.id,
     client_id_issued_at: Math.floor(oauthClient.createdAt.getTime() / 1000),
     redirect_uris: redirectUris,
     grant_types: grantTypes,
-    token_endpoint_auth_method: tokenEndpointAuthMethod,
-  };
-
-  if (clientSecret) {
-    response.client_secret = clientSecret;
-  }
-
-  res.status(201).json(response);
+    token_endpoint_auth_method: "none",
+  });
 });
 
 // ---------------------------------------------------------------------------

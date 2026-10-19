@@ -13,6 +13,26 @@ function isRelayUrlSecure(): boolean {
   }
 }
 
+/**
+ * Throws if RELAY_URL is set to anything other than a bare origin (no path, query,
+ * fragment, or trailing slash). Every well-known URL and OAuth endpoint is built as
+ * `${RELAY_URL}/...`, which only matches RFC 8414 §3.1 / RFC 9728 §3.1 placement (and
+ * yields an exact `issuer` match) when RELAY_URL is an origin.
+ */
+export function assertRelayUrlIsOrigin(): void {
+  const relayUrl = process.env["RELAY_URL"];
+  if (!relayUrl) return;
+  let parsed: URL;
+  try {
+    parsed = new URL(relayUrl);
+  } catch {
+    throw new Error("RELAY_URL is not a valid URL");
+  }
+  if (parsed.origin !== relayUrl) {
+    throw new Error(`RELAY_URL must be a bare origin with no path or trailing slash (e.g. ${parsed.origin})`);
+  }
+}
+
 export const config = {
   port: parseEnvInt("PORT", 3000),
   secureCookies: isRelayUrlSecure(),
