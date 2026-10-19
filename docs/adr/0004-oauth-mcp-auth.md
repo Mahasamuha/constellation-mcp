@@ -1,6 +1,6 @@
 # ADR 0004: OAuth 2.0 as the MCP Client Authentication Standard
 
-**Status:** Accepted  
+**Status:** Accepted; partially superseded by [ADR 0020](0020-rfc9728-discovery-public-only-dcr.md) (discovery entry point, DCR client types)  
 **Date:** 2026-06-06
 
 ## Context

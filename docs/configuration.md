@@ -16,7 +16,7 @@
 | Variable | Description |
 |---|---|
 | `DATABASE_URL` | PostgreSQL connection string (e.g. `postgresql://user:pass@localhost:5432/constellation`) |
-| `RELAY_URL` | Public base URL of the relay, no trailing slash (e.g. `https://relay.example.com`). Used to construct OAuth callback URLs and the discovery document — must be the URL MCP clients and browsers can reach. |
+| `RELAY_URL` | Public origin of the relay — scheme and host (and port, if non-default) only; no path or trailing slash (e.g. `https://relay.example.com`). The relay refuses to start otherwise. Used to construct OAuth callback URLs and the discovery documents — must be the URL MCP clients and browsers can reach. Sub-path deployments are not supported. |
 | `TRUST_PROXY` | Comma-separated list of trusted reverse proxy IP addresses or CIDR ranges. Required unless `TRUST_PROXY_PRESET` is set. Must not be a number or boolean — use explicit IPs/CIDRs. Example: `127.0.0.1` |
 | `TRUST_PROXY_PRESET` | Shorthand alternative to `TRUST_PROXY`. Accepted values: `railway`, `fly`, `cloudflare-tunnel`. Overrides `TRUST_PROXY` if both are set. |
 

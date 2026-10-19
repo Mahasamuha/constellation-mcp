@@ -445,7 +445,16 @@ The `confirm` field must be exactly `"deactivate my account"`. Any other value r
 
 ## OAuth Flows
 
-The relay acts as an OAuth 2.0 authorization server backed by an upstream OIDC provider. It exposes a standard `/.well-known/oauth-authorization-server` discovery document.
+The relay acts as an OAuth 2.0 authorization server backed by an upstream OIDC provider. It is also the protected resource (`/mcp`), and exposes both discovery documents:
+
+| Document | Spec | Key fields |
+|---|---|---|
+| `/.well-known/oauth-protected-resource` | RFC 9728 | `resource` (the relay origin), `authorization_servers` (the relay origin), `bearer_methods_supported: ["header"]` |
+| `/.well-known/oauth-authorization-server` | RFC 8414 | `issuer`, endpoints, `code_challenge_methods_supported: ["S256"]`, `token_endpoint_auth_methods_supported: ["none"]` |
+
+Every `401` from `/mcp` (missing or invalid token) includes `resource_metadata` in its `WWW-Authenticate` header pointing at the protected resource metadata, which is how MCP clients begin discovery. `WWW-Authenticate` is exposed via CORS for browser-based clients.
+
+Both documents are built from `RELAY_URL`, which must be a bare origin; the relay refuses to start otherwise. See [ADR 0020](adr/0020-rfc9728-discovery-public-only-dcr.md).
 
 ### Authorization Code Flow (MCP clients)
 
@@ -472,7 +481,7 @@ sequenceDiagram
 
 PKCE (`S256`) is **required**. The relay rejects `/oauth/authorize` requests that omit `code_challenge`. The MCP auth spec is based on OAuth 2.1, which mandates PKCE for all authorization code flows. All compliant MCP clients (Claude, ChatGPT, Cursor) support it.
 
-**Dynamic Client Registration** (`POST /oauth/register`, RFC 7591) is supported for clients that auto-discover the relay. Public clients send `token_endpoint_auth_method: "none"` and receive no client secret.
+**Dynamic Client Registration** (`POST /oauth/register`, RFC 7591) is supported for clients that auto-discover the relay, for **public clients only**. Clients send `token_endpoint_auth_method: "none"` or omit it (it is then set to `"none"`); any other value is rejected with `400 invalid_client_metadata`. No client secret is issued — PKCE protects the authorization code. Clients registered with a secret before this restriction continue to authenticate with `client_secret` in the token request body.
 
 ### Device Code Flow (node init + relay login)
 

@@ -178,16 +178,18 @@ Full deployment, identity-resolution, UID/GID security model, and config referen
 
 ## MCP Connection
 
-The relay exposes a standard `/.well-known/oauth-authorization-server` discovery document. MCP clients that support OAuth discovery (Claude, ChatGPT, Cursor) find the authorization endpoint automatically when the relay URL is added to their config — no manual OAuth setup is required.
+The relay exposes two standard discovery documents: `/.well-known/oauth-protected-resource` (RFC 9728) and `/.well-known/oauth-authorization-server` (RFC 8414). MCP clients that support OAuth discovery (Claude, ChatGPT, Cursor) find the authorization endpoint automatically when the relay URL is added to their config — no manual OAuth setup is required.
 
 **First connection flow:**
-1. Client discovers `/.well-known/oauth-authorization-server`
-2. Client attempts Dynamic Client Registration (`POST /oauth/register`) — most clients do this automatically
-3. Client redirects the user to `/oauth/authorize` (with PKCE)
-4. Relay redirects to the upstream OIDC provider; user authenticates
-5. Relay exchanges the OIDC code, upserts a user row, issues its own access + refresh tokens
-6. Client exchanges the auth code for tokens at `POST /oauth/token`
-7. Client calls `POST /mcp` with `Authorization: Bearer <access_token>`
+1. Client calls `POST /mcp` without a token; the relay returns `401` with `WWW-Authenticate: Bearer ... resource_metadata="<relay>/.well-known/oauth-protected-resource"`
+2. Client fetches the protected resource metadata, which names the relay as its authorization server
+3. Client fetches `/.well-known/oauth-authorization-server`
+4. Client attempts Dynamic Client Registration (`POST /oauth/register`) as a public client (`token_endpoint_auth_method: "none"`) — most clients do this automatically
+5. Client redirects the user to `/oauth/authorize` (with PKCE)
+6. Relay redirects to the upstream OIDC provider; user authenticates
+7. Relay exchanges the OIDC code, upserts a user row, issues its own access + refresh tokens
+8. Client exchanges the auth code for tokens at `POST /oauth/token`
+9. Client calls `POST /mcp` with `Authorization: Bearer <access_token>`
 
 Refresh tokens are rotated on use. If a refresh token expires, the client prompts re-authentication. Access tokens default to 24-hour lifetime; refresh tokens default to 30 days — both are configurable via relay environment variables.
 
