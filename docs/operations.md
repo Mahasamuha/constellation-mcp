@@ -79,7 +79,8 @@ which before you decide how aggressively to back it up:
 - **OAuth sessions and dynamically-registered MCP clients** — lost, but this
   self-heals automatically: clients re-discover and re-register
   (`POST /oauth/register`) and users re-authenticate on their next request.
-  No manual recovery step.
+  Clients that identify themselves with a Client ID Metadata Document URL
+  just have their document re-fetched. No manual recovery step.
 
 ## Backing up node and hub configuration
 
@@ -137,6 +138,25 @@ schema change, taking a fresh backup immediately before pulling a new image
 is cheap insurance, particularly across a large version jump; check the
 relay's changelog/migration history for that range if you're skipping
 several releases at once.
+
+Upgrade notes for the OAuth discovery and Client ID Metadata Document release
+([ADR 0020](adr/0020-rfc9728-discovery-public-only-dcr.md),
+[ADR 0021](adr/0021-client-id-metadata-documents.md)):
+
+- `RELAY_URL` must be a bare origin or the relay fails at startup: no path,
+  trailing slash, uppercase host, or explicit default port.
+  `OAUTH_DYNAMIC_CLIENT_TTL_HOURS` must be at least `1`.
+- The relay fetches client metadata documents over HTTPS on port 443 directly
+  (`HTTPS_PROXY` is ignored), so it needs outbound egress to arbitrary hosts. It
+  refuses private and other special-use addresses; consider also restricting
+  egress at the network layer.
+- Rolling back to an image from before this release: first delete the
+  metadata-document clients, or the older code will trust their cached redirect
+  URIs forever. Delete their sessions first (the foreign key is
+  `ON DELETE RESTRICT`):
+  `DELETE FROM oauth_sessions WHERE mcp_client_id IN (SELECT id FROM oauth_clients WHERE is_metadata_document = true);`
+  then `DELETE FROM oauth_clients WHERE is_metadata_document = true;`.
+  Affected users re-authorize.
 
 ## Log rotation
 

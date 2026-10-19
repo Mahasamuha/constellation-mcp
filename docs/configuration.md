@@ -16,7 +16,7 @@
 | Variable | Description |
 |---|---|
 | `DATABASE_URL` | PostgreSQL connection string (e.g. `postgresql://user:pass@localhost:5432/constellation`) |
-| `RELAY_URL` | Public origin of the relay — scheme and host (and port, if non-default) only; no path or trailing slash (e.g. `https://relay.example.com`). The relay refuses to start otherwise. Used to construct OAuth callback URLs and the discovery documents — must be the URL MCP clients and browsers can reach. Sub-path deployments are not supported. |
+| `RELAY_URL` | Public origin of the relay — scheme and host (and port, if non-default) only; no path or trailing slash (e.g. `https://relay.example.com`). The relay refuses to start otherwise: a trailing slash, uppercase host, or explicit default port (e.g. `:443`) all fail the check. Used to construct OAuth callback URLs and the discovery documents — must be the URL MCP clients and browsers can reach. Sub-path deployments are not supported. |
 | `TRUST_PROXY` | Comma-separated list of trusted reverse proxy IP addresses or CIDR ranges. Required unless `TRUST_PROXY_PRESET` is set. Must not be a number or boolean — use explicit IPs/CIDRs. Example: `127.0.0.1` |
 | `TRUST_PROXY_PRESET` | Shorthand alternative to `TRUST_PROXY`. Accepted values: `railway`, `fly`, `cloudflare-tunnel`. Overrides `TRUST_PROXY` if both are set. |
 
@@ -68,7 +68,7 @@ The relay constructs both callback URLs from `RELAY_URL` automatically — there
 |---|---|---|
 | `OAUTH_ACCESS_TOKEN_TTL_HOURS` | `24` | Lifetime of MCP client access tokens, in hours |
 | `OAUTH_REFRESH_TOKEN_TTL_DAYS` | `30` | Lifetime of MCP client refresh tokens, in days |
-| `OAUTH_DYNAMIC_CLIENT_TTL_HOURS` | `24` | How long a dynamically registered OAuth client may sit unactivated (no completed auth flow) before it's pruned. Also applies to Client ID Metadata Document clients, measured from when their cached document expired |
+| `OAUTH_DYNAMIC_CLIENT_TTL_HOURS` | `24` | Minimum `1` (the relay refuses to start otherwise). How long a dynamically registered OAuth client may sit unactivated (no completed auth flow) before it's pruned. Also applies to Client ID Metadata Document clients, measured from when their cached document expired |
 
 **OAuth client registration**
 
@@ -76,7 +76,7 @@ The relay supports RFC 7591 dynamic client registration at `POST /oauth/register
 
 | Variable | Default | Description |
 |---|---|---|
-| `OAUTH_ALLOWED_REDIRECT_ORIGINS` | *(none)* | Comma-separated HTTPS origins whose redirect URIs are permitted during dynamic client registration and in Client ID Metadata Documents. `http://localhost`, `http://127.0.0.1`, and `http://[::1]` (any port) are always allowed regardless of this setting — no entry needed for local dev servers or native apps. If this variable is unset or empty, no HTTPS redirect URIs are accepted. |
+| `OAUTH_ALLOWED_REDIRECT_ORIGINS` | *(none)* | Comma-separated HTTPS origins whose redirect URIs are permitted during dynamic client registration and in Client ID Metadata Documents. Entries are compared as full origins (scheme, host, and port), so `https://example.com` does not permit `https://example.com:8443`. Redirect URIs with a fragment are rejected. `http://localhost`, `http://127.0.0.1`, and `http://[::1]` redirect URIs are always allowed regardless of this setting — no entry needed for local dev servers or native apps — and at `/oauth/authorize` they match any port (RFC 8252 §7.3). If this variable is unset or empty, no HTTPS redirect URIs are accepted. |
 
 The `.env.example` files ship with `claude.ai`, `chatgpt.com`, and `cursor.com` as the starting value — the three clients documented in [mcp-clients.md](mcp-clients.md). Add or replace entries to match the clients you actually use.
 
@@ -99,13 +99,15 @@ All numeric variables are validated at startup. A non-integer value causes the r
 |---|---|---|---|---|
 | `RATE_LIMIT_TOOL_CALLS_PER_MIN` | `60` | 60 s | Per user | Standard MCP tool call limit |
 | `RATE_LIMIT_EXPENSIVE_TOOLS_PER_MIN` | `20` | 60 s | Per user | Limit for `grep_files`, `find_files`, recursive `list_directory`, **and any MCP tool not explicitly classified as "standard" in `router.ts`'s `classifyTool`** |
-| `RATE_LIMIT_OAUTH_PER_15MIN` | `10` | 15 min | Per IP | Requests to `/oauth/token` (non-device-code grants), `/oauth/register`, `/oauth/device/code`, `/setup`, `/auth/login` |
+| `RATE_LIMIT_OAUTH_PER_15MIN` | `10` | 15 min | Per IP | Requests to `/oauth/token` (non-device-code grants), `/oauth/register`, `/oauth/authorize/consent`, `/oauth/device/code`, `/setup`, `/auth/login`. An OIDC-mode authorization uses two of these (consent and token) |
 | `RATE_LIMIT_DEVICE_POLL_PER_15MIN` | `200` | 15 min | Per IP | Requests to `/oauth/token` with `grant_type=device_code`. Device clients poll every 5 s for up to 15 min (≈180 requests); this must exceed that. |
 | `RATE_LIMIT_DEVICE_AUTH_PER_15MIN` | `20` | 15 min | Per IP | Requests to `/activate`, `/activate/login`, `/activate/callback`, `/activate/confirm` — the device-authorization consent flow |
-| `RATE_LIMIT_DEFAULT_PER_15MIN` | `10` | 15 min | Per IP | Catch-all for any HTTP route not explicitly classified in `app.ts`'s `classifyHttpRoute` (e.g. `/api/*`). Deliberately the strictest HTTP bucket — see [architecture.md](architecture.md#rate-limiting). `/healthz` and `/mcp` are explicitly exempt instead of falling here; see that doc for why. |
+| `RATE_LIMIT_DEFAULT_PER_15MIN` | `10` | 15 min | Per IP | Catch-all for any HTTP route not explicitly classified in `app.ts`'s `classifyHttpRoute` (e.g. `/api/*`, `/oauth/authorize`, the `/.well-known/*` documents). Deliberately the strictest HTTP bucket — see [architecture.md](architecture.md#rate-limiting). `/healthz` and `/mcp` are explicitly exempt instead of falling here; see that doc for why. |
 | `RATE_LIMIT_WS_RECONNECT_PER_MIN` | `10` | 60 s | Per executor token | Executor WebSocket reconnect attempts |
 
 Rate limit state is in-memory. It is lost on relay restart, which is acceptable for single-instance deployments.
+
+> **Multi-user deployments:** the built-in limiter is meant for single-user deployments, prototyping and pilots. Put a multi-user production deployment behind a WAF or an equivalent dedicated rate-limiting and abuse-protection tool. The defaults are sized for one user. One MCP client authorization costs about 4 default-bucket and 2–3 oauth-bucket requests, so one IP gets roughly two authorizations per 15 minutes. Users behind a shared NAT or VPN, and hosted MCP clients whose servers make requests on behalf of many users, will exhaust that quickly. See [architecture.md](architecture.md#rate-limiting) for the per-request breakdown to size WAF rules or pilot limits from.
 
 **Activity log**
 

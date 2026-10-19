@@ -59,7 +59,7 @@ The relay has three layers that operate in sequence on every MCP tool call.
 
 The relay acts as an OAuth 2.0 authorization server to MCP clients, and as an OIDC client to an upstream identity provider (Google, Azure AD, Authentik, or any OIDC-compliant provider).
 
-MCP clients authenticate via the **Authorization Code flow** (with mandatory PKCE). Dynamic Client Registration (RFC 7591) is supported as the primary path — Claude, ChatGPT, and Cursor attempt DCR automatically on first connection.
+MCP clients authenticate via the **Authorization Code flow** (with mandatory PKCE). Clients register either with a Client ID Metadata Document URL as their `client_id` (preferred) or by Dynamic Client Registration (RFC 7591), public clients only — Claude, ChatGPT, and Cursor attempt DCR automatically on first connection. See [ADR 0020](adr/0020-rfc9728-discovery-public-only-dcr.md) and [ADR 0021](adr/0021-client-id-metadata-documents.md).
 
 The node CLI and relay CLI authenticate via the **Device Code flow** (RFC 8628). Scope determines which flow is served:
 - `agent:register` — creates a node registration and returns a node token
@@ -102,7 +102,7 @@ executors        id, user_id, executor_token_id, host, last_heartbeat_at
 path_shares      id, user_id, executor_id, share, reported_path  [UNIQUE (user_id, share)]
 hub_shares       id, executor_id, share, reported_path, permission_blob  [UNIQUE (executor_id, share)] — admin-defined, synced from a hub's config
 relay_path_filters   id, user_id, scope_executor_id, pattern, pattern_type
-oauth_clients    id, client_secret_hash, redirect_uris, is_dynamic
+oauth_clients    id, client_secret_hash, redirect_uris, grant_types, is_dynamic, is_metadata_document, client_name, metadata_expires_at
 oauth_sessions   id, user_id, mcp_client_id, access_token_hash, expires_at, refresh_token_hash
 ```
 
@@ -178,15 +178,15 @@ Full deployment, identity-resolution, UID/GID security model, and config referen
 
 ## MCP Connection
 
-The relay exposes two standard discovery documents: `/.well-known/oauth-protected-resource` (RFC 9728) and `/.well-known/oauth-authorization-server` (RFC 8414). MCP clients that support OAuth discovery (Claude, ChatGPT, Cursor) find the authorization endpoint automatically when the relay URL is added to their config — no manual OAuth setup is required.
+The relay exposes two standard discovery documents: protected resource metadata (RFC 9728) at `/.well-known/oauth-protected-resource/mcp` (plus the root `/.well-known/oauth-protected-resource`, kept for older clients) and `/.well-known/oauth-authorization-server` (RFC 8414). MCP clients that support OAuth discovery (Claude, ChatGPT, Cursor) find the authorization endpoint automatically when the relay URL is added to their config — no manual OAuth setup is required.
 
 **First connection flow:**
-1. Client calls `POST /mcp` without a token; the relay returns `401` with `WWW-Authenticate: Bearer ... resource_metadata="<relay>/.well-known/oauth-protected-resource"`
+1. Client calls `POST /mcp` without a token; the relay returns `401` with `WWW-Authenticate: Bearer ... resource_metadata="<relay>/.well-known/oauth-protected-resource/mcp"`
 2. Client fetches the protected resource metadata, which names the relay as its authorization server
 3. Client fetches `/.well-known/oauth-authorization-server`
 4. Client identifies itself either with a Client ID Metadata Document URL as its `client_id` (preferred; the relay fetches and caches the document), or by Dynamic Client Registration (`POST /oauth/register`) as a public client (`token_endpoint_auth_method: "none"`)
 5. Client redirects the user to `/oauth/authorize` (with PKCE)
-6. Relay shows a consent page naming the client and the redirect host; on approval it redirects to the upstream OIDC provider, where the user authenticates
+6. In OIDC mode the relay shows a consent page naming the client and the redirect host; on approval it redirects to the upstream OIDC provider, where the user authenticates. In local-auth mode it renders its login page directly, with the same client disclosure
 7. Relay exchanges the OIDC code, upserts a user row, issues its own access + refresh tokens
 8. Client exchanges the auth code for tokens at `POST /oauth/token`
 9. Client calls `POST /mcp` with `Authorization: Bearer <access_token>`
@@ -250,11 +250,32 @@ new is "rate limited too aggressively," never "not rate limited at all."
 |---|---|---|
 | MCP tool calls (standard tools) | 60 req/min per user | `RATE_LIMIT_TOOL_CALLS_PER_MIN` |
 | MCP tool calls (expensive tools — `grep_files`, `find_files`, recursive `list_directory`, **and any unclassified tool**) | 20 req/min per user | `RATE_LIMIT_EXPENSIVE_TOOLS_PER_MIN` |
-| OAuth endpoints (`/oauth/register`, `/oauth/device/code`, `/setup`, `/auth/login`, `/oauth/token` for non-device-code grants) | 10 req/15 min per IP | `RATE_LIMIT_OAUTH_PER_15MIN` |
+| OAuth endpoints (`/oauth/register`, `/oauth/authorize/consent`, `/oauth/device/code`, `/setup`, `/auth/login`, `/oauth/token` for non-device-code grants) | 10 req/15 min per IP | `RATE_LIMIT_OAUTH_PER_15MIN` |
 | Device code polling (`/oauth/token` with `grant_type=device_code`) | 200 req/15 min per IP | `RATE_LIMIT_DEVICE_POLL_PER_15MIN` |
 | Device-authorization consent flow (`/activate*`) | 20 req/15 min per IP | `RATE_LIMIT_DEVICE_AUTH_PER_15MIN` |
-| Any other HTTP route, including `/api/*` — **and any route added later and not explicitly classified** | 10 req/15 min per IP | `RATE_LIMIT_DEFAULT_PER_15MIN` |
+| Any other HTTP route, including `/api/*` and the `/.well-known/*` documents — **and any route added later and not explicitly classified** | 10 req/15 min per IP | `RATE_LIMIT_DEFAULT_PER_15MIN` |
 | Executor WebSocket reconnects | 10 req/min per executor token | `RATE_LIMIT_WS_RECONNECT_PER_MIN` |
+
+**Caveat: the defaults are sized for a single-user relay.** One MCP client authorization spends requests from both 10-per-15-minute buckets. The worst case is a native client (e.g. Claude Code) against an OIDC-mode relay, where every request comes from the same IP:
+
+| Step | Bucket | Requests |
+|---|---|---|
+| `POST /mcp` → 401 | exempt | – |
+| `GET /.well-known/oauth-protected-resource/mcp` | default | 1 |
+| `GET /.well-known/oauth-authorization-server` | default | 1 (2–3 if the client SDK also probes `openid-configuration` or path variants) |
+| `POST /oauth/register` (DCR clients, first time only) | oauth | 0–1 |
+| `GET /oauth/authorize` | default | 1 |
+| `POST /oauth/authorize/consent` (OIDC) or `POST /auth/login` (local, +1 per failed password) | oauth | 1 |
+| `GET /oauth/callback` (OIDC only) | default | 1 |
+| `POST /oauth/token` | oauth | 1 |
+
+That is about 4 default-bucket requests (up to 6 with extra discovery probing) and 2–3 oauth-bucket requests per authorization. Local-auth mode saves one default request because it has no callback. A single IP therefore gets about two full authorizations per 15 minutes, and the third runs out of default-bucket requests. Each later token refresh costs 1 oauth request. `/mcp` traffic itself is exempt and limited per user by the tool-call limiter. CIMD document fetches are outbound and don't count.
+
+Web clients such as claude.ai split these requests across two IPs. Discovery, registration and token requests come from the client vendor's servers; authorize, consent and callback come from the user's browser. Every user of that client shares the vendor's server IPs.
+
+**Multi-user deployments belong behind a WAF.** The built-in limiter is in-memory, per-instance, and keyed only on IP. Use it for single-user deployments, prototyping and pilots. A multi-user production deployment should sit behind a WAF or an equivalent dedicated rate-limiting and abuse-protection tool (e.g. a cloud WAF, an API gateway, or a reverse proxy with rate-limiting and bot rules), as a security measure as well as for capacity.
+
+Several users connecting at once from the same office NAT, VPN exit, or hosted MCP client will exhaust the default buckets quickly. Whether you size the WAF's rules or raise `RATE_LIMIT_DEFAULT_PER_15MIN` and `RATE_LIMIT_OAUTH_PER_15MIN` for a pilot, start from the per-authorization costs above. Multiply them by the number of authorizations you expect per IP in 15 minutes, and add headroom for retries and refreshes. The table numbers are estimates: client SDKs differ in how many discovery URLs they probe, so verify against your relay's access logs.
 
 Two routes are deliberately exempt from the HTTP-level buckets, not by oversight:
 `/healthz` (an infra liveness check, registered before the rate-limit dispatcher is

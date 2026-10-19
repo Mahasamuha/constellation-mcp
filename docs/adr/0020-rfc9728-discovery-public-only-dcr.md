@@ -30,11 +30,15 @@ A review against RFC 9728 and RFC 8414 found:
 ## Decision
 
 - **Protected Resource Metadata is the discovery entry point.** Every `401` from `/mcp`
-  carries `resource_metadata="${RELAY_URL}/.well-known/oauth-protected-resource"`, and
+  carries `resource_metadata="${RELAY_URL}/.well-known/oauth-protected-resource/mcp"`, and
   `WWW-Authenticate` is a CORS-exposed header.
-- **The `resource` identifier stays the relay origin**, not `${RELAY_URL}/mcp`.
-  RFC 9728 permits this, and clients that try the path-inserted
-  `/.well-known/oauth-protected-resource/mcp` fall back to the root document.
+- **The `resource` identifier is `${RELAY_URL}/mcp`.** RFC 9728 §3.3 requires the
+  `resource` in the metadata to equal the URL the client used to reach the resource, so
+  a client that discovers metadata via `WWW-Authenticate` rejects an origin-only
+  `resource`. The path-inserted `/.well-known/oauth-protected-resource/mcp` serves this
+  document. The root `/.well-known/oauth-protected-resource` is kept, unchanged
+  (`resource` is the relay origin), for older clients that probe it directly; an
+  origin-only `resource` is only valid there, where the client is probing the origin.
 - **`RELAY_URL` must be a bare origin.** The relay refuses to start if it has a path,
   query, fragment, or trailing slash. Sub-path deployments are not supported.
 - **DCR registers public clients only.** An omitted `token_endpoint_auth_method` is
@@ -65,9 +69,9 @@ because no known MCP client needs a confidential DCR registration.
 the smallest change, but still issues secrets without supporting Basic, which leaves the
 relay out of compliance with RFC 6749.
 
-**Set `resource` to `${RELAY_URL}/mcp`:** a more precise resource identifier. Deferred
-until RFC 8707 resource indicators (token audience binding) are implemented, because the
-two changes need to land together.
+**Keep `resource` as the relay origin and defer the path change:** this was the original
+decision, on the belief that RFC 9728 permits an origin-only `resource` for the `/mcp`
+endpoint. It does not (§3.3, above), so the path-specific document was added instead.
 
 ## Consequences
 
@@ -78,5 +82,8 @@ two changes need to land together.
   stored secret hash. That check can be removed once no such rows remain.
 - Deployments with a trailing slash or path in `RELAY_URL` fail at startup until it is
   corrected.
-- Remaining work: Client ID Metadata Documents (the registration method the MCP spec now
-  prefers) and RFC 8707 audience binding are not yet implemented.
+- Clients that probe only the root well-known document still get the origin-only
+  `resource`. That document can be removed once no such clients remain.
+- Remaining work: RFC 8707 audience binding is not yet implemented. Client ID Metadata
+  Documents (the registration method the MCP spec now prefers) are covered by
+  [ADR 0021](0021-client-id-metadata-documents.md).

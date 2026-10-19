@@ -782,7 +782,9 @@ List active MCP client OAuth sessions (non-expired only).
 |---|---|---|
 | `id` | string | Session ID |
 | `mcp_client_id` | string | OAuth client that holds this session |
-| `is_dynamic_client` | boolean | Whether the client registered via Dynamic Client Registration |
+| `is_dynamic_client` | boolean | Whether the client registered via Dynamic Client Registration (`false` for metadata document clients) |
+| `is_metadata_document_client` | boolean | Whether the client identified itself with a Client ID Metadata Document URL |
+| `client_name` | string \| null | Client's display name (set for metadata document clients; `null` for DCR clients) |
 | `issued_at` | ISO 8601 | |
 | `expires_at` | ISO 8601 | Access token expiry |
 | `has_refresh_token` | boolean | |
