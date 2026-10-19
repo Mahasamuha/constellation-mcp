@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, renameSync, mkdirSync, unlinkSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { homedir, platform } from "node:os";
-import yaml from "js-yaml";
+import * as yaml from "js-yaml";
 import { createLogger, MAX_SHARE_INSTRUCTIONS_LENGTH, str, type PathEntry } from "@constellation/shared";
 
 const log = createLogger("node:config");

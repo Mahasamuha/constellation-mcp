@@ -79,6 +79,20 @@ jobs:
       - name: Compile to native binary
         run: npx @yao-pkg/pkg cli-bundle.cjs --target ${{ matrix.pkg_target }} --output ${{ matrix.binary }}
 
+      # Every matrix target is native to its runner, so the binary can run here. Catches
+      # startup crashes that only appear in the compiled binary (e.g. util.getCallSites()
+      # aborting V8 under pkg bytecode, hit by pino 10.4.0).
+      - name: Smoke test binary
+        shell: bash
+        run: |
+          EXPECTED=$(node -p 'require("./packages/cli/package.json").version')
+          ACTUAL=$(./${{ matrix.binary }} --version)
+          echo "binary --version: ${ACTUAL}"
+          if [ "${ACTUAL}" != "${EXPECTED}" ]; then
+            echo "::error::expected ${EXPECTED}, got ${ACTUAL}"
+            exit 1
+          fi
+
       # ── Linux: package as .deb ────────────────────────────────────────────────
 
       - name: Package as deb (Linux)
