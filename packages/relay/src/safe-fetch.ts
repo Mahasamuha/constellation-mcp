@@ -23,7 +23,8 @@ const SPECIAL_USE_IPV4: Array<[string, number]> = [
 const SPECIAL_USE_IPV6: Array<[string, number]> = [
   // ::ffff:0:0/96 (IPv4-mapped) is deliberately absent: BlockList already checks mapped
   // addresses against the IPv4 rules, and listing it would match every IPv4 address.
-  ["::", 128], ["::1", 128], ["64:ff9b::", 96], ["64:ff9b:1::", 48],
+  // ::/96 covers "::", "::1" and the deprecated IPv4-compatible form (e.g. ::7f00:1).
+  ["::", 96], ["64:ff9b::", 96], ["64:ff9b:1::", 48],
   ["100::", 64], ["2001::", 23], ["2001:db8::", 32], ["2002::", 16], ["3fff::", 20],
   ["5f00::", 16], ["fc00::", 7], ["fe80::", 10], ["ff00::", 8],
 ];
@@ -32,7 +33,7 @@ const specialUse = new BlockList();
 for (const [net, prefix] of SPECIAL_USE_IPV4) specialUse.addSubnet(net, prefix, "ipv4");
 for (const [net, prefix] of SPECIAL_USE_IPV6) specialUse.addSubnet(net, prefix, "ipv6");
 
-function isSpecialUse(address: string): boolean {
+export function isSpecialUse(address: string): boolean {
   const family = isIP(address);
   if (family === 0) return true;
   return specialUse.check(address, family === 6 ? "ipv6" : "ipv4");

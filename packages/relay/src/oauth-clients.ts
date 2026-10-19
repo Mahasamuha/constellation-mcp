@@ -79,7 +79,7 @@ export async function resolveOauthClient(clientId: string): Promise<OauthClient 
 }
 
 /** Throws unless the client_id is a well-formed Client Identifier URL (CIMD draft §3). */
-function validateClientIdUrl(clientId: string): void {
+export function validateClientIdUrl(clientId: string): void {
   if (clientId.length > CLIENT_ID_URL_MAX_LENGTH) throw new InvalidClientError("client_id URL is too long");
   let parsed: URL;
   try {
@@ -102,7 +102,7 @@ interface ParsedMetadata {
 }
 
 /** Validates a fetched metadata document against the CIMD draft and MCP requirements. */
-function parseMetadataDocument(clientId: string, body: string): ParsedMetadata {
+export function parseMetadataDocument(clientId: string, body: string): ParsedMetadata {
   let doc: unknown;
   try {
     doc = JSON.parse(body);
@@ -143,15 +143,16 @@ function parseMetadataDocument(clientId: string, body: string): ParsedMetadata {
   }
 
   const rawGrants = d["grant_types"];
+  // The relay issues a refresh token on authorization_code, so that is the default pair.
   const grantTypes = Array.isArray(rawGrants)
     ? rawGrants.filter((g): g is string => typeof g === "string")
-    : ["authorization_code"];
+    : ["authorization_code", "refresh_token"];
 
   return { clientName: clientName.trim(), redirectUris, grantTypes };
 }
 
-/** Cache lifetime from Cache-Control, clamped to configured bounds. no-store / no-cache force a re-fetch on every authorization. */
-function cacheLifetimeMs(cacheControl: string | undefined): number {
+/** Cache lifetime from Cache-Control, clamped to configured bounds. no-store, no-cache and max-age=0 force a re-fetch on every authorization. */
+export function cacheLifetimeMs(cacheControl: string | undefined): number {
   if (!cacheControl) return METADATA_DEFAULT_TTL_MS;
   const directives = cacheControl.toLowerCase().split(",").map((s) => s.trim());
   if (directives.includes("no-store") || directives.includes("no-cache")) return 0;
@@ -159,6 +160,7 @@ function cacheLifetimeMs(cacheControl: string | undefined): number {
   if (!maxAge) return METADATA_DEFAULT_TTL_MS;
   const seconds = Number(maxAge.slice("max-age=".length));
   if (!Number.isFinite(seconds) || seconds < 0) return METADATA_DEFAULT_TTL_MS;
+  if (seconds === 0) return 0;
   return Math.min(Math.max(seconds * 1000, METADATA_MIN_TTL_MS), METADATA_MAX_TTL_MS);
 }
 

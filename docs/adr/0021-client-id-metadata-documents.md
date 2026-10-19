@@ -28,8 +28,8 @@ clients short of that requirement.
   `OauthClient` row whose `id` is the URL (`is_metadata_document = true`). This is
   required because `OauthSession` has a foreign key to `OauthClient`, and it also lets
   the cache survive restarts. The cache lifetime follows `Cache-Control: max-age`,
-  clamped to between 5 minutes and 24 hours, with a 1-hour default. `no-store` or
-  `no-cache` force a re-fetch on every authorization. Fetch failures and invalid
+  clamped to between 5 minutes and 24 hours, with a 1-hour default. `no-store`,
+  `no-cache` or `max-age=0` force a re-fetch on every authorization. Fetch failures and invalid
   documents are never cached, and a failed re-fetch aborts the authorization.
 - **Fetches are SSRF-hardened.**
   - Addresses: IANA special-use IPv4 and IPv6 ranges are refused. The check runs in the
@@ -42,7 +42,9 @@ clients short of that requirement.
   - The URL must be canonical, use `https`, and have a non-root path, with no userinfo,
     no fragment, and no dot segments.
   - The document's `client_id` must equal the URL, and `client_name` and
-    `redirect_uris` are required.
+    `redirect_uris` are required. An omitted `grant_types` defaults to
+    `authorization_code` and `refresh_token`, since the relay issues refresh tokens;
+    DCR registrations get the same default.
   - Client secrets are forbidden in the document, and `token_endpoint_auth_method` must
     be `none` or absent.
   - Each redirect URI must pass the same `isAllowedRedirectUri` check as DCR, so
@@ -64,9 +66,13 @@ clients short of that requirement.
 ## Rationale
 
 CIMD ties client identity to a domain the client controls. This makes the consent
-display meaningful, removes the open, unauthenticated `/oauth/register` endpoint as a
-database-growth vector for clients that use it, and needs no secret because documents
-are public.
+display meaningful and needs no secret because documents are public.
+
+CIMD is not a database-growth fix. Any unique `https` `client_id` with a valid document
+creates an `oauth_clients` row at `/oauth/authorize`, before authentication, so it is a
+growth vector comparable to `/oauth/register`. It is bounded the same way: the TTL prune
+(`OAUTH_DYNAMIC_CLIENT_TTL_HOURS`, keyed on `metadata_expires_at`) and the default HTTP
+rate-limit bucket on `/oauth/authorize`.
 
 Keeping DCR avoids locking out clients that have not adopted CIMD yet.
 
@@ -92,6 +98,10 @@ the required redirect-host display.
 - A CIMD client whose redirect URIs are all outside `OAUTH_ALLOWED_REDIRECT_ORIGINS`
   (loopback aside) cannot authorize. Operators must allowlist the redirect origins of
   CIMD clients just as they do for DCR clients.
+- Refresh does not re-validate a CIMD client's document. `handleRefreshTokenGrant` relies
+  on the existing session and client row, deliberately. Taking a document down or
+  changing it does not stop refresh; revoking a client's access requires revoking its
+  sessions.
 - The relay makes outbound HTTPS requests to client-chosen hosts. Deployments that need
   tighter control should also restrict egress at the network layer.
 - Not supported:

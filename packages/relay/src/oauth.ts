@@ -71,7 +71,8 @@ oauthRouter.post("/oauth/register", async (req: Request, res: Response) => {
   }
 
   const grantTypesRaw = asStringArray(body["grant_types"]);
-  const grantTypes = grantTypesRaw.length > 0 ? grantTypesRaw : ["authorization_code"];
+  // The relay issues a refresh token on authorization_code, so that is the default pair.
+  const grantTypes = grantTypesRaw.length > 0 ? grantTypesRaw : ["authorization_code", "refresh_token"];
 
   // Dynamic registration is public-client only (PKCE, no secret). Issuing secrets would
   // oblige the token endpoint to support client_secret_basic (RFC 6749 §2.3.1). An omitted
@@ -232,10 +233,10 @@ oauthRouter.post("/oauth/authorize/consent", async (req: Request, res: Response)
 
   if (body["action"] !== "approve") {
     // redirectUri was validated against the client's registered URIs at /oauth/authorize.
-    const params = new URLSearchParams({ error: "access_denied" });
-    if (pending.downstreamState) params.set("state", pending.downstreamState);
+    const params: Record<string, string> = { error: "access_denied" };
+    if (pending.downstreamState) params["state"] = pending.downstreamState;
     log.info({ clientId: pending.clientId }, "Authorization denied at consent");
-    res.redirect(`${pending.redirectUri}?${params.toString()}`);
+    res.redirect(withQueryParams(pending.redirectUri, params));
     return;
   }
 
@@ -688,6 +689,13 @@ ${FAVICON_LINK}
 }
 
 
+/** Appends params to a redirect URI, preserving any query it already has. */
+function withQueryParams(redirectUri: string, params: Record<string, string>): string {
+  const url = new URL(redirectUri);
+  for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
+  return url.toString();
+}
+
 function asStringArray(val: unknown): string[] {
   if (Array.isArray(val)) return val.filter((v): v is string => typeof v === "string");
   if (typeof val === "string") return [val];
@@ -708,8 +716,8 @@ async function issueAuthCode(pending: LoginPending, userId: string, res: Respons
       expiresAt: new Date(Date.now() + 10 * 60 * 1000),
     },
   });
-  const redirectParams = new URLSearchParams({ code });
-  if (pending.downstreamState) redirectParams.set("state", pending.downstreamState);
-  res.redirect(`${pending.redirectUri}?${redirectParams.toString()}`);
+  const redirectParams: Record<string, string> = { code };
+  if (pending.downstreamState) redirectParams["state"] = pending.downstreamState;
+  res.redirect(withQueryParams(pending.redirectUri, redirectParams));
 }
 
