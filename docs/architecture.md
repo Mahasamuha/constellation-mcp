@@ -184,9 +184,9 @@ The relay exposes two standard discovery documents: `/.well-known/oauth-protecte
 1. Client calls `POST /mcp` without a token; the relay returns `401` with `WWW-Authenticate: Bearer ... resource_metadata="<relay>/.well-known/oauth-protected-resource"`
 2. Client fetches the protected resource metadata, which names the relay as its authorization server
 3. Client fetches `/.well-known/oauth-authorization-server`
-4. Client attempts Dynamic Client Registration (`POST /oauth/register`) as a public client (`token_endpoint_auth_method: "none"`) — most clients do this automatically
+4. Client identifies itself either with a Client ID Metadata Document URL as its `client_id` (preferred; the relay fetches and caches the document), or by Dynamic Client Registration (`POST /oauth/register`) as a public client (`token_endpoint_auth_method: "none"`)
 5. Client redirects the user to `/oauth/authorize` (with PKCE)
-6. Relay redirects to the upstream OIDC provider; user authenticates
+6. Relay shows a consent page naming the client and the redirect host; on approval it redirects to the upstream OIDC provider, where the user authenticates
 7. Relay exchanges the OIDC code, upserts a user row, issues its own access + refresh tokens
 8. Client exchanges the auth code for tokens at `POST /oauth/token`
 9. Client calls `POST /mcp` with `Authorization: Bearer <access_token>`

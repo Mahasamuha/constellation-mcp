@@ -450,7 +450,7 @@ The relay acts as an OAuth 2.0 authorization server backed by an upstream OIDC p
 | Document | Spec | Key fields |
 |---|---|---|
 | `/.well-known/oauth-protected-resource` | RFC 9728 | `resource` (the relay origin), `authorization_servers` (the relay origin), `bearer_methods_supported: ["header"]` |
-| `/.well-known/oauth-authorization-server` | RFC 8414 | `issuer`, endpoints, `code_challenge_methods_supported: ["S256"]`, `token_endpoint_auth_methods_supported: ["none"]` |
+| `/.well-known/oauth-authorization-server` | RFC 8414 | `issuer`, endpoints, `code_challenge_methods_supported: ["S256"]`, `token_endpoint_auth_methods_supported: ["none"]`, `client_id_metadata_document_supported: true` |
 
 Every `401` from `/mcp` (missing or invalid token) includes `resource_metadata` in its `WWW-Authenticate` header pointing at the protected resource metadata, which is how MCP clients begin discovery. `WWW-Authenticate` is exposed via CORS for browser-based clients.
 
@@ -467,6 +467,9 @@ sequenceDiagram
     participant OIDC as OIDC Provider
 
     Client->>Relay: GET /oauth/authorize
+    Note over Relay: resolve client (fetch metadata document if CIMD)
+    Relay-->>Client: consent page (client name, verified host, redirect host)
+    Client->>Relay: POST /oauth/authorize/consent (approve)
     Relay-->>Client: 302 → OIDC /authorize
     Client->>OIDC: browser follows redirect
     OIDC-->>Client: user authenticates
@@ -482,6 +485,16 @@ sequenceDiagram
 PKCE (`S256`) is **required**. The relay rejects `/oauth/authorize` requests that omit `code_challenge`. The MCP auth spec is based on OAuth 2.1, which mandates PKCE for all authorization code flows. All compliant MCP clients (Claude, ChatGPT, Cursor) support it.
 
 **Dynamic Client Registration** (`POST /oauth/register`, RFC 7591) is supported for clients that auto-discover the relay, for **public clients only**. Clients send `token_endpoint_auth_method: "none"` or omit it (it is then set to `"none"`); any other value is rejected with `400 invalid_client_metadata`. No client secret is issued — PKCE protects the authorization code. Clients registered with a secret before this restriction continue to authenticate with `client_secret` in the token request body.
+
+**Client ID Metadata Documents** (CIMD, draft-ietf-oauth-client-id-metadata-document) are the registration method the MCP spec now prefers; DCR is retained as a fallback. A client using CIMD sends an HTTPS URL as its `client_id`, and the relay fetches the JSON document at that URL during `/oauth/authorize`:
+
+- The URL must be canonical, `https`, with a non-root path and no userinfo, fragment, or dot segments.
+- The document's `client_id` must equal the URL; `client_name` and `redirect_uris` are required; `token_endpoint_auth_method` must be `none` or absent; client secrets are rejected.
+- Each redirect URI is checked against the same rules as DCR (loopback, or an origin in `OAUTH_ALLOWED_REDIRECT_ORIGINS`). Disallowed entries are ignored; the request's `redirect_uri` must exactly match an allowed one.
+- Fetches refuse private, loopback, link-local, and other special-use addresses, do not follow redirects, and are capped at 5 KB and 5 seconds.
+- The document is cached in `oauth_clients` per its `Cache-Control` header, clamped to 5 minutes – 24 hours (default 1 hour). Failed fetches are not cached and fail the authorization with `400 invalid_client`.
+
+**Consent display.** In OIDC mode the relay shows a consent page before redirecting to the upstream provider, for every authorization-code client. It shows the client's name, who vouches for its identity (the metadata document's host for CIMD; "not verified" for DCR), the hostname the user will be redirected to, and a warning when that is a loopback address. Deny redirects back with `error=access_denied`. In local-auth mode the login page shows the same information. See [ADR 0021](adr/0021-client-id-metadata-documents.md).
 
 ### Device Code Flow (node init + relay login)
 

@@ -22,3 +22,4 @@
 | [0018](0018-share-rpcenvelope-via-inheritance.md) | Share RpcEnvelope via Inheritance; Nest Tool Params | Accepted |
 | [0019](0019-hub-live-token-rotation.md) | Hub Token Rotation Is Live, Not Restart-Bound | Accepted |
 | [0020](0020-rfc9728-discovery-public-only-dcr.md) | RFC 9728 Discovery; Dynamic Client Registration Is Public-Only | Accepted |
+| [0021](0021-client-id-metadata-documents.md) | Client ID Metadata Documents; Relay Consent Interstitial in OIDC Mode | Accepted |

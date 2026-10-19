@@ -68,7 +68,7 @@ The relay constructs both callback URLs from `RELAY_URL` automatically — there
 |---|---|---|
 | `OAUTH_ACCESS_TOKEN_TTL_HOURS` | `24` | Lifetime of MCP client access tokens, in hours |
 | `OAUTH_REFRESH_TOKEN_TTL_DAYS` | `30` | Lifetime of MCP client refresh tokens, in days |
-| `OAUTH_DYNAMIC_CLIENT_TTL_HOURS` | `24` | How long a dynamically registered OAuth client may sit unactivated (no completed auth flow) before it's pruned |
+| `OAUTH_DYNAMIC_CLIENT_TTL_HOURS` | `24` | How long a dynamically registered OAuth client may sit unactivated (no completed auth flow) before it's pruned. Also applies to Client ID Metadata Document clients, measured from when their cached document expired |
 
 **OAuth client registration**
 
@@ -76,7 +76,7 @@ The relay supports RFC 7591 dynamic client registration at `POST /oauth/register
 
 | Variable | Default | Description |
 |---|---|---|
-| `OAUTH_ALLOWED_REDIRECT_ORIGINS` | *(none)* | Comma-separated HTTPS origins whose redirect URIs are permitted during dynamic client registration. `http://localhost`, `http://127.0.0.1`, and `http://[::1]` (any port) are always allowed regardless of this setting — no entry needed for local dev servers or native apps. If this variable is unset or empty, no HTTPS redirect URIs are accepted. |
+| `OAUTH_ALLOWED_REDIRECT_ORIGINS` | *(none)* | Comma-separated HTTPS origins whose redirect URIs are permitted during dynamic client registration and in Client ID Metadata Documents. `http://localhost`, `http://127.0.0.1`, and `http://[::1]` (any port) are always allowed regardless of this setting — no entry needed for local dev servers or native apps. If this variable is unset or empty, no HTTPS redirect URIs are accepted. |
 
 The `.env.example` files ship with `claude.ai`, `chatgpt.com`, and `cursor.com` as the starting value — the three clients documented in [mcp-clients.md](mcp-clients.md). Add or replace entries to match the clients you actually use.
 
