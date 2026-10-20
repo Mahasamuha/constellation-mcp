@@ -60,6 +60,7 @@ The relay constructs both callback URLs from `RELAY_URL` automatically — there
 | `PORT` | `3000` | TCP port the HTTP server binds to |
 | `NODE_ENV` | — | Passed to Express and Node.js internals (e.g. disables verbose error details in production). Not used by the relay for the `Secure` cookie flag — that is controlled by the protocol of `RELAY_URL` (https → Secure, http → not Secure). |
 | `ALLOWED_ORIGINS` | — | Comma-separated list of origins allowed to make cross-origin requests to the relay (e.g. the URL of a reverse proxy or browser-based tool in front of the relay). Defaults to no cross-origin access if unset. |
+| `COOKIE_SECRET` | *(random per start)* | Secret that signs the short-lived sign-in flow cookies (`authz_pending`, `login_pending`, `oidc_pending`, `activate_pending`). If unset, the relay generates a random secret at each start and logs a warning, so any sign-in in progress during a restart fails and must be retried. Set a long random value (e.g. `openssl rand -hex 32`) to avoid that. |
 | `LOG_LEVEL` | `warn` | Pino log level: `trace`, `debug`, `info`, `warn`, `error`, `fatal` |
 
 **OAuth token lifetimes**
