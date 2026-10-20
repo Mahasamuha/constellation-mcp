@@ -30,6 +30,10 @@ RUN npm run build -w packages/telescope
 # Strip dev dependencies in place so the runtime stage can copy node_modules
 # directly without needing build tools installed there.
 RUN npm prune --omit=dev
+# npm nests a workspace's dependency under packages/<pkg>/node_modules when its
+# version conflicts with the hoisted tree (e.g. pino pinned to 10.3.1). Ensure both
+# directories exist so the runtime COPY below never fails when nothing is nested.
+RUN mkdir -p packages/shared/node_modules packages/relay/node_modules
 
 # --- runtime stage ---
 FROM node:24.22.0-alpine
@@ -46,6 +50,8 @@ COPY packages/relay/package.json ./packages/relay/
 
 # Copy pruned node_modules from builder — includes compiled native addons (re2)
 COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/packages/shared/node_modules ./packages/shared/node_modules
+COPY --from=builder /app/packages/relay/node_modules ./packages/relay/node_modules
 
 COPY --from=builder /app/packages/shared/dist ./packages/shared/dist
 COPY --from=builder /app/packages/relay/dist ./packages/relay/dist
