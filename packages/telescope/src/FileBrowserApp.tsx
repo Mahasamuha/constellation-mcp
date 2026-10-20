@@ -609,6 +609,12 @@ function FileBrowserLayout() {
             </option>
           ))}
         </select>
+        <span
+          className="experimental-badge"
+          title="Experimental: on some clients the assistant isn't told which file you have open here. Name the file in your message."
+        >
+          Experimental
+        </span>
         {requestableModes.length > 0 && (
           <div className="display-mode-buttons">
             {requestableModes.map((mode) => (

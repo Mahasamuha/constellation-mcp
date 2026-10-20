@@ -88,6 +88,19 @@ html:is([data-display-mode="fullscreen"], [data-display-mode="pip"]) .app {
   cursor: not-allowed;
 }
 
+/* Telescope is experimental (context injection is unreliable on some hosts);
+ * the title tooltip carries the detail. */
+.experimental-badge {
+  flex: none;
+  padding: 2px 8px;
+  border: 1px solid var(--divider);
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 18px;
+  cursor: help;
+}
+
 .display-mode-buttons {
   display: flex;
   flex: none;

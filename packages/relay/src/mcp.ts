@@ -411,7 +411,7 @@ function registerOpenFileBrowser(server: McpServer): void {
     "open_file_browser",
     {
       title: "Open File Browser",
-      description: "Opens an interactive file browser for the given share. Use to let the user navigate, view, and edit files inline.",
+      description: "Opens an interactive file browser for the given share. Use to let the user navigate, view, and edit files inline. Experimental: you may not be told which file the user opens in the browser, so ask the user or use read_file rather than assuming you know the file in view.",
       inputSchema: {
         share: z.string().optional(),
         path: z.string().optional(),
