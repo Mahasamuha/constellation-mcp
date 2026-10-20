@@ -49,6 +49,8 @@ The relay implements the [MCP Apps extension](https://github.com/modelcontextpro
 
 A trigger tool that launches an interactive file browser — directory tree, syntax-highlighted viewer, and editor — rendered inline in the conversation.
 
+> **Experimental.** The file browser (`packages/telescope`) is experimental. Browsing, viewing, and saving work, but its context injection is unreliable: when you open a file, the app reports it to the host with `ui/update-model-context` ("User has file open: …"), and on some clients the model never receives that context. Don't rely on the model knowing which file you have open in the browser — name the file in your message instead. Behavior varies by client and may change as MCP Apps support matures.
+
 | Param | Type | Description |
 |---|---|---|
 | `share` | string? | Share to open the browser on |
