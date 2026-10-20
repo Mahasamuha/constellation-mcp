@@ -212,6 +212,11 @@ model OauthClient {
   grantTypes       String[] @map("grant_types")
   isDynamic        Boolean  @map("is_dynamic")
   createdAt        DateTime @default(now()) @map("created_at")
+  // Client ID Metadata Document clients: id is the HTTPS document URL, and the row
+  // caches the last valid fetch. metadataExpiresAt is when it must be re-fetched.
+  isMetadataDocument Boolean   @default(false) @map("is_metadata_document")
+  clientName         String?   @map("client_name")
+  metadataExpiresAt  DateTime? @map("metadata_expires_at")
 
   oauthSessions OauthSession[]
 

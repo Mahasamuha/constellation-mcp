@@ -1,6 +1,6 @@
 services:
   relay:
-    image: mahasamuha/constellation-relay:0.5.2
+    image: mahasamuha/constellation-relay:1.0.0
     ports:
       - "3000:3000"
     env_file: .env

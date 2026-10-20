@@ -13,6 +13,32 @@ function isRelayUrlSecure(): boolean {
   }
 }
 
+/**
+ * Throws if RELAY_URL is set to anything other than a bare origin (no path, query,
+ * fragment, or trailing slash). Every well-known URL and OAuth endpoint is built as
+ * `${RELAY_URL}/...`, which only matches RFC 8414 §3.1 / RFC 9728 §3.1 placement (and
+ * yields an exact `issuer` match) when RELAY_URL is an origin.
+ */
+export function assertRelayUrlIsOrigin(): void {
+  const relayUrl = process.env["RELAY_URL"];
+  if (!relayUrl) return;
+  let parsed: URL;
+  try {
+    parsed = new URL(relayUrl);
+  } catch {
+    throw new Error("RELAY_URL is not a valid URL");
+  }
+  if (parsed.origin !== relayUrl) {
+    throw new Error(`RELAY_URL must be a bare origin with no path or trailing slash (e.g. ${parsed.origin})`);
+  }
+}
+
+/** Throws if OAUTH_DYNAMIC_CLIENT_TTL_HOURS is below 1: a zero or negative TTL would prune clients mid-flow. */
+export function assertDynamicClientTtl(): void {
+  const hours = parseEnvInt("OAUTH_DYNAMIC_CLIENT_TTL_HOURS", 24);
+  if (hours < 1) throw new Error("OAUTH_DYNAMIC_CLIENT_TTL_HOURS must be at least 1");
+}
+
 export const config = {
   port: parseEnvInt("PORT", 3000),
   secureCookies: isRelayUrlSecure(),
@@ -60,9 +86,10 @@ export const config = {
   // How long a dynamically registered OAuth client may sit unactivated (no completed auth flow)
   // before it's pruned. Mitigates unbounded growth from the unauthenticated /oauth/register endpoint.
   oauthDynamicClientTtlHours: parseEnvInt("OAUTH_DYNAMIC_CLIENT_TTL_HOURS", 24),
-  // HTTPS origins permitted as OAuth redirect URI hosts during dynamic client registration.
-  // localhost/127.0.0.1/::1 are always allowed regardless of this list (native app / local
-  // dev server flows). All other HTTPS redirect URIs are blocked if this list is empty.
+  // HTTPS origins (scheme + host + port) permitted for OAuth redirect URIs, for both DCR and
+  // CIMD clients. http://localhost/127.0.0.1/[::1] are always allowed regardless of this list
+  // (native app / local dev server flows). All other HTTPS redirect URIs are blocked if this
+  // list is empty.
   oauthAllowedRedirectOrigins: process.env["OAUTH_ALLOWED_REDIRECT_ORIGINS"]
     ? process.env["OAUTH_ALLOWED_REDIRECT_ORIGINS"].split(",").map((s) => s.trim()).filter(Boolean)
     : [],

@@ -21,6 +21,10 @@ export function pageStyle(): string {
     pre { background: #f1f5f9; padding: 1rem; border-radius: 4px; font-size: .85rem; overflow-x: auto; white-space: pre-wrap; }
     .error { color: #dc2626; background: #fee2e2; padding: .4rem .6rem; border-radius: 4px; margin: 0; padding-left: 1.6rem; }
     .error li { padding: .2rem 0; }
+    .warning { color: #92400e; background: #fef3c7; padding: .6rem; border-radius: 4px; margin: 0 0 .5rem; }
+    .client-info { font-size: .85rem; color: #555; background: #f0f4ff; border: 1px solid #c7d7fe; padding: .5rem .7rem; border-radius: 4px; margin-bottom: .5rem; }
+    .client-info p { margin: .3rem 0; }
+    .client-info strong { color: #1d4ed8; }
     .meta { color: #555; font-size: .9rem; }
     .checklist { list-style: none; padding: 0; }
     .checklist li { padding: .3rem 0; }

@@ -44,6 +44,48 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=sha,prefix=sha-
 
+      # Build amd64 into the local daemon first so the image can be smoke-tested
+      # before anything is pushed. Shares the GHA cache with the publish build below.
+      - uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: .
+          file: packages/relay/Dockerfile
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: constellation-relay:smoke
+          cache-from: type=gha
+
+      # Without starting the relay (which needs a database): loads the shared logger, then
+      # checks every runtime dependency of shared and relay is installed where Node's
+      # resolution would find it. Presence is checked rather than import(), since some
+      # packages (e.g. @modelcontextprotocol/sdk) only export subpaths. Catches packages
+      # missing from the image, such as a workspace-nested dependency the runtime stage
+      # didn't copy.
+      - name: Smoke test image
+        run: |
+          docker run --rm --entrypoint node constellation-relay:smoke --input-type=module -e '
+            import { existsSync, readFileSync } from "node:fs";
+            import { dirname, join } from "node:path";
+            await import("/app/packages/shared/dist/logger.js");
+            const missing = [];
+            for (const pkg of ["shared", "relay"]) {
+              const base = `/app/packages/${pkg}`;
+              const deps = Object.keys(JSON.parse(readFileSync(`${base}/package.json`, "utf8")).dependencies ?? {});
+              for (const dep of deps) {
+                let dir = base, found = false;
+                for (;;) {
+                  if (existsSync(join(dir, "node_modules", dep, "package.json"))) { found = true; break; }
+                  if (dir === "/") break;
+                  dir = dirname(dir);
+                }
+                if (!found) missing.push(`${pkg}: ${dep}`);
+              }
+            }
+            if (missing.length) { console.error("missing from image:\n  " + missing.join("\n  ")); process.exit(1); }
+            console.log("relay image runtime dependencies present");
+          '
+
       - uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
         with:
           context: .

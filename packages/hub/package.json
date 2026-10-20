@@ -1,6 +1,6 @@
 {
   "name": "@constellation/hub",
-  "version": "0.6.0",
+  "version": "1.0.0",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -26,20 +26,19 @@
   "dependencies": {
     "commander": "^15.0.0",
     "diff": "^9.0.0",
-    "js-yaml": "^4.1.1",
+    "js-yaml": "^5.5.0",
     "open": "^11.0.0",
     "picomatch": "^4.0.4",
-    "pino": "^10.0.0",
+    "pino": "10.3.1",
     "safe-regex2": "^5.1.1",
     "ws": "^8.21.0"
   },
   "devDependencies": {
     "@constellation/shared": "*",
-    "@types/js-yaml": "^4.0.9",
     "@types/node": "^24.0.0",
     "@types/ws": "^8.18.1",
     "pino-pretty": "^13.0.0",
-    "tsup": "^8.0.0",
+    "tsup": "^9.0.0",
     "typescript": "^6.0.0"
   }
 }

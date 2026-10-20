@@ -103,21 +103,27 @@ export const mcpRouter: IRouter = Router();
 // Route: POST /mcp  (and GET for SSE)
 // ---------------------------------------------------------------------------
 
+/** WWW-Authenticate challenge pointing at the /mcp-specific protected-resource metadata
+ * (RFC 9728 §3.3: the metadata's `resource` must equal the URL the client requested). */
+function bearerChallenge(error?: string): string {
+  const relayUrl = requireEnv("RELAY_URL");
+  const errorParam = error ? `, error="${error}"` : "";
+  return `Bearer realm="${relayUrl}"${errorParam}, resource_metadata="${relayUrl}/.well-known/oauth-protected-resource/mcp"`;
+}
+
 mcpRouter.all("/mcp", async (req: Request, res: Response) => {
   const authHeader = req.headers["authorization"];
   const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
 
   if (!token) {
-    const relayUrl = requireEnv("RELAY_URL");
-    res.set("WWW-Authenticate", `Bearer realm="${relayUrl}", resource_metadata="${relayUrl}/.well-known/oauth-protected-resource"`);
+    res.set("WWW-Authenticate", bearerChallenge());
     res.status(401).json({ error: "unauthorized" });
     return;
   }
 
   const session = await lookupOAuthSession(token);
   if (!session) {
-    const relayUrl = requireEnv("RELAY_URL");
-    res.set("WWW-Authenticate", `Bearer realm="${relayUrl}", error="invalid_token"`);
+    res.set("WWW-Authenticate", bearerChallenge("invalid_token"));
     res.status(401).json({ error: "invalid_token" });
     return;
   }
@@ -405,7 +411,7 @@ function registerOpenFileBrowser(server: McpServer): void {
     "open_file_browser",
     {
       title: "Open File Browser",
-      description: "Opens an interactive file browser for the given share. Use to let the user navigate, view, and edit files inline.",
+      description: "Opens an interactive file browser for the given share. Use to let the user navigate, view, and edit files inline. Experimental: you may not be told which file the user opens in the browser, so ask the user or use read_file rather than assuming you know the file in view.",
       inputSchema: {
         share: z.string().optional(),
         path: z.string().optional(),

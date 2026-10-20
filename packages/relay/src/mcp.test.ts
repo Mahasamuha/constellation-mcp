@@ -27,7 +27,10 @@ vi.mock("./router.js", () => ({
   pruneRateLimits: vi.fn(),
 }));
 
-import { buildMcpServer } from "./mcp.js";
+import express from "express";
+import { prisma } from "./db.js";
+import type { AddressInfo } from "node:net";
+import { buildMcpServer, mcpRouter } from "./mcp.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 type RegisteredTool = {
@@ -133,6 +136,36 @@ describe("buildMcpServer", () => {
     for (const [name, tool] of Object.entries(tools)) {
       expect(tool.title, `${name} missing title`).toBeTruthy();
       expect(tool.description, `${name} missing description`).toBeTruthy();
+    }
+  });
+});
+
+describe("POST /mcp without valid credentials", () => {
+  it("points resource_metadata at the /mcp protected-resource document", async () => {
+    const prev = process.env["RELAY_URL"];
+    process.env["RELAY_URL"] = "https://relay.example.com";
+    const app = express();
+    app.use(mcpRouter);
+    const server = await new Promise<import("node:http").Server>((resolve) => {
+      const s = app.listen(0, "127.0.0.1", () => resolve(s));
+    });
+    try {
+      const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/mcp`;
+      const none = await fetch(url, { method: "POST" });
+      expect(none.status).toBe(401);
+      expect(none.headers.get("www-authenticate")).toBe(
+        'Bearer realm="https://relay.example.com", resource_metadata="https://relay.example.com/.well-known/oauth-protected-resource/mcp"',
+      );
+      (prisma.oauthSession.findUnique as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+      const bad = await fetch(url, { method: "POST", headers: { Authorization: "Bearer nope" } });
+      expect(bad.status).toBe(401);
+      expect(bad.headers.get("www-authenticate")).toBe(
+        'Bearer realm="https://relay.example.com", error="invalid_token", resource_metadata="https://relay.example.com/.well-known/oauth-protected-resource/mcp"',
+      );
+    } finally {
+      server.close();
+      if (prev === undefined) delete process.env["RELAY_URL"];
+      else process.env["RELAY_URL"] = prev;
     }
   });
 });

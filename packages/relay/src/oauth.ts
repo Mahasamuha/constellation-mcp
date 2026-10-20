@@ -1,7 +1,6 @@
 import { Router, Request, Response, IRouter } from "express";
 import { Prisma } from "./generated/prisma/client.js";
-import escHtml from "escape-html";
-import { randomBytes, createHash } from "node:crypto";
+import { createHash } from "node:crypto";
 import { prisma } from "./db.js";
 import { buildAuthorizationUrl, exchangeCodeAndUpsertUser } from "./oidc.js";
 import { handleDeviceCodeGrant } from "./device.js";
@@ -9,20 +8,86 @@ import { generateToken, hashToken, safeEqual, createLogger, requireEnv } from "@
 import { checkBruteForce, recordFailure, validateLocalUser } from "./local-auth.js";
 import { config } from "./config.js";
 import { issueOAuthSession, makeTokenPair, sendTokenResponse } from "./oauth-tokens.js";
-import { FAVICON_LINK } from "./page-style.js";
+import {
+  clientDisclosure,
+  DEFAULT_GRANT_TYPES,
+  InvalidClientError,
+  isAllowedRedirectUri,
+  isRegisteredRedirectUri,
+  resolveOauthClient,
+  SUPPORTED_GRANT_TYPES,
+  type ClientDisclosure,
+} from "./oauth-clients.js";
+import { authorizeConsentPage, loginPage } from "./oauth-pages.js";
+import { clearFlowCookie, FLOW_COOKIE_TTL_MS, readFlowCookie, setFlowCookie, takeFlowCookie } from "./oauth-flow-cookies.js";
 
 const log = createLogger("oauth");
 
 export const oauthRouter: IRouter = Router();
 
+/** What the downstream MCP client asked for at /oauth/authorize, carried through the
+ * pending-flow cookies until an auth code is issued. */
+interface DownstreamAuthRequest {
+  clientId: string;
+  /** As requested (for loopback clients this carries the actual port, not the registered one). */
+  redirectUri: string;
+  downstreamCodeChallenge: string;
+  /** S256 only; /oauth/authorize rejects anything else. */
+  downstreamCodeChallengeMethod: "S256";
+  downstreamState?: string;
+}
+
+interface AuthorizePending extends DownstreamAuthRequest {
+  csrfToken: string;
+}
+
+interface PendingOidc extends DownstreamAuthRequest {
+  state: string;
+  codeVerifier?: string;
+}
+
+// Runtime shape guards for the signed flow cookies: a missing or malformed field becomes
+// a 400 at the caller rather than a TypeError (e.g. safeEqual on undefined) deeper in.
+function isDownstreamAuthRequest(v: unknown): v is DownstreamAuthRequest {
+  if (typeof v !== "object" || v === null) return false;
+  const o = v as Record<string, unknown>;
+  return typeof o["clientId"] === "string"
+    && typeof o["redirectUri"] === "string"
+    && typeof o["downstreamCodeChallenge"] === "string"
+    && o["downstreamCodeChallengeMethod"] === "S256"
+    && (o["downstreamState"] === undefined || typeof o["downstreamState"] === "string");
+}
+
+function isAuthorizePending(v: unknown): v is AuthorizePending {
+  return isDownstreamAuthRequest(v) && typeof (v as unknown as Record<string, unknown>)["csrfToken"] === "string";
+}
+
+function isPendingOidc(v: unknown): v is PendingOidc {
+  if (!isDownstreamAuthRequest(v)) return false;
+  const o = v as unknown as Record<string, unknown>;
+  return typeof o["state"] === "string" && (o["codeVerifier"] === undefined || typeof o["codeVerifier"] === "string");
+}
+
 // ---------------------------------------------------------------------------
-// /.well-known/oauth-authorization-server
+// /.well-known — OAuth discovery metadata
 // ---------------------------------------------------------------------------
 
+// Root document kept for older clients that probe it directly. Clients that arrive via
+// the WWW-Authenticate challenge get the /mcp variant below (RFC 9728 §3.3: `resource`
+// must equal the URL the client requested).
 oauthRouter.get("/.well-known/oauth-protected-resource", (_req: Request, res: Response) => {
   const base = requireEnv("RELAY_URL");
   res.json({
     resource: base,
+    authorization_servers: [base],
+    bearer_methods_supported: ["header"],
+  });
+});
+
+oauthRouter.get("/.well-known/oauth-protected-resource/mcp", (_req: Request, res: Response) => {
+  const base = requireEnv("RELAY_URL");
+  res.json({
+    resource: `${base}/mcp`,
     authorization_servers: [base],
     bearer_methods_supported: ["header"],
   });
@@ -44,7 +109,8 @@ oauthRouter.get("/.well-known/oauth-authorization-server", (_req: Request, res: 
       "urn:ietf:params:oauth:grant-type:device_code",
     ],
     code_challenge_methods_supported: ["S256"],
-    token_endpoint_auth_methods_supported: ["client_secret_post", "none"],
+    token_endpoint_auth_methods_supported: ["none"],
+    client_id_metadata_document_supported: true,
   });
 });
 
@@ -68,20 +134,31 @@ oauthRouter.post("/oauth/register", async (req: Request, res: Response) => {
     }
   }
 
+  // grantTypes is informational: it is stored and echoed, but not enforced at the token
+  // endpoint beyond which grants the endpoint supports at all. Unsupported values are
+  // rejected rather than silently dropped so the client learns what it actually got.
   const grantTypesRaw = asStringArray(body["grant_types"]);
-  const grantTypes = grantTypesRaw.length > 0 ? grantTypesRaw : ["authorization_code"];
-  const tokenEndpointAuthMethod = typeof body["token_endpoint_auth_method"] === "string"
-    ? body["token_endpoint_auth_method"]
-    : "client_secret_basic";
+  const unsupportedGrants = grantTypesRaw.filter((g) => !SUPPORTED_GRANT_TYPES.includes(g));
+  if (unsupportedGrants.length > 0) {
+    res.status(400).json({
+      error: "invalid_client_metadata",
+      error_description: `unsupported grant_types: ${unsupportedGrants.join(", ")}`,
+    });
+    return;
+  }
+  const grantTypes = grantTypesRaw.length > 0 ? grantTypesRaw : DEFAULT_GRANT_TYPES;
 
-  // Public clients (e.g. PKCE-only) send token_endpoint_auth_method=none
-  const isPublic = tokenEndpointAuthMethod === "none";
-  let clientSecret: string | undefined;
-  let clientSecretHash: string | undefined;
-
-  if (!isPublic) {
-    clientSecret = generateToken();
-    clientSecretHash = hashToken(clientSecret);
+  // Dynamic registration is public-client only (PKCE, no secret). Issuing secrets would
+  // oblige the token endpoint to support client_secret_basic (RFC 6749 §2.3.1). An omitted
+  // method is replaced with "none" rather than the RFC 7591 client_secret_basic default,
+  // which §3.2.1 permits since the response states the value the client must use.
+  const requestedAuthMethod = body["token_endpoint_auth_method"];
+  if (requestedAuthMethod !== undefined && requestedAuthMethod !== "none") {
+    res.status(400).json({
+      error: "invalid_client_metadata",
+      error_description: "token_endpoint_auth_method must be \"none\"; only public clients may register dynamically",
+    });
+    return;
   }
 
   const oauthClient = await prisma.oauthClient.create({
@@ -89,41 +166,41 @@ oauthRouter.post("/oauth/register", async (req: Request, res: Response) => {
       redirectUris,
       grantTypes,
       isDynamic: true,
-      clientSecretHash: clientSecretHash ?? null,
+      clientSecretHash: null,
     },
     select: { id: true, createdAt: true },
   });
 
   log.info({ clientId: oauthClient.id }, "Dynamic client registered");
 
-  const response: {
-    client_id: string;
-    client_id_issued_at: number;
-    redirect_uris: string[];
-    grant_types: string[];
-    token_endpoint_auth_method: string;
-    client_secret?: string;
-  } = {
+  res.status(201).json({
     client_id: oauthClient.id,
     client_id_issued_at: Math.floor(oauthClient.createdAt.getTime() / 1000),
     redirect_uris: redirectUris,
     grant_types: grantTypes,
-    token_endpoint_auth_method: tokenEndpointAuthMethod,
-  };
-
-  if (clientSecret) {
-    response.client_secret = clientSecret;
-  }
-
-  res.status(201).json(response);
+    token_endpoint_auth_method: "none",
+  });
 });
 
 // ---------------------------------------------------------------------------
 // GET /oauth/authorize
 // ---------------------------------------------------------------------------
 
+const CODE_CHALLENGE_PATTERN = /^[A-Za-z0-9_-]{43,128}$/;
+const MAX_STATE_LENGTH = 512;
+
 oauthRouter.get("/oauth/authorize", async (req: Request, res: Response) => {
-  const { client_id, redirect_uri, code_challenge, response_type } = req.query as Record<string, string>;
+  // Repeated query params parse to arrays (and bracket syntax to objects); every
+  // parameter is single-valued, so anything but a string is malformed.
+  const q = req.query;
+  for (const key of ["client_id", "redirect_uri", "response_type", "code_challenge", "code_challenge_method", "state"]) {
+    if (q[key] !== undefined && typeof q[key] !== "string") {
+      res.status(400).json({ error: "invalid_request", error_description: `${key} must be a single string` });
+      return;
+    }
+  }
+  const { client_id, redirect_uri, code_challenge, code_challenge_method, response_type, state } =
+    q as Record<string, string | undefined>;
 
   if (response_type !== "code") {
     res.status(400).json({ error: "unsupported_response_type" });
@@ -139,133 +216,174 @@ oauthRouter.get("/oauth/authorize", async (req: Request, res: Response) => {
     res.status(400).json({ error: "invalid_request", error_description: "code_challenge is required (PKCE S256)" });
     return;
   }
+  // S256 is the only method advertised in the discovery metadata; "plain" and an absent
+  // method (which RFC 7636 would default to plain) are both refused.
+  if (code_challenge_method !== "S256") {
+    res.status(400).json({ error: "invalid_request", error_description: "code_challenge_method must be S256" });
+    return;
+  }
+  if (!CODE_CHALLENGE_PATTERN.test(code_challenge)) {
+    res.status(400).json({ error: "invalid_request", error_description: "code_challenge is not a valid S256 challenge" });
+    return;
+  }
+  if (state !== undefined && state.length > MAX_STATE_LENGTH) {
+    res.status(400).json({ error: "invalid_request", error_description: `state exceeds ${MAX_STATE_LENGTH} characters` });
+    return;
+  }
 
-  const oauthClient = await prisma.oauthClient.findUnique({ where: { id: client_id } });
+  let oauthClient;
+  try {
+    oauthClient = await resolveOauthClient(client_id);
+  } catch (err) {
+    if (err instanceof InvalidClientError) {
+      res.status(400).json({ error: "invalid_client", error_description: err.message });
+      return;
+    }
+    throw err;
+  }
   if (!oauthClient) {
     res.status(400).json({ error: "invalid_client" });
     return;
   }
 
-  if (!oauthClient.redirectUris.includes(redirect_uri)) {
+  if (!isRegisteredRedirectUri(oauthClient.redirectUris, redirect_uri)) {
     res.status(400).json({ error: "invalid_request", error_description: "redirect_uri not registered" });
     return;
   }
 
+  // The redirect_uri as requested is what's stored, so the token endpoint's exact
+  // comparison sees the same value (including a loopback client's actual port).
+  const request: DownstreamAuthRequest = {
+    clientId: client_id,
+    redirectUri: redirect_uri,
+    downstreamCodeChallenge: code_challenge,
+    downstreamCodeChallengeMethod: code_challenge_method,
+    ...(state !== undefined && { downstreamState: state }),
+  };
+  const disclosure = clientDisclosure(oauthClient, redirect_uri);
+
   if (config.authMode === "local") {
-    // Store OAuth params in a cookie; redirect to the local login form.
-    const pendingId = randomBytes(16).toString("hex");
-    res.cookie(`login_pending_${pendingId}`, JSON.stringify({
-      clientId: client_id,
-      redirectUri: redirect_uri,
-      downstreamCodeChallenge: code_challenge,
-      downstreamCodeChallengeMethod: req.query["code_challenge_method"],
-      downstreamState: req.query["state"],
-    }), {
-      httpOnly: true,
-      secure: config.secureCookies,
-      maxAge: 10 * 60 * 1000,
-      sameSite: "strict",
-      signed: true,
-    });
-    log.info({ clientId: client_id }, "Authorization redirected to local login");
-    res.redirect(`/auth/login?pending=${pendingId}`);
+    // Render the login form directly rather than redirecting to /auth/login: the
+    // SameSite=Strict login_pending cookie isn't sent on a redirect that follows a
+    // cross-site-initiated navigation, so GET /auth/login couldn't show the disclosure.
+    const pendingId = setFlowCookie(res, "login_pending", request);
+    log.info({ clientId: client_id }, "Authorization started (local login)");
+    sendPage(res, loginPage(pendingId, undefined, disclosure));
     return;
   }
 
-  // OIDC mode: redirect to upstream provider
-  const usePkce = !!code_challenge;
+  // OIDC mode: the upstream provider shows nothing about the MCP client, so the relay
+  // renders its own consent interstitial first — the MCP spec requires the redirect
+  // hostname to be displayed during authorization.
+  const csrfToken = generateToken();
+  const pending: AuthorizePending = { ...request, csrfToken };
+  const pendingId = setFlowCookie(res, "authz_pending", pending);
+  sendPage(res, authorizeConsentPage(pendingId, csrfToken, disclosure));
+});
+
+// ---------------------------------------------------------------------------
+// POST /oauth/authorize/consent — OIDC-mode consent interstitial submission
+// ---------------------------------------------------------------------------
+
+oauthRouter.post("/oauth/authorize/consent", async (req: Request, res: Response) => {
+  const body = req.body as Record<string, unknown>;
+  const pending = takeFlowCookie(req, res, "authz_pending", formString(body, "pending"), isAuthorizePending);
+  if (!pending) {
+    res.status(400).send("Authorization session expired or not found");
+    return;
+  }
+
+  if (!safeEqual(pending.csrfToken, formString(body, "csrf_token"))) {
+    res.status(403).send("Invalid or missing CSRF token. Please go back and try again.");
+    return;
+  }
+
+  if (formString(body, "action") !== "approve") {
+    // redirectUri was validated against the client's registered URIs at /oauth/authorize.
+    const params: Record<string, string> = { error: "access_denied" };
+    if (pending.downstreamState) params["state"] = pending.downstreamState;
+    log.info({ clientId: pending.clientId }, "Authorization denied at consent");
+    res.redirect(withQueryParams(pending.redirectUri, params));
+    return;
+  }
+
+  await redirectToUpstreamOidc(pending, res);
+});
+
+async function redirectToUpstreamOidc(pending: DownstreamAuthRequest, res: Response): Promise<void> {
   const callbackUrl = `${requireEnv("RELAY_URL")}/oauth/callback`;
-  const { url, state, codeVerifier } = await buildAuthorizationUrl(callbackUrl, usePkce);
+  const { url, state, codeVerifier } = await buildAuthorizationUrl(callbackUrl, true);
 
   // Store CSRF state and downstream client context in a short-lived signed cookie
-  // so the callback handler can validate and complete the flow.
-  const pendingId = randomBytes(16).toString("hex");
-
-  res.cookie(`oidc_pending_${pendingId}`, JSON.stringify({
+  // so the callback handler can validate and complete the flow. Fields are copied
+  // explicitly so the consent page's CSRF token doesn't ride along.
+  const oidcPending: PendingOidc = {
     state,
     codeVerifier,
-    clientId: client_id,
-    redirectUri: redirect_uri,
+    clientId: pending.clientId,
+    redirectUri: pending.redirectUri,
     // Carry the downstream client's PKCE challenge through so we can re-verify
     // it when issuing our own code to the MCP client.
-    downstreamCodeChallenge: req.query["code_challenge"],
-    downstreamCodeChallengeMethod: req.query["code_challenge_method"],
-    downstreamState: req.query["state"],
-  }), {
-    httpOnly: true,
-    secure: config.secureCookies,
-    maxAge: 10 * 60 * 1000, // 10 minutes
-    sameSite: "lax",
-    signed: true,
-  });
+    downstreamCodeChallenge: pending.downstreamCodeChallenge,
+    downstreamCodeChallengeMethod: pending.downstreamCodeChallengeMethod,
+    downstreamState: pending.downstreamState,
+  };
+  const pendingId = setFlowCookie(res, "oidc_pending", oidcPending);
 
   // Embed pendingId in upstream state so callback can look up the cookie
   url.searchParams.set("state", `${state}:${pendingId}`);
 
-  log.info({ clientId: client_id }, "Authorization redirected to upstream OIDC");
+  log.info({ clientId: pending.clientId }, "Authorization redirected to upstream OIDC");
   res.redirect(url.toString());
-});
+}
 
 // ---------------------------------------------------------------------------
-// GET /auth/login — local auth login form
+// /auth/login — local auth login form
 // ---------------------------------------------------------------------------
 
-oauthRouter.get("/auth/login", (req: Request, res: Response) => {
-  const pendingId = typeof req.query["pending"] === "string" ? req.query["pending"] : "";
-  let clientInfo: { clientId: string; redirectDomain: string } | undefined;
-  if (pendingId) {
-    const cookieVal = (req.signedCookies as Record<string, string>)[`login_pending_${pendingId}`];
-    if (cookieVal) {
-      try {
-        const pending = JSON.parse(cookieVal) as LoginPending;
-        const redirectDomain = new URL(pending.redirectUri).hostname;
-        clientInfo = { clientId: pending.clientId, redirectDomain };
-      } catch { /* show form without client info */ }
-    }
+/** Client disclosure for a login re-render. Best effort: a DB failure logs and shows the form without it. */
+async function loginDisclosure(pending: DownstreamAuthRequest | undefined): Promise<ClientDisclosure | undefined> {
+  if (!pending) return undefined;
+  try {
+    const client = await prisma.oauthClient.findUnique({
+      where: { id: pending.clientId },
+      select: { id: true, clientName: true, isMetadataDocument: true },
+    });
+    return client ? clientDisclosure(client, pending.redirectUri) : undefined;
+  } catch (err) {
+    log.warn({ err, clientId: pending.clientId }, "Failed to load client disclosure for login page");
+    return undefined;
   }
-  res.send(loginPage(pendingId, undefined, clientInfo));
+}
+
+// /oauth/authorize renders the login form itself; this route remains for existing links.
+oauthRouter.get("/auth/login", async (req: Request, res: Response) => {
+  const pendingId = typeof req.query["pending"] === "string" ? req.query["pending"] : "";
+  const pending = readFlowCookie(req, "login_pending", pendingId, isDownstreamAuthRequest);
+  sendPage(res, loginPage(pendingId, undefined, await loginDisclosure(pending)));
 });
 
 // ---------------------------------------------------------------------------
 // POST /auth/login — local auth credential validation
 // ---------------------------------------------------------------------------
 
-interface LoginPending {
-  clientId: string;
-  redirectUri: string;
-  // Required, not optional: /oauth/authorize already rejects a missing code_challenge
-  // before this object is ever constructed (see below). Keeping it required here means
-  // a future caller of issueAuthCode() can't pass this through unset by accident — it
-  // has to either supply a real value or deliberately work around the type.
-  downstreamCodeChallenge: string;
-  downstreamCodeChallengeMethod?: string;
-  downstreamState?: string;
-}
-
 oauthRouter.post("/auth/login", async (req: Request, res: Response) => {
-  const body = req.body as Record<string, string>;
-  const pendingId = (body["pending"] ?? "").trim();
-  const username = (body["username"] ?? "").trim();
-  const password = body["password"] ?? "";
+  const body = req.body as Record<string, unknown>;
+  const pendingId = formString(body, "pending").trim();
+  const username = formString(body, "username").trim();
+  const password = formString(body, "password");
+
+  // Read (not consume) so a failed attempt can retry against the same flow.
+  const pending = readFlowCookie(req, "login_pending", pendingId, isDownstreamAuthRequest);
 
   const ip = req.ip ?? "unknown";
   if (!await checkBruteForce(ip)) {
-    res.status(429).send(loginPage(pendingId, "Too many failed attempts. Please wait 15 minutes."));
+    sendPage(res, loginPage(pendingId, "Too many failed attempts. Please wait 15 minutes.", await loginDisclosure(pending)), 429);
     return;
   }
 
-  const cookieName = `login_pending_${pendingId}`;
-  const cookieVal = (req.signedCookies as Record<string, string>)[cookieName];
-  if (!cookieVal) {
-    res.status(400).send(loginPage("", "Login session expired. Please try again."));
-    return;
-  }
-
-  let pending: LoginPending;
-  try {
-    pending = JSON.parse(cookieVal) as LoginPending;
-  } catch {
-    res.status(400).send(loginPage("", "Malformed login session."));
+  if (!pending) {
+    sendPage(res, loginPage("", "Login session expired. Please try again."), 400);
     return;
   }
 
@@ -274,11 +392,11 @@ oauthRouter.post("/auth/login", async (req: Request, res: Response) => {
     userId = await validateLocalUser(username, password);
   } catch {
     await recordFailure(ip);
-    res.send(loginPage(pendingId, "Invalid username or password."));
+    sendPage(res, loginPage(pendingId, "Invalid username or password.", await loginDisclosure(pending)));
     return;
   }
 
-  res.clearCookie(cookieName);
+  clearFlowCookie(res, "login_pending", pendingId);
 
   log.info({ userId, clientId: pending.clientId }, "Authorization code issued (local auth)");
   await issueAuthCode(pending, userId, res);
@@ -288,36 +406,9 @@ oauthRouter.post("/auth/login", async (req: Request, res: Response) => {
 // GET /oauth/callback — upstream OIDC callback
 // ---------------------------------------------------------------------------
 
-interface PendingOidc {
-  state: string;
-  codeVerifier?: string;
-  clientId: string;
-  redirectUri: string;
-  // Required for the same reason as LoginPending's field above.
-  downstreamCodeChallenge: string;
-  downstreamCodeChallengeMethod?: string;
-  downstreamState?: string;
-}
-
 /** Removes expired auth code rows. Called periodically from index.ts. */
 export async function pruneAuthCodes(): Promise<void> {
   await prisma.authCode.deleteMany({ where: { expiresAt: { lt: new Date() } } });
-}
-
-/** Removes dynamically registered OAuth clients that have never completed an auth flow (no
- * OauthSession was ever issued for them) and were registered more than the TTL ago.
- * /oauth/register is open per the MCP spec (RFC 7591), so unbounded registration is a DB
- * growth vector — this bounds it without capping registrations outright (a hard cap would
- * itself be a DoS vector: an attacker fills it and blocks legitimate clients).
- * Called periodically from index.ts. */
-export async function pruneUnactivatedDynamicClients(): Promise<void> {
-  const cutoff = new Date(Date.now() - config.oauthDynamicClientTtlHours * 60 * 60 * 1000);
-  const result = await prisma.oauthClient.deleteMany({
-    where: { isDynamic: true, createdAt: { lt: cutoff }, oauthSessions: { none: {} } },
-  });
-  if (result.count > 0) {
-    log.info({ count: result.count }, "Pruned unactivated dynamic OAuth clients");
-  }
 }
 
 oauthRouter.get("/oauth/callback", async (req: Request, res: Response) => {
@@ -330,21 +421,10 @@ oauthRouter.get("/oauth/callback", async (req: Request, res: Response) => {
 
   const upstreamState = rawState.slice(0, colonIdx);
   const pendingId = rawState.slice(colonIdx + 1);
-  const cookieName = `oidc_pending_${pendingId}`;
-  const cookieVal = (req.signedCookies as Record<string, string>)[cookieName];
+  const pending = takeFlowCookie(req, res, "oidc_pending", pendingId, isPendingOidc);
 
-  if (!cookieVal) {
+  if (!pending) {
     res.status(400).send("Authorization session expired or not found");
-    return;
-  }
-
-  res.clearCookie(cookieName);
-
-  let pending: PendingOidc;
-  try {
-    pending = JSON.parse(cookieVal) as PendingOidc;
-  } catch {
-    res.status(400).send("Malformed authorization session");
     return;
   }
 
@@ -519,8 +599,10 @@ async function handleRefreshTokenGrant(
 
   const tokens = makeTokenPair();
 
-  await prisma.oauthSession.update({
-    where: { id: session.id },
+  // Conditional on the presented refresh token still being current, so two concurrent
+  // refreshes can't both succeed and mint two live token pairs from one token.
+  const rotated = await prisma.oauthSession.updateMany({
+    where: { id: session.id, refreshTokenHash },
     data: {
       accessTokenHash: tokens.accessTokenHash,
       expiresAt: tokens.expiresAt,
@@ -528,6 +610,10 @@ async function handleRefreshTokenGrant(
       refreshTokenExpiresAt: tokens.refreshExpiresAt,
     },
   });
+  if (rotated.count === 0) {
+    res.status(400).json({ error: "invalid_grant", error_description: "Refresh token invalid" });
+    return;
+  }
 
   log.info({ userId: session.userId, clientId: client_id }, "Access token issued (refresh_token)");
   sendTokenResponse(res, tokens);
@@ -537,76 +623,11 @@ async function handleRefreshTokenGrant(
 // helpers
 // ---------------------------------------------------------------------------
 
-function loginPage(pendingId: string, error?: string, clientInfo?: { clientId: string; redirectDomain: string }): string {
-  const clientBanner = clientInfo
-    ? `<p class="client-info">Signing in to grant <strong>${escHtml(clientInfo.clientId)}</strong> access (redirects to <strong>${escHtml(clientInfo.redirectDomain)}</strong>)</p>`
-    : "";
-  return `<!DOCTYPE html>
-<html lang="en">
-<head><meta charset="utf-8"><title>Constellation — Sign in</title>
-${FAVICON_LINK}
-<style>
-  body { font-family: system-ui, sans-serif; background: #f5f5f5; display: flex; justify-content: center; padding: 4rem 1rem; }
-  .card { background: #fff; border-radius: 8px; padding: 2rem; max-width: 380px; width: 100%; box-shadow: 0 2px 8px rgba(0,0,0,.1); }
-  h1 { margin-top: 0; font-size: 1.4rem; }
-  label { display: block; margin: 1rem 0 .4rem; font-weight: 500; }
-  input { width: 100%; box-sizing: border-box; padding: .5rem; font-size: 1rem; border: 1px solid #ccc; border-radius: 4px; }
-  button { margin-top: 1.2rem; padding: .6rem 1.4rem; font-size: 1rem; border: none; border-radius: 4px; cursor: pointer; background: #2563eb; color: #fff; }
-  .error { color: #dc2626; background: #fee2e2; padding: .6rem; border-radius: 4px; margin-bottom: .5rem; }
-  .client-info { font-size: .85rem; color: #555; background: #f0f4ff; border: 1px solid #c7d7fe; padding: .5rem .7rem; border-radius: 4px; margin-bottom: .5rem; }
-  .client-info strong { color: #1d4ed8; }
-</style>
-</head>
-<body>
-  <div class="card">
-    <h1>Sign in</h1>
-    ${clientBanner}
-    ${error ? `<p class="error">${escHtml(error)}</p>` : ""}
-    <form method="POST" action="/auth/login">
-      <input type="hidden" name="pending" value="${escHtml(pendingId)}">
-      <label for="username">Username</label>
-      <input id="username" name="username" type="text" autocomplete="username" autofocus required>
-      <label for="password">Password</label>
-      <input id="password" name="password" type="password" autocomplete="current-password" required>
-      <button type="submit">Sign in</button>
-    </form>
-  </div>
-</body>
-</html>`;
-}
-
-
-/**
- * Rejects javascript:, data:, and vbscript: URIs. Allows https:, custom schemes
- * (native app callbacks), and http: only for loopback addresses.
- */
-function isAllowedRedirectUri(uri: string): boolean {
-  let parsed: URL;
-  try {
-    parsed = new URL(uri);
-  } catch {
-    return false;
-  }
-  const scheme = parsed.protocol;
-  if (scheme === "javascript:" || scheme === "data:" || scheme === "vbscript:") return false;
-  if (scheme === "http:") {
-    // Allow http only for loopback — native app dev servers on localhost.
-    const host = parsed.hostname;
-    return host === "localhost" || host === "127.0.0.1" || host === "::1";
-  }
-  if (scheme === "https:") {
-    // Allow only origins explicitly listed in config (defaults cover documented MCP clients;
-    // operators extend via OAUTH_ALLOWED_REDIRECT_ORIGINS). Prevents arbitrary redirect-URI
-    // registration from being used for authorization-code phishing.
-    return config.oauthAllowedRedirectOrigins.some((origin) => {
-      try {
-        return new URL(origin).hostname === parsed.hostname;
-      } catch {
-        return false;
-      }
-    });
-  }
-  return false;
+/** Appends params to a redirect URI, preserving any query it already has. */
+function withQueryParams(redirectUri: string, params: Record<string, string>): string {
+  const url = new URL(redirectUri);
+  for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
+  return url.toString();
 }
 
 function asStringArray(val: unknown): string[] {
@@ -615,8 +636,18 @@ function asStringArray(val: unknown): string[] {
   return [];
 }
 
+/** A form field as a string; absent or non-string (e.g. repeated fields parse to arrays) becomes "". */
+function formString(body: Record<string, unknown>, key: string): string {
+  const v = body[key];
+  return typeof v === "string" ? v : "";
+}
 
-async function issueAuthCode(pending: LoginPending, userId: string, res: Response): Promise<void> {
+/** Login and consent pages carry per-flow state, so they must never be cached. */
+function sendPage(res: Response, html: string, status = 200): void {
+  res.status(status).set("Cache-Control", "no-store").send(html);
+}
+
+async function issueAuthCode(pending: DownstreamAuthRequest, userId: string, res: Response): Promise<void> {
   const code = generateToken();
   await prisma.authCode.create({
     data: {
@@ -625,12 +656,11 @@ async function issueAuthCode(pending: LoginPending, userId: string, res: Respons
       clientId: pending.clientId,
       redirectUri: pending.redirectUri,
       codeChallenge: pending.downstreamCodeChallenge,
-      codeChallengeMethod: pending.downstreamCodeChallengeMethod ?? "S256",
-      expiresAt: new Date(Date.now() + 10 * 60 * 1000),
+      codeChallengeMethod: pending.downstreamCodeChallengeMethod,
+      expiresAt: new Date(Date.now() + FLOW_COOKIE_TTL_MS),
     },
   });
-  const redirectParams = new URLSearchParams({ code });
-  if (pending.downstreamState) redirectParams.set("state", pending.downstreamState);
-  res.redirect(`${pending.redirectUri}?${redirectParams.toString()}`);
+  const redirectParams: Record<string, string> = { code };
+  if (pending.downstreamState) redirectParams["state"] = pending.downstreamState;
+  res.redirect(withQueryParams(pending.redirectUri, redirectParams));
 }
-

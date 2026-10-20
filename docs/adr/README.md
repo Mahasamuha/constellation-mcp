@@ -5,7 +5,7 @@
 | [0001](0001-rpc-envelope-not-shared.md) | Do Not Share RpcEnvelope Across Node and Relay | Superseded by [0018](0018-share-rpcenvelope-via-inheritance.md) |
 | [0002](0002-agent-is-security-boundary.md) | The Node Is the Security Boundary | Accepted |
 | [0003](0003-outbound-only-agent-websocket.md) | Outbound-Only Node WebSocket (No Inbound Ports) | Accepted |
-| [0004](0004-oauth-mcp-auth.md) | OAuth 2.0 as the MCP Client Authentication Standard | Accepted |
+| [0004](0004-oauth-mcp-auth.md) | OAuth 2.0 as the MCP Client Authentication Standard | Partially superseded by [0020](0020-rfc9728-discovery-public-only-dcr.md) |
 | [0005](0005-local-config-authority.md) | Node Config Is Local Authority; Relay Config Is Derived | Accepted |
 | [0006](0006-agent-initiated-token-rotation.md) | Node-Initiated Token Rotation; Tokens Stored as Hashes | Accepted |
 | [0007](0007-remove-broker-manage-scope.md) | Remove relay:manage Scope; Replace with Per-User RLS Filtering | Accepted |
@@ -21,3 +21,5 @@
 | [0017](0017-ambiguous-share-resolution.md) | Ambiguous Share Resolution Returns an Error Instead of Requiring `host` | Accepted |
 | [0018](0018-share-rpcenvelope-via-inheritance.md) | Share RpcEnvelope via Inheritance; Nest Tool Params | Accepted |
 | [0019](0019-hub-live-token-rotation.md) | Hub Token Rotation Is Live, Not Restart-Bound | Accepted |
+| [0020](0020-rfc9728-discovery-public-only-dcr.md) | RFC 9728 Discovery; Dynamic Client Registration Is Public-Only | Accepted |
+| [0021](0021-client-id-metadata-documents.md) | Client ID Metadata Documents; Relay Consent Interstitial in OIDC Mode | Accepted |

@@ -49,6 +49,8 @@ The relay implements the [MCP Apps extension](https://github.com/modelcontextpro
 
 A trigger tool that launches an interactive file browser — directory tree, syntax-highlighted viewer, and editor — rendered inline in the conversation.
 
+> **Experimental.** The file browser (`packages/telescope`) is experimental. Browsing, viewing, and saving work, but its context injection is unreliable: when you open a file, the app reports it to the host with `ui/update-model-context` ("User has file open: …"), and on some clients the model never receives that context. Don't rely on the model knowing which file you have open in the browser — name the file in your message instead. Behavior varies by client and may change as MCP Apps support matures.
+
 | Param | Type | Description |
 |---|---|---|
 | `share` | string? | Share to open the browser on |
@@ -251,7 +253,9 @@ List active MCP client OAuth sessions (non-expired only). Paginated.
 |---|---|---|
 | `id` | string | Session ID |
 | `mcp_client_id` | string | OAuth client that holds this session |
-| `is_dynamic_client` | boolean | Whether the client was registered via Dynamic Client Registration |
+| `is_dynamic_client` | boolean | Whether the client was registered via Dynamic Client Registration (`false` for metadata document clients) |
+| `is_metadata_document_client` | boolean | Whether the client identified itself with a Client ID Metadata Document URL |
+| `client_name` | string \| null | Client's display name (set for metadata document clients; `null` for DCR clients) |
 | `issued_at` | ISO 8601 | |
 | `expires_at` | ISO 8601 | Access token expiry |
 | `has_refresh_token` | boolean | |
@@ -445,7 +449,17 @@ The `confirm` field must be exactly `"deactivate my account"`. Any other value r
 
 ## OAuth Flows
 
-The relay acts as an OAuth 2.0 authorization server backed by an upstream OIDC provider. It exposes a standard `/.well-known/oauth-authorization-server` discovery document.
+The relay acts as an OAuth 2.0 authorization server backed by an upstream OIDC provider. It is also the protected resource (`/mcp`), and exposes both discovery documents:
+
+| Document | Spec | Key fields |
+|---|---|---|
+| `/.well-known/oauth-protected-resource/mcp` | RFC 9728 | `resource` (`<RELAY_URL>/mcp`), `authorization_servers` (the relay origin), `bearer_methods_supported: ["header"]` |
+| `/.well-known/oauth-protected-resource` | RFC 9728 | Same, but `resource` is the relay origin. Kept for older clients that probe the root directly |
+| `/.well-known/oauth-authorization-server` | RFC 8414 | `issuer`, endpoints, `code_challenge_methods_supported: ["S256"]`, `token_endpoint_auth_methods_supported: ["none"]`, `client_id_metadata_document_supported: true` |
+
+Every `401` from `/mcp` (missing or invalid token) includes `resource_metadata` in its `WWW-Authenticate` header pointing at `/.well-known/oauth-protected-resource/mcp` (RFC 9728 §3.3 requires `resource` to equal the requested URL, `<RELAY_URL>/mcp`), which is how MCP clients begin discovery. `WWW-Authenticate` is exposed via CORS for browser-based clients.
+
+The documents are built from `RELAY_URL`, which must be a bare origin (no path, trailing slash, uppercase host, or explicit default port); the relay refuses to start otherwise. See [ADR 0020](adr/0020-rfc9728-discovery-public-only-dcr.md).
 
 ### Authorization Code Flow (MCP clients)
 
@@ -458,6 +472,9 @@ sequenceDiagram
     participant OIDC as OIDC Provider
 
     Client->>Relay: GET /oauth/authorize
+    Note over Relay: resolve client (fetch metadata document if CIMD)
+    Relay-->>Client: consent page (OIDC mode; client name, verified host, redirect host)
+    Client->>Relay: POST /oauth/authorize/consent (approve)
     Relay-->>Client: 302 → OIDC /authorize
     Client->>OIDC: browser follows redirect
     OIDC-->>Client: user authenticates
@@ -470,9 +487,21 @@ sequenceDiagram
     Relay-->>Client: access_token + refresh_token
 ```
 
-PKCE (`S256`) is **required**. The relay rejects `/oauth/authorize` requests that omit `code_challenge`. The MCP auth spec is based on OAuth 2.1, which mandates PKCE for all authorization code flows. All compliant MCP clients (Claude, ChatGPT, Cursor) support it.
+PKCE (`S256`) is **required**. `/oauth/authorize` rejects with `400 invalid_request` a missing `code_challenge`, a `code_challenge_method` that is absent or anything other than `S256` (including `plain`), a `code_challenge` that is not 43–128 base64url characters, a `state` over 512 characters, and any parameter that is repeated or not a plain string. The MCP auth spec is based on OAuth 2.1, which mandates PKCE for all authorization code flows. All compliant MCP clients (Claude, ChatGPT, Cursor) support it.
 
-**Dynamic Client Registration** (`POST /oauth/register`, RFC 7591) is supported for clients that auto-discover the relay. Public clients send `token_endpoint_auth_method: "none"` and receive no client secret.
+**Dynamic Client Registration** (`POST /oauth/register`, RFC 7591) is supported for clients that auto-discover the relay, for **public clients only**. Clients send `token_endpoint_auth_method: "none"` or omit it (it is then set to `"none"`); any other value is rejected with `400 invalid_client_metadata`, as is any `grant_types` entry other than `authorization_code` and `refresh_token` (the default when omitted). No client secret is issued — PKCE protects the authorization code. Clients registered with a secret before this restriction continue to authenticate with `client_secret` in the token request body.
+
+**Client ID Metadata Documents** (CIMD, draft-ietf-oauth-client-id-metadata-document) are the registration method the MCP spec now prefers; DCR is retained as a fallback. A client using CIMD sends an HTTPS URL as its `client_id`, and the relay fetches the JSON document at that URL during `/oauth/authorize`:
+
+- The URL must be canonical, `https`, with a non-root path and no userinfo, fragment, dot segments, or trailing dot on the host. An existing client row that was not created from a metadata document is never overwritten; such an id is refused.
+- The document's `client_id` must equal the URL; `client_name` and `redirect_uris` are required; `token_endpoint_auth_method` must be `none` or absent; client secrets are rejected. `grant_types` is filtered to the supported values and must include `authorization_code`; if absent it defaults to `authorization_code` and `refresh_token`.
+- Each redirect URI is checked against the same rules as DCR (loopback `http:`, or a full origin in `OAUTH_ALLOWED_REDIRECT_ORIGINS`; fragments are rejected). Disallowed entries are ignored. The request's `redirect_uri` must match a registered one exactly, except that `http:` loopback URIs match regardless of port (RFC 8252 §7.3; `localhost` and `127.0.0.1` are not equated). The requested URI is stored with the auth code and compared exactly at `/oauth/token`.
+- Fetches refuse private, loopback, link-local, and other special-use addresses, do not follow redirects, require a `200` with a JSON content type, and are capped at 5 KB and 5 seconds. They go direct over HTTPS (`HTTPS_PROXY` is ignored).
+- The document is cached in `oauth_clients` per its `Cache-Control: max-age`, clamped to 5 minutes – 24 hours (default 1 hour); `no-store`, `no-cache`, or `max-age=0` re-fetch on every authorization. Failed fetches are not cached and fail the authorization with `400 invalid_client` and a generic description ("client metadata document could not be retrieved"); the cause is only in the server log.
+
+**Consent display.** In OIDC mode the relay shows a consent page before redirecting to the upstream provider, for every authorization-code client. It shows the client's name, who vouches for its identity (the metadata document's host for CIMD; "not verified" for DCR), the hostname the user will be redirected to, and a warning when that is a loopback address. Deny redirects back with `error=access_denied`. In local-auth mode `/oauth/authorize` renders the login page directly (not a redirect to `/auth/login`, which remains) with the same information, and failed-login and rate-limited re-renders keep it. Consent and login pages are sent with `Cache-Control: no-store`.
+
+Refresh tokens rotate atomically: a refresh token presented twice (e.g. concurrently) succeeds once and the other request gets `400 invalid_grant`. See [ADR 0021](adr/0021-client-id-metadata-documents.md).
 
 ### Device Code Flow (node init + relay login)
 

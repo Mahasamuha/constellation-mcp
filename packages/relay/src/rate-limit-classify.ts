@@ -25,7 +25,7 @@ export function classifyHttpRoute(path: string, grantType?: unknown): RateLimitB
   if (path === "/oauth/token") {
     return grantType === "urn:ietf:params:oauth:grant-type:device_code" ? "device-poll" : "oauth";
   }
-  if (path === "/oauth/register" || path === "/oauth/device/code" || path === "/setup" || path === "/auth/login") {
+  if (path === "/oauth/register" || path === "/oauth/device/code" || path === "/setup" || path === "/auth/login" || path === "/oauth/authorize/consent") {
     return "oauth";
   }
   if (path.startsWith("/activate")) {
