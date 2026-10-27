@@ -16,7 +16,7 @@ How to connect Claude, ChatGPT, and Cursor to a running Constellation relay.
 1. Open [claude.ai](https://claude.ai) and go to **Settings → Integrations**
 2. Click **Add integration**
 3. Enter your relay's MCP endpoint URL: `https://<your-relay>/mcp`
-4. Claude redirects you to the relay's login page — sign in with your Constellation account
+4. Claude redirects you to asterism, the authorization server — sign in with your asterism account and approve the connection
 5. After authorizing, Claude returns to the integration page and the connection is active
 
 ### 2. Verify
@@ -37,8 +37,8 @@ Available on Pro, Team, Enterprise, and Edu plans.
 2. Click **Add new connector**
 3. Enter a name (e.g. `Constellation`) and your relay's MCP endpoint URL: `https://<your-relay>/mcp`
 4. Set authentication to **OAuth**
-5. Click **Create** — ChatGPT redirects you to the relay's login page
-6. Sign in with your Constellation account and authorize the connection
+5. Click **Create** — ChatGPT redirects you to asterism, the authorization server
+6. Sign in with your asterism account and authorize the connection
 
 ### 2. Use the connector in a conversation
 
@@ -73,7 +73,7 @@ Create or edit `.cursor/mcp.json` in your project root for a project-scoped conn
 
 ### 2. Authorize
 
-On first use, Cursor opens a browser window to complete the OAuth flow. Sign in with your Constellation account and authorize the connection. Cursor stores the resulting session and reuses it automatically.
+On first use, Cursor opens a browser window to complete the OAuth flow. Sign in with your asterism account and authorize the connection. Cursor stores the resulting tokens and reuses them automatically.
 
 ### 3. Verify
 
@@ -81,13 +81,6 @@ Open the Cursor MCP panel (or invoke a tool call in the agent) — Constellation
 
 ---
 
-## Revoking a session
+## Revoking a client
 
-To disconnect a client, revoke its OAuth session:
-
-```bash
-constellation relay sessions list
-constellation relay sessions revoke <session-id>
-```
-
-Both the access token and refresh token are invalidated immediately.
+Sign-in and grants are managed in asterism. To disconnect a client, open asterism's grants page (`/grants`) and revoke the client's grant. The client's current access token stops working when it expires, and it cannot refresh it.

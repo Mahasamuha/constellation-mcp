@@ -101,7 +101,7 @@ function minimalHubConfig(overrides: Partial<HubConfig> = {}): HubConfig {
     subnode_uid: {},
     subnode_gid: {},
     shares: [],
-    identity: { claims: [], user_map: [], allow_preferred_username: false },
+    identity: { claims: [], user_map: [] },
     audit_log: "/var/log/constellation/audit.jsonl",
     max_file_size_kb: 100,
     ...overrides,
@@ -314,7 +314,7 @@ describe("HubSocket — dispatch-error kind in the audit log", () => {
     const [conn] = await nextConnection(wss);
     await waitForMessage(conn); // the initial hub_share_sync sent from onOpen()
 
-    conn.send(JSON.stringify({ request_id: "req-1", tool: "read_file", share: "docs", absolute_root: "/srv/docs", params: {}, user_claims: {} }));
+    conn.send(JSON.stringify({ request_id: "req-1", tool: "read_file", share: "docs", absolute_root: "/srv/docs", params: {}, user_sub: "sub-1", user_groups: [], user_claims: {} }));
     const response = await waitForMessage(conn);
 
     expect(response).toEqual({ request_id: "req-1", error: { message: `synthetic ${kind} failure` } });
@@ -329,5 +329,123 @@ describe("HubSocket — dispatch-error kind in the audit log", () => {
       outcome: kind,
       error: `synthetic ${kind} failure`,
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// HubSocket — the new user fields on the envelope: user_sub is required with no
+// fallback, user_groups drives group overrides, and the sub (not a claim) is what
+// identity resolution and the audit log see.
+// ---------------------------------------------------------------------------
+
+describe("HubSocket — user_sub / user_groups handling", () => {
+  let dir: string;
+  let wss: WebSocketServer;
+  let port: number;
+  let socket: HubSocket | undefined;
+  let pool: SubnodePool;
+  let auditLog: string;
+
+  beforeEach(async () => {
+    dir = await makeTempDir();
+    wss = new WebSocketServer({ port: 0 });
+    await new Promise<void>((resolve) => wss.once("listening", resolve));
+    port = (wss.address() as { port: number }).port;
+    vi.mocked(resolveIdentity).mockResolvedValue({ username: "alice", uid: 1000, gid: 1000, home: "/home/alice" });
+    auditLog = join(dir, "audit.jsonl");
+  });
+
+  afterEach(async () => {
+    socket?.stop();
+    socket = undefined;
+    await new Promise<void>((resolve) => wss.close(() => resolve()));
+    await cleanTempDir(dir);
+    vi.clearAllMocks();
+  });
+
+  async function connect(shares: HubConfig["shares"]) {
+    const cfg = minimalHubConfig({ relay_url: `http://localhost:${port}`, audit_log: auditLog, shares });
+    pool = new SubnodePool(cfg, {});
+    vi.spyOn(pool, "dispatch").mockResolvedValue({ result: { ok: true } } as never);
+    socket = new HubSocket(cfg, "tok", {}, pool);
+    socket.start();
+    const [conn] = await nextConnection(wss);
+    await waitForMessage(conn);
+    return conn;
+  }
+
+  async function call(conn: ServerSideSocket, extra: Record<string, unknown>) {
+    conn.send(JSON.stringify({ request_id: "req-1", tool: "read_file", share: "docs", absolute_root: "/srv/docs", params: {}, user_claims: {}, ...extra }));
+    return waitForMessage(conn);
+  }
+
+  async function auditLines(): Promise<Record<string, unknown>[]> {
+    await pollUntil(() => existsSync(auditLog) && readFileSync(auditLog, "utf8").trim().length > 0);
+    return readFileSync(auditLog, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  }
+
+  const docs = (overrides: HubConfig["shares"][number]["permissions"]["overrides"] = [], def: "none" | "read-write" = "none") =>
+    [{ name: "docs", path: "/srv/docs", permissions: { default: def, overrides } }];
+
+  it.each([
+    ["missing", {}],
+    ["empty", { user_sub: "" }],
+    ["a number", { user_sub: 7 }],
+    ["an array", { user_sub: ["a"] }],
+  ])("refuses an RPC whose user_sub is %s, with no fallback", async (_label, extra) => {
+    const conn = await connect(docs([], "read-write"));
+    const response = await call(conn, { user_groups: [], ...extra });
+    expect(response).toEqual({ request_id: "req-1", error: { message: "Malformed request: user_sub must be a non-empty string" } });
+    expect(resolveIdentity).not.toHaveBeenCalled();
+    expect(pool.dispatch).not.toHaveBeenCalled();
+    expect((await auditLines())[0]).toMatchObject({ outcome: "exec_error", user_sub: null });
+  });
+
+  it("refuses a legacy envelope that carries only user_oidc_sub", async () => {
+    const conn = await connect(docs([], "read-write"));
+    const response = await call(conn, { user_oidc_sub: "legacy", user_groups: [] });
+    expect(response).toMatchObject({ error: { message: expect.stringContaining("user_sub") } });
+    expect(pool.dispatch).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["missing", {}],
+    ["a string", { user_groups: "eng" }],
+    ["an object", { user_groups: { 0: "eng" } }],
+  ])("refuses an RPC whose user_groups is %s", async (_label, extra) => {
+    const conn = await connect(docs([], "read-write"));
+    const response = await call(conn, { user_sub: "sub-1", ...extra });
+    expect(response).toEqual({ request_id: "req-1", error: { message: "Malformed request: user_groups must be an array" } });
+    expect(pool.dispatch).not.toHaveBeenCalled();
+  });
+
+  it("passes the sub to identity resolution and records it in the audit log", async () => {
+    const conn = await connect(docs([], "read-write"));
+    const response = await call(conn, { user_sub: "sub-1", user_groups: ["eng"], user_claims: { constellation_username: "alice" } });
+    expect(response).toEqual({ request_id: "req-1", result: { ok: true } });
+    expect(resolveIdentity).toHaveBeenCalledWith({ constellation_username: "alice" }, "sub-1", expect.anything());
+    const [entry] = await auditLines();
+    expect(entry).toMatchObject({ user_sub: "sub-1", local_username: "alice", outcome: "ok" });
+    expect(entry).not.toHaveProperty("user_oidc_sub");
+  });
+
+  it("grants access through a group override", async () => {
+    const conn = await connect(docs([{ group: "eng", access: "read-write" }]));
+    const response = await call(conn, { user_sub: "sub-1", user_groups: ["eng"] });
+    expect(response).toEqual({ request_id: "req-1", result: { ok: true } });
+  });
+
+  it("denies a user whose groups do not match when the default is none", async () => {
+    const conn = await connect(docs([{ group: "eng", access: "read-write" }]));
+    const response = await call(conn, { user_sub: "sub-1", user_groups: ["sales"] });
+    expect(response).toMatchObject({ error: { message: "Access to share 'docs' is denied" } });
+    expect(pool.dispatch).not.toHaveBeenCalled();
+  });
+
+  it("lets a group override restrict, and a sub override beat it", async () => {
+    const restricted = docs([{ group: "contractors", access: "none" }, { sub: "sub-2", access: "read-write" }], "read-write");
+    const conn = await connect(restricted);
+    expect(await call(conn, { user_sub: "sub-1", user_groups: ["contractors"] })).toMatchObject({ error: { message: "Access to share 'docs' is denied" } });
+    expect(await call(conn, { user_sub: "sub-2", user_groups: ["contractors"] })).toEqual({ request_id: "req-1", result: { ok: true } });
   });
 });

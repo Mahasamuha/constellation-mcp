@@ -94,18 +94,18 @@ All windows are non-resizable panels that open centered on screen. A window that
 Triggered by **Connect to Relay…** in the tray menu, or from Settings when the token is missing.
 
 **Step 1 — Relay URL**  
-Enter the relay base URL (e.g. `https://relay.example.com`) and click Continue. The GUI calls `start_device_flow`, which POSTs to `/oauth/device/code` with scope `agent:register`.
+Enter the relay base URL (e.g. `https://relay.example.com`) and click Continue. The GUI calls `start_device_flow`, which runs `constellation node auth device-code`: it finds the relay's authorization server (asterism) from the relay's metadata and requests a device code there with scope `relay` and the node client (`<relay>/clients/node.json`).
 
 **Step 2 — Device code**  
-The relay returns a 9-character user code and a verification URL. The GUI displays the code and a button to open the verification URL in the browser. It then calls `poll_device_flow`, which polls `/oauth/token` every `interval` seconds (as specified in the relay response).
+The authorization server returns a user code and a verification URL on its own origin. The GUI displays the code and a button to open the verification URL in the browser. It then calls `poll_device_flow`, which runs `constellation node auth complete`: it polls the authorization server's token endpoint every `interval` seconds, then registers the node with `POST /api/executors/register` (the host name is the one already in `node.yaml`, else the machine's hostname).
 
 Poll outcomes:
 - `authorization_pending` — continue polling, emit `Pending` event to frontend
 - `slow_down` — continue polling, increase interval by 5 seconds
-- `rate_limit_exceeded` — continue polling at the same interval
+- Transient network or server errors — keep polling until the code expires
 - Any other error — emit `Error` event with the error string
 - Timeout (device code `expires_in` elapsed) — emit `Timeout` event
-- Success — write `node.yaml` with `relay_url`, `node_token`, and `host`; create `paths.yaml` if absent; emit `Success { host }` event; tray refreshes to Connected
+- Success (sign-in approved and node registered) — write `node.yaml` with `relay_url`, `node_token`, and `host`; create `paths.yaml` if absent; emit `Success { host }` event; tray refreshes to Connected
 
 Auth results are delivered to the frontend via Tauri events on the `auth-result` channel.
 
@@ -157,7 +157,7 @@ Edits `node.yaml` fields. `node_token` is managed via the Auth window only.
 
 **Danger zone** (collapsed by default):
 - Rotate token — calls `constellation node rotate`, fires an OS notification on success
-- Deregister node — confirmation dialog, deletes `node.yaml` directly, resets to Unconfigured
+- Deregister node — confirmation dialog, deletes `node.yaml` directly, resets to Unconfigured. If a `constellation relay login` session exists, the node's token is also revoked on the relay (best effort).
 
 ---
 
@@ -203,7 +203,7 @@ All commands are invoked from the frontend via `invoke('<name>', args)`.
 
 | Command | Args | Returns | Notes |
 |---|---|---|---|
-| `start_device_flow` | `relay_url` | `DeviceCodeInfo` | POSTs to `/oauth/device/code` |
+| `start_device_flow` | `relay_url` | `DeviceCodeInfo` | Requests a device code from the authorization server |
 | `poll_device_flow` | `relay_url`, `device_code`, `interval`, `expires_in` | `void` | Emits `auth-result` events until resolved |
 
 `DeviceCodeInfo`: `{ device_code, user_code, verification_uri, verification_uri_complete, expires_in, interval }`

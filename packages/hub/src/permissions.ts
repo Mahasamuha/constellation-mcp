@@ -1,5 +1,5 @@
 import type { AccessLevel, ShareConfig } from "./config.js";
-import { evaluatePermissionBlob, type PermissionBlob } from "@constellation/shared";
+import { evaluatePermissionBlob, type PermissionBlob, type PermissionSubject } from "@constellation/shared";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -24,15 +24,16 @@ const WRITE_TOOLS = new Set([
 // ---------------------------------------------------------------------------
 
 /**
- * Evaluates whether a user (identified by oidcSub) may invoke a tool on a
+ * Evaluates whether a user (identified by asterism sub and groups) may invoke a tool on a
  * given share. Resolution order:
  *   1. Share must exist in admin config — users cannot access unlisted shares.
- *   2. Per-oidcSub override wins over default if present.
- *   3. Default access level applies otherwise.
- *   4. "none" always rejects; "read-only" blocks write tools; "read-write" allows all.
+ *   2. A per-sub override wins outright if present.
+ *   3. Otherwise the most permissive matching group override applies.
+ *   4. Otherwise the default access level applies.
+ *   5. "none" always rejects; "read-only" blocks write tools; "read-write" allows all.
  */
 export function checkPermission(
-  userOidcSub: string | null,
+  subject: PermissionSubject,
   share: string,
   tool: string,
   shares: ShareConfig[]
@@ -42,7 +43,7 @@ export function checkPermission(
     return { permitted: false, reason: `Share '${share}' is not in the admin share config` };
   }
 
-  const access = evaluatePermissionBlob(shareConfig.permissions, userOidcSub) as AccessLevel;
+  const access = evaluatePermissionBlob(shareConfig.permissions, subject) as AccessLevel;
 
   if (access === "none") {
     return { permitted: false, reason: `Access to share '${share}' is denied` };
@@ -71,19 +72,19 @@ export type RpcPermissionResult =
  * the user only has read (or no) access to.
  */
 export function checkRpcPermission(
-  userOidcSub: string | null,
+  subject: PermissionSubject,
   share: string,
   dstShare: string | null,
   tool: string,
   shares: ShareConfig[]
 ): RpcPermissionResult {
-  const result = checkPermission(userOidcSub, share, tool, shares);
+  const result = checkPermission(subject, share, tool, shares);
   if (!result.permitted) {
     return { permitted: false, share, reason: result.reason };
   }
 
   if (dstShare !== null && dstShare !== share) {
-    const dstResult = checkPermission(userOidcSub, dstShare, tool, shares);
+    const dstResult = checkPermission(subject, dstShare, tool, shares);
     if (!dstResult.permitted) {
       return { permitted: false, share: dstShare, reason: dstResult.reason };
     }

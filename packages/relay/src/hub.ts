@@ -25,7 +25,10 @@ const log = createLogger("hub");
 /** Relay's view of the envelope adds the caller identity fields it forwards to
  * executors — node ignores them, hub uses them for OS-identity resolution. */
 export interface RpcEnvelope extends BaseRpcEnvelope {
-  user_oidc_sub: string | null;
+  /** The asterism sub (= users.id). */
+  user_sub: string;
+  /** The caller's groups, unfiltered: hubs evaluate group overrides that may restrict access. */
+  user_groups: string[];
   user_claims: Record<string, unknown>;
 }
 
@@ -551,7 +554,7 @@ interface HubShareSyncMessage {
   shares: unknown;
 }
 
-async function handleHubShareSync(conn: ConnectedExecutor, msg: HubShareSyncMessage): Promise<void> {
+export async function handleHubShareSync(conn: ConnectedExecutor, msg: HubShareSyncMessage): Promise<void> {
   if (conn.tokenType !== ExecutorTokenType.HUB) {
     send(conn.ws, { type: "hub_share_sync_error", error: "hub_share_sync is only valid for HUB tokens (ExecutorTokenType.HUB)" });
     return;
@@ -584,9 +587,9 @@ async function handleHubShareSync(conn: ConnectedExecutor, msg: HubShareSyncMess
       return;
     }
     const blob = entry.permission_blob as Record<string, unknown>;
-    const validAccess = new Set(["none", "read", "read-write"]);
+    const validAccess = new Set(["none", "read-only", "read-write"]);
     if (!validAccess.has(blob["default"] as string)) {
-      send(conn.ws, { type: "hub_share_sync_error", error: `Share '${entry.name}': permission_blob.default must be "none", "read", or "read-write"` });
+      send(conn.ws, { type: "hub_share_sync_error", error: `Share '${entry.name}': permission_blob.default must be "none", "read-only", or "read-write"` });
       return;
     }
     if (blob["overrides"] !== undefined) {
@@ -594,11 +597,24 @@ async function handleHubShareSync(conn: ConnectedExecutor, msg: HubShareSyncMess
         send(conn.ws, { type: "hub_share_sync_error", error: `Share '${entry.name}': permission_blob.overrides must be an array` });
         return;
       }
-      for (const o of blob["overrides"] as unknown[]) {
-        if (typeof o !== "object" || o === null ||
-            typeof (o as Record<string, unknown>)["oidc_sub"] !== "string" ||
-            !validAccess.has((o as Record<string, unknown>)["access"] as string)) {
-          send(conn.ws, { type: "hub_share_sync_error", error: `Share '${entry.name}': each permission_blob.overrides entry must have oidc_sub (string) and access ("none"|"read"|"read-write")` });
+      for (const [idx, o] of (blob["overrides"] as unknown[]).entries()) {
+        const ov = (typeof o === "object" && o !== null ? o : null) as Record<string, unknown> | null;
+        let problem: string | null = null;
+        if (!ov) {
+          problem = "must be an object";
+        } else if ("oidc_sub" in ov) {
+          problem = "uses the removed key oidc_sub; re-key it to sub (the asterism user id) or group (a group name)";
+        } else {
+          const hasSub = typeof ov["sub"] === "string" && ov["sub"] !== "";
+          const hasGroup = typeof ov["group"] === "string" && ov["group"] !== "";
+          if ((ov["sub"] !== undefined && !hasSub) || (ov["group"] !== undefined && !hasGroup) || hasSub === hasGroup) {
+            problem = "must have exactly one of sub or group (a non-empty string)";
+          } else if (!validAccess.has(ov["access"] as string)) {
+            problem = 'access must be "none", "read-only", or "read-write"';
+          }
+        }
+        if (problem) {
+          send(conn.ws, { type: "hub_share_sync_error", error: `Share '${entry.name}': permission_blob.overrides[${idx}] ${problem}` });
           return;
         }
       }

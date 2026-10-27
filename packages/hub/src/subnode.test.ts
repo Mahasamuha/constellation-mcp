@@ -118,7 +118,7 @@ function configWith(
     subnode_uid,
     subnode_gid: {},
     shares: [],
-    identity: { claims: [], user_map: [], allow_preferred_username: false },
+    identity: { claims: [], user_map: [] },
     audit_log: "/var/log/constellation/audit.jsonl",
     max_file_size_kb: 100,
   };

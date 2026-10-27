@@ -7,45 +7,17 @@ datasource db {
   provider = "postgresql"
 }
 
-enum RelayRole {
-  USER
-  ADMIN
-}
-
 model User {
-  id              String    @id @default(cuid())
-  oidcSub         String?   @map("oidc_sub")
-  oidcIssuer      String?   @map("oidc_issuer")
-  email           String
-  role            RelayRole @default(USER)
-  createdAt       DateTime  @default(now()) @map("created_at")
-  deactivatedAt   DateTime? @map("deactivated_at")
-  lastKnownClaims Json?     @map("last_known_claims")
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now()) @map("created_at")
 
   executors      Executor[]
   executorTokens ExecutorToken[]
   pathShares     PathShare[]
   relayFilters   RelayPathFilter[]
-  oauthSessions  OauthSession[]
-  localUser      LocalUser?
   activityLogs   ActivityLog[]
 
-  @@unique([oidcSub, oidcIssuer])
   @@map("users")
-}
-
-model LocalUser {
-  id           String    @id @default(cuid())
-  username     String    @unique
-  passwordHash String    @map("password_hash")
-  createdAt    DateTime  @default(now()) @map("created_at")
-  lastLoginAt  DateTime? @map("last_login_at")
-  isActive     Boolean   @default(true) @map("is_active")
-  userId       String    @unique @map("user_id")
-
-  user User @relation(fields: [userId], references: [id])
-
-  @@map("local_users")
 }
 
 enum ExecutorTokenType {
@@ -161,83 +133,6 @@ model ActivityLog {
 
   @@index([userId, createdAt(sort: Desc)])
   @@map("activity_logs")
-}
-
-model LoginFailure {
-  id       Int      @id @default(autoincrement())
-  ip       String
-  failedAt DateTime @default(now()) @map("failed_at")
-
-  @@index([ip, failedAt])
-  @@map("login_failures")
-}
-
-model AuthCode {
-  codeHash            String   @id @map("code_hash")
-  userId              String   @map("user_id")
-  clientId            String   @map("client_id")
-  redirectUri         String   @map("redirect_uri")
-  // Non-nullable: PKCE is required for every AuthCode this app issues (see
-  // /oauth/authorize's code_challenge check) — making the column itself unable to
-  // store a missing challenge means a future code path that creates an AuthCode
-  // without going through /oauth/authorize fails at the database layer instead of
-  // silently skipping PKCE verification at the token endpoint.
-  codeChallenge       String   @map("code_challenge")
-  codeChallengeMethod String   @default("S256") @map("code_challenge_method")
-  expiresAt           DateTime @map("expires_at")
-  createdAt           DateTime @default(now()) @map("created_at")
-
-  @@map("auth_codes")
-}
-
-model DeviceCode {
-  deviceCodeHash   String   @id @map("device_code_hash")
-  userCode         String   @unique @map("user_code")
-  scope            String
-  expiresAt        DateTime @map("expires_at")
-  status           String   @default("pending")
-  userId           String?  @map("user_id")
-  hostName         String?  @map("host_name")
-  pendingUserId    String?  @map("pending_user_id")
-  elevateSessionId String?  @map("elevate_session_id")
-  createdAt        DateTime @default(now()) @map("created_at")
-
-  @@map("device_codes")
-}
-
-model OauthClient {
-  id               String   @id @default(cuid())
-  clientSecretHash String?  @map("client_secret_hash")
-  redirectUris     String[] @map("redirect_uris")
-  grantTypes       String[] @map("grant_types")
-  isDynamic        Boolean  @map("is_dynamic")
-  createdAt        DateTime @default(now()) @map("created_at")
-  // Client ID Metadata Document clients: id is the HTTPS document URL, and the row
-  // caches the last valid fetch. metadataExpiresAt is when it must be re-fetched.
-  isMetadataDocument Boolean   @default(false) @map("is_metadata_document")
-  clientName         String?   @map("client_name")
-  metadataExpiresAt  DateTime? @map("metadata_expires_at")
-
-  oauthSessions OauthSession[]
-
-  @@map("oauth_clients")
-}
-
-model OauthSession {
-  id                    String    @id @default(cuid())
-  userId                String    @map("user_id")
-  mcpClientId           String    @map("mcp_client_id")
-  accessTokenHash       String    @unique @map("access_token_hash")
-  issuedAt              DateTime  @default(now()) @map("issued_at")
-  expiresAt             DateTime  @map("expires_at")
-  refreshTokenHash      String?   @unique @map("refresh_token_hash")
-  refreshTokenExpiresAt DateTime? @map("refresh_token_expires_at")
-  adminUntil            DateTime? @map("admin_until")
-
-  user      User        @relation(fields: [userId], references: [id])
-  mcpClient OauthClient @relation(fields: [mcpClientId], references: [id])
-
-  @@map("oauth_sessions")
 }
 
 model HubShare {

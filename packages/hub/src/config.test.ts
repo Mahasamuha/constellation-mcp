@@ -52,7 +52,7 @@ describe("loadHubConfig", () => {
     });
     expect(cfg.shares).toHaveLength(1);
     expect(cfg.shares[0]).toMatchObject({ name: "docs", path: "/srv/docs", permissions: { default: "read-only", overrides: [] } });
-    expect(cfg.identity).toEqual({ claims: [], user_map: [], allow_preferred_username: false });
+    expect(cfg.identity).toEqual({ claims: [], user_map: [] });
     expect(cfg.max_file_size_kb).toBe(100);
   });
 
@@ -116,14 +116,15 @@ shares:
     permissions:
       default: read-only
       overrides:
-        - oidc_sub: user-1
+        - sub: user-1
           access: read-write
+        - group: eng
+          access: read-only
 identity:
   claims: [uid, sAMAccountName]
   user_map:
-    - oidc_sub: sub-1
+    - sub: sub-1
       local_username: alice
-  allow_preferred_username: true
 `);
     const cfg = loadHubConfig(path);
 
@@ -135,12 +136,56 @@ identity:
       burst_idle_seconds: 45,
       queue_timeout: 5,
     });
-    expect(cfg.shares[0]!.permissions.overrides).toEqual([{ oidc_sub: "user-1", access: "read-write" }]);
+    expect(cfg.shares[0]!.permissions.overrides).toEqual([
+      { sub: "user-1", access: "read-write" },
+      { group: "eng", access: "read-only" },
+    ]);
     expect(cfg.identity).toEqual({
       claims: ["uid", "sAMAccountName"],
-      user_map: [{ oidc_sub: "sub-1", local_username: "alice" }],
-      allow_preferred_username: true,
+      user_map: [{ sub: "sub-1", local_username: "alice" }],
     });
+  });
+
+  const shareYaml = (override: string) => `
+relay_url: https://relay.example.com
+hub_name: test-hub
+audit_log: /var/log/constellation/audit.jsonl
+shares:
+  - name: docs
+    path: /srv/docs
+    permissions:
+      default: none
+      overrides:
+        ${override}
+`;
+
+  it("rejects a legacy oidc_sub share override, naming the share and index", async () => {
+    const path = await writeConfig(shareYaml("- oidc_sub: abc\n          access: read-only"));
+    expect(() => loadHubConfig(path)).toThrow(/share 'docs' \(shares\[0\]\).*overrides\[0\].*oidc_sub.*'sub'.*'group'/);
+  });
+
+  it("rejects a share override with both sub and group, or neither", async () => {
+    const both = await writeConfig(shareYaml("- sub: a\n          group: g\n          access: read-only"));
+    expect(() => loadHubConfig(both)).toThrow(/exactly one of sub or group/);
+    const neither = await writeConfig(shareYaml("- access: read-only"));
+    expect(() => loadHubConfig(neither)).toThrow(/exactly one of sub or group/);
+  });
+
+  it("rejects an invalid override access level", async () => {
+    const path = await writeConfig(shareYaml("- group: g\n          access: admin"));
+    expect(() => loadHubConfig(path)).toThrow(/invalid access level/);
+  });
+
+  it("rejects a legacy oidc_sub key in identity.user_map", async () => {
+    const path = await writeConfig(`${BASE_YAML}\nidentity:\n  user_map:\n    - oidc_sub: s\n      local_username: alice\n`);
+    expect(() => loadHubConfig(path)).toThrow(/identity\.user_map\[0\].*oidc_sub.*'sub'/);
+  });
+
+  it("rejects the removed allow_preferred_username option, whatever its value", async () => {
+    for (const v of ["true", "false"]) {
+      const path = await writeConfig(`${BASE_YAML}\nidentity:\n  allow_preferred_username: ${v}\n`);
+      expect(() => loadHubConfig(path)).toThrow(/allow_preferred_username was removed.*Tier 3/);
+    }
   });
 
   it("defaults max to min when only min is specified", async () => {
@@ -165,7 +210,7 @@ function baseConfig(overrides: Partial<HubConfig> = {}): HubConfig {
     subnode_uid: {},
     subnode_gid: {},
     shares: [],
-    identity: { claims: [], user_map: [], allow_preferred_username: false },
+    identity: { claims: [], user_map: [] },
     audit_log: "/var/log/constellation/audit.jsonl",
     max_file_size_kb: 100,
     ...overrides,
@@ -196,14 +241,12 @@ describe("validateHubConfig", () => {
     expect(result.errors).toContain("subnode_uid.blocked_range.min must be <= max");
   });
 
-  it("warns when allow_preferred_username is enabled", () => {
+  it("rejects a user_map local_username that is not a valid username", () => {
     const result = validateHubConfig(baseConfig({
-      identity: { claims: [], user_map: [], allow_preferred_username: true },
+      identity: { claims: [], user_map: [{ sub: "s", local_username: "1000" }, { sub: "t", local_username: "alice" }] },
     }));
-    expect(result.ok).toBe(true);
-    expect(result.warnings).toEqual([
-      expect.stringContaining("identity.allow_preferred_username is true"),
-    ]);
+    expect(result.ok).toBe(false);
+    expect(result.errors).toEqual([expect.stringContaining("identity.user_map[0].local_username")]);
   });
 
   it("rejects duplicate share names", () => {

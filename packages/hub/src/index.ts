@@ -5,6 +5,8 @@ import { userInfo } from "node:os";
 import {
   createLogger,
   MAX_SHARE_INSTRUCTIONS_LENGTH,
+  groupsFromClaims,
+  type PermissionSubject,
   RelaySocket,
   startControlServer,
   type RpcEnvelope,
@@ -22,7 +24,10 @@ const log = createLogger("hub");
  * below — defined locally (mirroring relay's own RpcEnvelope extension) rather than
  * imported from @constellation/relay, which hub has no reason to depend on. */
 interface IncomingRpcEnvelope extends RpcEnvelope {
-  user_oidc_sub: string | null;
+  /** The asterism sub (= Constellation users.id). Required; there is no fallback. */
+  user_sub: string;
+  /** Group names from the access token. Sent unfiltered: group overrides can restrict as well as grant. */
+  user_groups: string[];
   user_claims: Record<string, unknown>;
 }
 
@@ -221,7 +226,7 @@ export class HubSocket extends RelaySocket implements RotatableConnection {
           ts: new Date().toISOString(),
           hub_name: this.cfg.hub_name,
           request_id: requestId,
-          user_oidc_sub: typeof msg["user_oidc_sub"] === "string" ? msg["user_oidc_sub"] : null,
+          user_sub: typeof msg["user_sub"] === "string" ? msg["user_sub"] : null,
           local_username: null,
           share: typeof msg["share"] === "string" ? msg["share"] : "",
           tool,
@@ -298,7 +303,7 @@ export class HubSocket extends RelaySocket implements RotatableConnection {
   }
 
   private async handleRpc(envelope: IncomingRpcEnvelope): Promise<object> {
-    const { request_id, tool, params, user_oidc_sub: userOidcSub } = envelope;
+    const { request_id, tool, params } = envelope;
     const share = envelope.share || guessShare(envelope.absolute_root, this.shareRegistry);
 
     // onMessage casts the raw WS message to IncomingRpcEnvelope after checking only that
@@ -313,7 +318,7 @@ export class HubSocket extends RelaySocket implements RotatableConnection {
         ts: new Date().toISOString(),
         hub_name: this.cfg.hub_name,
         request_id,
-        user_oidc_sub: userOidcSub,
+        user_sub: typeof envelope.user_sub === "string" ? envelope.user_sub : null,
         local_username: null,
         share,
         tool,
@@ -322,6 +327,47 @@ export class HubSocket extends RelaySocket implements RotatableConnection {
       });
       return { request_id, error: { message } };
     }
+
+    // The sub is the permission and identity key; refuse rather than guess when it is
+    // missing (for example an envelope from a relay that predates the asterism cutover).
+    const userSub = envelope.user_sub as unknown;
+    if (typeof userSub !== "string" || !userSub) {
+      const message = "Malformed request: user_sub must be a non-empty string";
+      this.log.warn({ request_id, tool, share }, message);
+      this.audit.write({
+        ts: new Date().toISOString(),
+        hub_name: this.cfg.hub_name,
+        request_id,
+        user_sub: null,
+        local_username: null,
+        share,
+        tool,
+        outcome: "exec_error",
+        error: message,
+      });
+      return { request_id, error: { message } };
+    }
+
+    // Groups feed permission overrides that can deny as well as grant, so a malformed list
+    // is refused outright rather than treated as "no groups".
+    const rawGroups = envelope.user_groups as unknown;
+    if (!Array.isArray(rawGroups)) {
+      const message = "Malformed request: user_groups must be an array";
+      this.log.warn({ request_id, tool, share }, message);
+      this.audit.write({
+        ts: new Date().toISOString(),
+        hub_name: this.cfg.hub_name,
+        request_id,
+        user_sub: userSub,
+        local_username: null,
+        share,
+        tool,
+        outcome: "exec_error",
+        error: message,
+      });
+      return { request_id, error: { message } };
+    }
+    const subject: PermissionSubject = { sub: userSub, groups: groupsFromClaims({ groups: rawGroups }) };
 
     // Coerce user_claims to a safe object — a compromised relay could send null,
     // which would throw inside resolveIdentity and bypass all audit writes.
@@ -337,7 +383,7 @@ export class HubSocket extends RelaySocket implements RotatableConnection {
         ts: new Date().toISOString(),
         hub_name: this.cfg.hub_name,
         request_id,
-        user_oidc_sub: userOidcSub,
+        user_sub: userSub,
         local_username: null,
         share,
         tool,
@@ -348,7 +394,7 @@ export class HubSocket extends RelaySocket implements RotatableConnection {
     }
 
     // Resolve OS identity
-    const identity = await resolveIdentity(safeUserClaims, userOidcSub, this.cfg.identity);
+    const identity = await resolveIdentity(safeUserClaims, userSub, this.cfg.identity);
 
     if (isIdentityError(identity)) {
       this.log.warn({ request_id, tool, share, error: identity.message }, "Identity resolution failed");
@@ -356,7 +402,7 @@ export class HubSocket extends RelaySocket implements RotatableConnection {
         ts: new Date().toISOString(),
         hub_name: this.cfg.hub_name,
         request_id,
-        user_oidc_sub: userOidcSub,
+        user_sub: userSub,
         local_username: null,
         share,
         tool,
@@ -368,9 +414,9 @@ export class HubSocket extends RelaySocket implements RotatableConnection {
 
     // Check permissions — for cross-share copy/move, the destination share is checked too.
     const dstShare = resolveDstShare(envelope, tool, this.shareRegistry);
-    const permission = checkRpcPermission(userOidcSub, share, dstShare, tool, this.cfg.shares);
+    const permission = checkRpcPermission(subject, share, dstShare, tool, this.cfg.shares);
     if (!permission.permitted) {
-      return this.permissionDenied(request_id, tool, permission.share, userOidcSub, identity.username, permission.reason);
+      return this.permissionDenied(request_id, tool, permission.share, userSub, identity.username, permission.reason);
     }
 
     // Dispatch to subnode
@@ -382,7 +428,7 @@ export class HubSocket extends RelaySocket implements RotatableConnection {
         ts: new Date().toISOString(),
         hub_name: this.cfg.hub_name,
         request_id,
-        user_oidc_sub: userOidcSub,
+        user_sub: userSub,
         local_username: identity.username,
         share,
         tool,
@@ -403,7 +449,7 @@ export class HubSocket extends RelaySocket implements RotatableConnection {
       ts: new Date().toISOString(),
       hub_name: this.cfg.hub_name,
       request_id,
-      user_oidc_sub: userOidcSub,
+      user_sub: userSub,
       local_username: identity.username,
       share,
       tool,
@@ -422,7 +468,7 @@ export class HubSocket extends RelaySocket implements RotatableConnection {
     request_id: string,
     tool: string,
     share: string,
-    userOidcSub: string | null,
+    userSub: string,
     username: string,
     reason: string
   ): object {
@@ -431,7 +477,7 @@ export class HubSocket extends RelaySocket implements RotatableConnection {
       ts: new Date().toISOString(),
       hub_name: this.cfg.hub_name,
       request_id,
-      user_oidc_sub: userOidcSub,
+      user_sub: userSub,
       local_username: username,
       share,
       tool,

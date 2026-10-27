@@ -1,6 +1,6 @@
 # ADR 0008: Admin Elevation via adminUntil on OauthSession (Not a Separate Token)
 
-**Status:** Accepted  
+**Status:** Superseded by [ADR 0022](0022-asterism-authorization-server.md)  
 **Date:** 2026-06-06
 
 ## Context

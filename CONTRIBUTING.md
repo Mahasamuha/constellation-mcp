@@ -46,7 +46,7 @@ docker run -d \
 cp packages/relay/.env.example packages/relay/.env
 ```
 
-The example file is pre-configured for local development (`AUTH_MODE=local`, `RELAY_URL=http://localhost:3000`, `DATABASE_URL` pointing to the Docker container above). No edits are needed to get started.
+The example file is pre-configured for local development (`RELAY_URL=http://localhost:3000`, `DATABASE_URL` pointing to the Docker container above). It sets `ASTERISM_ISSUER=http://localhost:4000`, which assumes a local [asterism](https://github.com/Mahasamuha/asterism-proxy) instance with the relay registered as a resource server; change it if yours runs elsewhere. The relay will not start without a reachable-format `ASTERISM_ISSUER`.
 
 ### 3. Apply migrations
 
@@ -77,7 +77,7 @@ For readable logs, pipe through `pino-pretty`:
 node packages/relay/dist/index.js | npx pino-pretty
 ```
 
-Restart the process in Terminal 2 after the compiler finishes rebuilding. The relay will be available at `http://localhost:3000`. On first visit the setup wizard will prompt you to create an account.
+Restart the process in Terminal 2 after the compiler finishes rebuilding. The relay will be available at `http://localhost:3000`. `GET /` returns a small status document. Sign-in and accounts are handled by asterism, so there is no setup step.
 
 ---
 
@@ -215,6 +215,6 @@ Tests live alongside source files as `*.test.ts`. Vitest discovers them automati
 - **One concern per PR.** A bug fix and a refactor touching the same file belong in separate PRs.
 - **Tests for new behaviour.** If you're adding a code path that can be unit tested, add the test. The existing test files in each package show the pattern.
 - **Pass CI before requesting review.** All of `npm test`, `npm run lint`, and a successful relay compile are required.
-- **PR title:** imperative mood, lowercase, under 72 characters. Examples: `fix path traversal check for symlinked directories`, `add relay users CLI commands`.
+- **PR title:** imperative mood, lowercase, under 72 characters. Examples: `fix path traversal check for symlinked directories`, `add relay filters CLI commands`.
 - **PR description:** explain *why*, not *what*. The diff shows what changed; the description should explain the motivation, any trade-offs considered, and how to test it manually if the change is not covered by automated tests.
 - **Keep `main` releasable.** Don't merge work-in-progress. If a feature needs multiple PRs, use a feature branch as the base and merge to `main` only when complete.

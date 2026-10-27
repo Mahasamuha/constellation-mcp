@@ -7,6 +7,7 @@ import { dispatchRpc, getConnection, type RpcEnvelope, type RpcError } from "./h
 import { logEvent } from "./activity.js";
 import { createLogger, evaluatePermissionBlob, type PermissionBlob } from "@constellation/shared";
 import { config } from "./config.js";
+import type { RequestUser } from "./request-user.js";
 
 const log = createLogger("router");
 
@@ -123,11 +124,11 @@ export function checkToolRateLimit(userId: string, tool: string, params: Record<
  * Returns a RouterError if the share or host isn't found.
  */
 export async function resolveShare(
-  userId: string,
+  user: RequestUser,
   share: string,
-  host?: string,
-  userOidcSub?: string | null
+  host?: string
 ): Promise<RouteResult | RouterError> {
+  const userId = user.id;
   // Personal shares (user-scoped)
   const where = host
     ? { userId, share, executor: { host } }
@@ -148,7 +149,7 @@ export async function resolveShare(
   }
 
   // Hub shares — optimistic relay-side permission check using synced config
-  const hubResult = await resolveHubShare(share, host, userOidcSub);
+  const hubResult = await resolveHubShare(user, share, host);
   if (hubResult) return hubResult;
 
   // Give a specific error if the host exists but the share doesn't.
@@ -174,9 +175,9 @@ export async function resolveShare(
  * This is optimistic: actual enforcement happens at the hub.
  */
 async function resolveHubShare(
+  user: RequestUser,
   share: string,
-  host?: string,
-  userOidcSub?: string | null
+  host?: string
 ): Promise<RouteResult | RouterError | null> {
   const hubShares = await prisma.hubShare.findMany({
     where: {
@@ -186,8 +187,9 @@ async function resolveHubShare(
     include: { executor: { select: { id: true, host: true, lastHeartbeatAt: true } } },
   });
 
+  const subject = { sub: user.id, groups: user.groups };
   const accessible = hubShares.filter(
-    (hs) => evaluatePermissionBlob(hs.permissionBlob as unknown as PermissionBlob, userOidcSub) !== "none"
+    (hs) => evaluatePermissionBlob(hs.permissionBlob as unknown as PermissionBlob, subject) !== "none"
   );
 
   if (accessible.length === 0) return null;
@@ -286,18 +288,17 @@ export function pruneRateLimits(): void {
 }
 
 export async function routeToolCall(
-  userId: string,
+  user: RequestUser,
   tool: string,
   share: string,
   params: ToolParams,
-  host?: string,
-  userOidcSub?: string | null,
-  userClaims?: Record<string, unknown>
+  host?: string
 ): Promise<DispatchResult | RouterError> {
+  const userId = user.id;
   const startTime = Date.now();
   const requestId = randomBytes(16).toString("hex");
 
-  const resolved = await resolveShare(userId, share, host, userOidcSub);
+  const resolved = await resolveShare(user, share, host);
   if ("code" in resolved) return resolved;
 
   const { executorId, absoluteRoot, host: executorHost, lastHeartbeatAt } = resolved;
@@ -308,7 +309,7 @@ export async function routeToolCall(
   let effectiveParams = params;
   const dstShareParam = typeof params["dst_share"] === "string" ? params["dst_share"] : undefined;
   if ((tool === "copy" || tool === "move") && dstShareParam !== undefined) {
-    const dstResolved = await resolveShare(userId, dstShareParam, executorHost, userOidcSub);
+    const dstResolved = await resolveShare(user, dstShareParam, executorHost);
     if ("code" in dstResolved) return dstResolved;
     if (dstResolved.executorId !== executorId) {
       return {
@@ -357,7 +358,7 @@ export async function routeToolCall(
   const timeoutMs = config.rpcTimeoutMs;
 
   const { forwardedClaims } = config;
-  const allClaims = userClaims ?? {};
+  const allClaims = user.claims;
   const filteredClaims = forwardedClaims.length > 0
     ? Object.fromEntries(Object.entries(allClaims).filter(([k]) => forwardedClaims.includes(k)))
     : allClaims;
@@ -367,7 +368,10 @@ export async function routeToolCall(
     tool,
     share,
     absolute_root: absoluteRoot,
-    user_oidc_sub: userOidcSub ?? null,
+    user_sub: user.id,
+    // Always sent and never filtered by forwardedClaims: a group override can restrict
+    // access as well as grant it, so the hub needs the full list to evaluate correctly.
+    user_groups: [...user.groups],
     user_claims: filteredClaims,
     params: effectiveParams,
   };

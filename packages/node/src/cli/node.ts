@@ -1,6 +1,7 @@
 import { Command } from "commander";
 import { execFileSync } from "node:child_process";
 import { realpathSync, statSync } from "node:fs";
+import { hostname } from "node:os";
 import WebSocket from "ws";
 import open from "open";
 import {
@@ -18,10 +19,15 @@ import {
 } from "../config.js";
 import {
   MAX_SHARE_INSTRUCTIONS_LENGTH,
-  poll,
+  AsterismError,
+  clientIdFor,
   confirm,
   assertSecureRelayUrl,
-  isSameOrigin,
+  discoverAsterism,
+  pollDeviceToken,
+  requestDeviceAuthorization,
+  resourceFor,
+  verificationUrlToOpen,
   requestRotateViaControlChannel,
   requestConfigUpdateViaControlChannel,
   requestUpdateHostViaControlChannel,
@@ -54,7 +60,8 @@ export function registerNodeCommands(program: Command): void {
     .command("init")
     .description("Authenticate and register this machine with a relay")
     .option("--relay <url>", "Relay URL")
-    .action(async (opts: { relay?: string }) => {
+    .option("--host-name <name>", "Host name for this machine (default: the name from a previous registration, else the machine's hostname)")
+    .action(async (opts: { relay?: string; hostName?: string }) => {
       const relayUrl = opts.relay ?? process.env["RELAY_URL"];
       if (!relayUrl) {
         console.error("Error: --relay <url> is required");
@@ -62,44 +69,40 @@ export function registerNodeCommands(program: Command): void {
       }
 
       try {
-        assertSecureRelayUrl(relayUrl.replace(/^http/, "ws"));
+        assertRelayUrl(relayUrl);
       } catch (err) {
         console.error("Error:", (err as Error).message);
         process.exit(1);
       }
 
-      // Pass existing host (if already configured) so the consent page can pre-fill it.
-      const existingHost = (() => {
-        try { return loadNodeConfig(getConfigDir()).host; } catch { return undefined; }
-      })();
-
-      const dcResult = await requestDeviceCode(relayUrl, existingHost);
-      if (!dcResult.ok) {
-        console.error("Failed to start device flow:", dcResult.error);
+      const host = resolveHost(getConfigDir(), opts.hostName);
+      if (!host.ok) {
+        console.error("Error:", host.error);
         process.exit(1);
       }
-      const dc = dcResult.data;
+
+      const started = await requestDeviceCode(relayUrl);
+      if (!started.ok) {
+        console.error("Failed to start sign-in:", started.error);
+        process.exit(1);
+      }
+      const { dc, openUrl } = started;
 
       console.log(`\nOpen the following URL to authenticate (opening browser automatically):`);
       console.log(`  ${dc.verification_uri_complete}\n`);
       console.log(`If the browser did not open, enter this code: ${dc.user_code}\n`);
 
-      if (isSameOrigin(relayUrl, dc.verification_uri_complete)) {
-        try { await open(dc.verification_uri_complete); } catch { /* ignore */ }
+      if (openUrl) {
+        try { await open(openUrl); } catch { /* ignore */ }
       }
 
-      const outcome = await pollDeviceToken(relayUrl, dc.device_code, dc.interval * 1000, dc.expires_in * 1000);
-
-      if (outcome === null) {
+      const outcome = await completeRegistration(relayUrl, dc, host.host);
+      if (outcome.kind === "timeout") {
         console.error("Timed out waiting for authentication.");
         process.exit(1);
       }
-      if (outcome.kind === "denied") {
-        console.error("\nAccess denied.");
-        process.exit(1);
-      }
       if (outcome.kind === "error") {
-        console.error("\nDevice flow error:", outcome.message);
+        console.error(`\n${outcome.message}`);
         process.exit(1);
       }
 
@@ -123,49 +126,54 @@ export function registerNodeCommands(program: Command): void {
 
   auth
     .command("device-code")
-    .description("Request a device code from the relay")
+    .description("Request a device code from the relay's authorization server")
     .requiredOption("--relay <url>", "Relay URL")
-    .action(async (opts: { relay: string }) => {
+    .option("--host-name <name>", "Host name for this machine (validated here, passed again to 'node auth complete')")
+    .action(async (opts: { relay: string; hostName?: string }) => {
       try {
-        assertSecureRelayUrl(opts.relay.replace(/^http/, "ws"));
+        assertRelayUrl(opts.relay);
       } catch (err) {
         console.log(JSON.stringify({ ok: false, error: (err as Error).message }));
         return;
       }
-      const existingHost = (() => {
-        try { return loadNodeConfig(getConfigDir()).host; } catch { return undefined; }
-      })();
-      console.log(JSON.stringify(await requestDeviceCode(opts.relay, existingHost)));
+      const host = resolveHost(getConfigDir(), opts.hostName);
+      if (!host.ok) {
+        console.log(JSON.stringify({ ok: false, error: host.error }));
+        return;
+      }
+      const started = await requestDeviceCode(opts.relay);
+      console.log(JSON.stringify(started.ok ? { ok: true, data: started.dc } : started));
     });
 
   auth
     .command("complete")
-    .description("Poll for device-code completion and persist the result")
+    .description("Poll for device-code completion, register the node, and persist the result")
     .requiredOption("--relay <url>", "Relay URL")
     .requiredOption("--device-code <code>", "Device code from 'node auth device-code'")
     .requiredOption("--interval <seconds>", "Poll interval in seconds")
     .requiredOption("--expires-in <seconds>", "Device code expiry in seconds")
-    .action(async (opts: { relay: string; deviceCode: string; interval: string; expiresIn: string }) => {
+    .option("--host-name <name>", "Host name for this machine (same default as 'node init')")
+    .action(async (opts: { relay: string; deviceCode: string; interval: string; expiresIn: string; hostName?: string }) => {
       try {
-        assertSecureRelayUrl(opts.relay.replace(/^http/, "ws"));
+        assertRelayUrl(opts.relay);
       } catch (err) {
         console.log(JSON.stringify({ status: "error", message: (err as Error).message }));
         return;
       }
-
-      const outcome = await pollDeviceToken(
-        opts.relay,
-        opts.deviceCode,
-        parseInt(opts.interval, 10) * 1000,
-        parseInt(opts.expiresIn, 10) * 1000
-      );
-
-      if (outcome === null) {
-        console.log(JSON.stringify({ status: "timeout" }));
+      const host = resolveHost(getConfigDir(), opts.hostName);
+      if (!host.ok) {
+        console.log(JSON.stringify({ status: "error", message: host.error }));
         return;
       }
-      if (outcome.kind === "denied") {
-        console.log(JSON.stringify({ status: "error", message: "Access denied." }));
+
+      const outcome = await completeRegistration(
+        opts.relay,
+        { device_code: opts.deviceCode, interval: parseInt(opts.interval, 10), expires_in: parseInt(opts.expiresIn, 10) },
+        host.host
+      );
+
+      if (outcome.kind === "timeout") {
+        console.log(JSON.stringify({ status: "timeout" }));
         return;
       }
       if (outcome.kind === "error") {
@@ -525,9 +533,35 @@ async function syncPaths(dir: string, candidatePaths?: PathEntry[]): Promise<voi
 // ---------------------------------------------------------------------------
 // Device-code flow — shared by `node init` (human terminal output) and the
 // `node auth` subcommands (JSON output, used by node-gui as a subprocess) so
-// there's exactly one implementation of the relay device-code client and one
+// there's exactly one implementation of the sign-in client and one
 // implementation of "persist a registration to disk."
+//
+// Registration is two steps: sign in to the relay's authorization server (asterism)
+// with scope `relay` and the node client, then present that access token to
+// POST /api/executors/register, which mints the long-lived node token. The access
+// token is used once and thrown away; it is never written to disk.
 // ---------------------------------------------------------------------------
+
+/** Refuses a plaintext relay URL for a non-localhost host (the same rule covers the HTTP calls
+ * here and the WebSocket the node opens later). */
+function assertRelayUrl(relayUrl: string): void {
+  assertSecureRelayUrl(relayUrl.replace(/^http/, "ws"));
+}
+
+type HostResult = { ok: true; host: string } | { ok: false; error: string };
+
+/** The host name to register: the flag, else the name from an earlier registration, else this
+ * machine's hostname. The relay accepts 1-63 characters. */
+function resolveHost(dir: string, flag: string | undefined): HostResult {
+  const existing = (() => {
+    try { return loadNodeConfig(dir).host; } catch { return undefined; }
+  })();
+  const host = (flag ?? existing ?? hostname()).trim();
+  if (!host || host.length > 63) {
+    return { ok: false, error: "host name must be 1-63 characters (pass --host-name)" };
+  }
+  return { ok: true, host };
+}
 
 interface DeviceCodeInfo {
   device_code: string;
@@ -539,59 +573,61 @@ interface DeviceCodeInfo {
 }
 
 type DeviceCodeResult =
-  | { ok: true; data: DeviceCodeInfo }
+  | { ok: true; dc: DeviceCodeInfo; openUrl: string | null }
   | { ok: false; error: string };
 
-async function requestDeviceCode(relayUrl: string, existingHost?: string): Promise<DeviceCodeResult> {
-  const dcParams: Record<string, string> = { scope: "agent:register" };
-  if (existingHost) dcParams["host"] = existingHost;
-
-  const dcRes = await fetch(`${relayUrl}/oauth/device/code`, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams(dcParams),
-  });
-  if (!dcRes.ok) return { ok: false, error: await dcRes.text() };
-  return { ok: true, data: await dcRes.json() as DeviceCodeInfo };
+async function requestDeviceCode(relayUrl: string): Promise<DeviceCodeResult> {
+  try {
+    const endpoints = await discoverAsterism(relayUrl);
+    const dc = await requestDeviceAuthorization(endpoints, {
+      clientId: clientIdFor(relayUrl, "node"),
+      scope: "relay",
+      resource: resourceFor(relayUrl),
+    });
+    return { ok: true, dc, openUrl: verificationUrlToOpen(endpoints, dc) };
+  } catch (err) {
+    return { ok: false, error: (err as Error).message };
+  }
 }
 
-type DeviceTokenOutcome =
-  | { kind: "denied" }
+type RegistrationOutcome =
+  | { kind: "timeout" }
   | { kind: "error"; message: string }
   | { kind: "success"; access_token: string; host: string };
 
-/** Polls until the device code is approved/denied/errors, or returns null on timeout. */
-async function pollDeviceToken(
+/** Waits for the user to approve the device code, then registers the node with the relay. */
+async function completeRegistration(
   relayUrl: string,
-  deviceCode: string,
-  intervalMs: number,
-  timeoutMs: number
-): Promise<DeviceTokenOutcome | null> {
-  return poll<DeviceTokenOutcome>(
-    async ({ intervalMs: currentIntervalMs, setIntervalMs }) => {
-      const r = await fetch(`${relayUrl}/oauth/token`, {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({
-          grant_type: "urn:ietf:params:oauth:grant-type:device_code",
-          device_code: deviceCode,
-        }),
-      });
-      if (r.status === 400) {
-        const body = await r.json() as { error: string };
-        if (body.error === "authorization_pending") return null;
-        if (body.error === "slow_down") { setIntervalMs(currentIntervalMs + 5000); return null; }
-        if (body.error === "rate_limit_exceeded") return null;
-        if (body.error === "access_denied") return { kind: "denied" };
-        return { kind: "error", message: body.error };
-      }
-      if (!r.ok) return null;
-      const data = await r.json() as { access_token: string; host: string };
-      return { kind: "success", access_token: data.access_token, host: data.host };
-    },
-    intervalMs,
-    timeoutMs
-  );
+  dc: { device_code: string; interval: number; expires_in: number },
+  host: string
+): Promise<RegistrationOutcome> {
+  let accessToken: string;
+  try {
+    const endpoints = await discoverAsterism(relayUrl);
+    ({ access_token: accessToken } = await pollDeviceToken(endpoints, dc, {
+      clientId: clientIdFor(relayUrl, "node"),
+      resource: resourceFor(relayUrl),
+    }));
+  } catch (err) {
+    if (err instanceof AsterismError && err.code === "expired_token") return { kind: "timeout" };
+    return { kind: "error", message: err instanceof AsterismError && err.code === "access_denied" ? "Access denied." : (err as Error).message };
+  }
+
+  try {
+    const res = await fetch(`${relayUrl}/api/executors/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
+      body: JSON.stringify({ type: "node", host }),
+    });
+    const body = await res.json().catch(() => ({})) as { access_token?: string; host?: string; error?: string; error_description?: string };
+    if (!res.ok || !body.access_token || !body.host) {
+      const reason = body.error_description ?? body.error ?? `status ${res.status}`;
+      return { kind: "error", message: `The relay refused the registration: ${reason}` };
+    }
+    return { kind: "success", access_token: body.access_token, host: body.host };
+  } catch (err) {
+    return { kind: "error", message: `Could not reach the relay to register: ${(err as Error).message}` };
+  }
 }
 
 function persistNodeRegistration(dir: string, relayUrl: string, accessToken: string, host: string): void {

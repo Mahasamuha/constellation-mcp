@@ -1,20 +1,16 @@
 import { createServer } from "node:http";
 import { app } from "./app.js";
 import { attachHub, closeHub, pruneReconnectTimestamps, pruneExpiredOrphanedTokens } from "./hub.js";
-import { pruneDeviceCodes } from "./device.js";
-import { pruneAuthCodes } from "./oauth.js";
-import { pruneUnactivatedDynamicClients, pruneUnactivatedMetadataDocumentClients } from "./oauth-clients.js";
 import { pruneRateLimits } from "./router.js";
-import { pruneLoginFailures } from "./local-auth.js";
 import { initActivitySinks, pruneActivityLog } from "./activity.js";
 import { prisma } from "./db.js";
 import { createLogger } from "@constellation/shared";
-import { assertDynamicClientTtl, assertRelayUrlIsOrigin, config } from "./config.js";
+import { assertAsterismConfig, assertRelayUrlIsOrigin, config } from "./config.js";
 
 const log = createLogger("relay");
 
 assertRelayUrlIsOrigin();
-assertDynamicClientTtl();
+assertAsterismConfig();
 
 const port = config.port;
 const server = createServer(app);
@@ -26,14 +22,9 @@ pruneExpiredOrphanedTokens().catch((err) => log.warn({ err }, "pruneExpiredOrpha
 
 // Prune all TTL stores every 5 minutes.
 setInterval(() => {
-  pruneDeviceCodes().catch((err) => log.warn({ err }, "pruneDeviceCodes failed"));
-  pruneAuthCodes().catch((err) => log.warn({ err }, "pruneAuthCodes failed"));
-  pruneUnactivatedDynamicClients().catch((err) => log.warn({ err }, "pruneUnactivatedDynamicClients failed"));
-  pruneUnactivatedMetadataDocumentClients().catch((err) => log.warn({ err }, "pruneUnactivatedMetadataDocumentClients failed"));
   pruneExpiredOrphanedTokens().catch((err) => log.warn({ err }, "pruneExpiredOrphanedTokens failed"));
   pruneRateLimits();
   pruneReconnectTimestamps();
-  pruneLoginFailures().catch((err) => log.warn({ err }, "pruneLoginFailures failed"));
   pruneActivityLog().catch((err) => log.warn({ err }, "pruneActivityLog failed"));
 }, 5 * 60 * 1000).unref();
 

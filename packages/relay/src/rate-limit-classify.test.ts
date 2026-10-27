@@ -6,26 +6,18 @@ describe("classifyHttpRoute", () => {
     expect(classifyHttpRoute("/mcp")).toBe("exempt");
   });
 
-  it("routes plain oauth endpoints to the oauth bucket", () => {
-    for (const path of ["/oauth/register", "/oauth/device/code", "/setup", "/auth/login", "/oauth/authorize/consent"]) {
-      expect(classifyHttpRoute(path)).toBe("oauth");
+  it("routes discovery metadata and client metadata documents to the static bucket", () => {
+    for (const path of ["/.well-known/oauth-protected-resource/mcp", "/clients/cli.json", "/clients/node.json", "/clients/hub.json"]) {
+      expect(classifyHttpRoute(path)).toBe("static");
     }
   });
 
-  it("splits /oauth/token by grant_type — device-code polling gets its own bucket", () => {
-    expect(classifyHttpRoute("/oauth/token", "urn:ietf:params:oauth:grant-type:device_code")).toBe("device-poll");
-    expect(classifyHttpRoute("/oauth/token", "authorization_code")).toBe("oauth");
-    expect(classifyHttpRoute("/oauth/token", undefined)).toBe("oauth");
-  });
-
-  it("routes every /activate* path to the device-auth bucket", () => {
-    for (const path of ["/activate", "/activate/login", "/activate/callback", "/activate/confirm"]) {
-      expect(classifyHttpRoute(path)).toBe("device-auth");
-    }
+  it("keeps the authenticated executor registration on the strict default", () => {
+    expect(classifyHttpRoute("/api/executors/register")).toBe("default");
   });
 
   it("falls through to the strict default bucket for anything not explicitly classified", () => {
-    for (const path of ["/api/executors", "/api/admin/users/x/promote", "/some/future/route", "/"]) {
+    for (const path of ["/api/executors", "/clients/", "/clients/a/b.json", "/oauth/token", "/some/future/route", "/"]) {
       expect(classifyHttpRoute(path)).toBe("default");
     }
   });

@@ -36,13 +36,13 @@ On a client that supports the [MCP Apps extension](docs/relay.md#mcp-apps) to th
 # Standard deployment (relay + Postgres, port 3000 exposed — add a reverse proxy for TLS)
 cd docker/standard
 cp .env.example .env
-# Edit .env — set RELAY_URL, AUTH_MODE, and any auth variables
+# Edit .env — set RELAY_URL and ASTERISM_ISSUER
 docker compose up -d
 ```
 
 Alternatively, use [`docker/cloudflare-tunnel/`](docker/cloudflare-tunnel/) for a no-open-ports setup via Cloudflare Tunnel, or deploy to Railway — see [Quick Start](#quick-start) below.
 
-On first visit the relay runs a setup wizard to create your admin account. Migrations apply automatically on every start.
+Register the relay in [asterism](docs/adr/0022-asterism-authorization-server.md) as a resource server; asterism handles sign-in and accounts. Migrations apply automatically on every start.
 
 ### Client (node)
 
@@ -58,22 +58,22 @@ A system tray GUI is also available for desktop machines — see [GitHub Release
 
 ## Quick Start
 
-The fastest path is Railway: deploy a relay with one click, install the node binary on your machines, and add the relay URL to your MCP client. No DNS, no reverse proxy, no OIDC provider.
+The fastest path is Railway: deploy a relay with one click, install the node binary on your machines, and add the relay URL to your MCP client. No DNS and no reverse proxy; you need an asterism instance for sign-in.
 
 ```bash
 # 1. Deploy relay to Railway
 #    - Create a new Empty Project at railway.com
 #    - Add this repo as a GitHub service and add a PostgreSQL database
 #    - Set these variables in the relay service:
-#        AUTH_MODE=local
+#        ASTERISM_ISSUER=https://<your-asterism>
 #        TRUST_PROXY_PRESET=railway
 #        DATABASE_URL=${{Postgres.DATABASE_URL}}
 #        RELAY_URL=https://<your-app>.up.railway.app
 #    - Generate a public domain under Settings → Networking
 #    - Deploy — railway.toml is detected automatically
 
-# 2. Visit the relay URL and complete the setup wizard to create your admin account
-#    https://<your-app>.up.railway.app
+# 2. In asterism, register the relay as a resource server and add admins to the
+#    constellation-admins group
 
 # 3. Initialize the node on each machine you want to expose
 constellation node init --relay https://<your-app>.up.railway.app
@@ -99,13 +99,10 @@ Running self-hosted in production? See [docs/operations.md](docs/operations.md) 
 | Variable | Description | Default |
 |---|---|---|
 | `RELAY_URL` | Public base URL of the relay, no trailing slash | — |
-| `AUTH_MODE` | `local` (built-in username/password) or `oidc` (external provider) | `local` |
+| `ASTERISM_ISSUER` | Issuer URL of the asterism authorization server (`https:`) | — |
 | `DATABASE_URL` | PostgreSQL connection string | — |
 | `TRUST_PROXY` | Trusted reverse proxy IPs/CIDRs (e.g. `127.0.0.1`) | — |
 | `TRUST_PROXY_PRESET` | Shorthand: `railway`, `fly`, or `cloudflare-tunnel` (overrides `TRUST_PROXY`) | — |
-| `OIDC_ISSUER` | OIDC provider issuer URL — required when `AUTH_MODE=oidc` | — |
-| `OIDC_CLIENT_ID` | OIDC client ID — required when `AUTH_MODE=oidc` | — |
-| `OIDC_CLIENT_SECRET` | OIDC client secret — required when `AUTH_MODE=oidc` | — |
 | `PORT` | TCP port the HTTP server binds to | `3000` |
 | `RPC_TIMEOUT_MS` | Max wait for a node to respond to a tool call | `30000` |
 

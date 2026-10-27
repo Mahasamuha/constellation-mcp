@@ -29,12 +29,12 @@
 ```mermaid
 flowchart TD
     Client["MCP client\n(Claude, ChatGPT, Cursor)"]
-    Relay["Relay · VPS / Railway / Fly\nMCP server · OAuth AS · WebSocket hub · request router"]
-    Postgres[("Postgres\nexecutor registry · OAuth sessions · path shares · filters")]
+    Relay["Relay · VPS / Railway / Fly\nMCP server · OAuth resource server · WebSocket hub · request router"]
+    Postgres[("Postgres\nexecutor registry · path shares · filters")]
     Node["Node · your machine\noutbound WebSocket only — no inbound ports\nlocal filesystem ops · path enforcement"]
     Hub["Hub · shared machine (NAS, dev server)\noutbound WebSocket only · admin-defined shares\nper-OS-user subnode dispatch"]
 
-    Client -->|"HTTPS + OAuth 2.0 Bearer"| Relay
+    Client -->|"HTTPS + OAuth 2.0 Bearer\n(issued by asterism)"| Relay
     Relay --- Postgres
     Relay -->|"wss://&lt;relay&gt;/executor/connect · Bearer &lt;node-token&gt;"| Node
     Relay -->|"wss://&lt;relay&gt;/executor/connect · Bearer &lt;hub-token&gt;"| Hub
@@ -42,10 +42,10 @@ flowchart TD
 
 | Component | Runs where | Responsibility |
 |---|---|---|
-| Relay | VPS, Railway, or Fly | MCP server, OAuth authorization server, WebSocket hub, request routing, liveness tracking |
+| Relay | VPS, Railway, or Fly | MCP server, OAuth resource server (verifies asterism tokens), WebSocket hub, request routing, liveness tracking |
 | Node | Any machine, under the user's own identity | WebSocket client, filesystem operations, path enforcement |
 | Hub | A machine shared by multiple users, under a dedicated service identity | WebSocket client, OS-identity resolution, per-user subnode dispatch, admin-defined share permissions |
-| Postgres | Sidecar to relay | Executor registry, OAuth sessions, path shares, path filters |
+| Postgres | Sidecar to relay | Executor registry, path shares, path filters |
 
 **Stack:** TypeScript throughout. Relay on Node.js; node distributed as a standalone `constellation` binary. Prisma for database access and migrations. Pino for structured logging.
 
@@ -57,17 +57,11 @@ The relay has three layers that operate in sequence on every MCP tool call.
 
 ### OAuth layer
 
-The relay acts as an OAuth 2.0 authorization server to MCP clients, and as an OIDC client to an upstream identity provider (Google, Azure AD, Authentik, or any OIDC-compliant provider).
+The relay is an OAuth 2.0 resource server. [asterism](adr/0022-asterism-authorization-server.md), an external OAuth 2.1 authorization server, owns sign-in, local accounts, groups, consent, grants and revocation, and issues JWT access tokens. The relay verifies each token (signature, issuer `ASTERISM_ISSUER`, expiry, audience `<RELAY_URL>/mcp`) with `@mahasamuha/asterism-verify`. It stores no sessions and no OAuth tokens, and creates a `users` row the first time it sees a token's `sub`.
 
-MCP clients authenticate via the **Authorization Code flow** (with mandatory PKCE). Clients register either with a Client ID Metadata Document URL as their `client_id` (preferred) or by Dynamic Client Registration (RFC 7591), public clients only — Claude, ChatGPT, and Cursor attempt DCR automatically on first connection. See [ADR 0020](adr/0020-rfc9728-discovery-public-only-dcr.md) and [ADR 0021](adr/0021-client-id-metadata-documents.md).
+The relay advertises itself with RFC 9728 protected resource metadata, which names asterism as the authorization server and declares two scopes: `relay` (use the tools and your own resources) and `admin` (step-up only). Admin means the token holds the `admin` scope, which asterism issues only to the `constellation-admins` group. The node, relay CLI and hub identify themselves to asterism with Client ID Metadata Documents the relay serves at `/clients/*.json`.
 
-The node CLI and relay CLI authenticate via the **Device Code flow** (RFC 8628). Scope determines which flow is served:
-- `agent:register` — creates a node registration and returns a node token
-- `relay:manage` — issues a management API session for `constellation relay` commands
-- `agent:escalate` — elevates the requester's existing session to admin-level access for `ADMIN_SESSION_DURATION` (`constellation relay elevate`); requires the *approving* user to already hold the admin role
-- `agent:register:shared` — creates a shared (non-user-bound) executor token for `constellation hub register`; requires admin approval
-
-Tokens are 32-byte cryptographically random values stored as SHA-256 hashes. They are never logged in plaintext.
+Nodes and hubs register with `POST /api/executors/register`, authenticated by an access token (a hub needs `admin`). The relay mints a long-lived executor token for the WebSocket connection: a 32-byte cryptographically random value stored as a SHA-256 hash and never logged in plaintext.
 
 ### WebSocket hub
 
@@ -96,17 +90,13 @@ If the executor disconnects while an RPC is in flight, the relay immediately rej
 ### Data model
 
 ```
-users            id, oidc_sub, email, deactivated_at
+users            id, created_at
 executor_tokens  id, user_id, token_hash, last_used_at, revoked_at
 executors        id, user_id, executor_token_id, host, last_heartbeat_at
 path_shares      id, user_id, executor_id, share, reported_path  [UNIQUE (user_id, share)]
 hub_shares       id, executor_id, share, reported_path, permission_blob  [UNIQUE (executor_id, share)] — admin-defined, synced from a hub's config
 relay_path_filters   id, user_id, scope_executor_id, pattern, pattern_type
-oauth_clients    id, client_secret_hash, redirect_uris, grant_types, is_dynamic, is_metadata_document, client_name, metadata_expires_at
-oauth_sessions   id, user_id, mcp_client_id, access_token_hash, expires_at, refresh_token_hash
-```
-
-`deactivated_at` on `users` is nullable — when set, all requests and executor connections for that user are rejected immediately; config and registrations are preserved but inert. `revoked_at` on `executor_tokens` is nullable; `IS NOT NULL` is the revocation check.
+`users` holds only the id (the asterism `sub`) and its relations; identity attributes come from the access token. `revoked_at` on `executor_tokens` is nullable; `IS NOT NULL` is the revocation check.
 
 ---
 
@@ -150,7 +140,7 @@ The node has a 5-minute window to reconnect. If it does not, the new token is re
 %APPDATA%\constellation\      (Windows)
   node.yaml        — relay URL, node token, host name, max_file_size_kb
   paths.yaml       — path share definitions
-  relay-session.yaml  — relay CLI OAuth session (written by constellation relay login)
+  relay-session.yaml  — relay CLI session (written by constellation relay login)
 ```
 
 Config files are read at startup. The node does not watch them for changes. `constellation node sync` sends a fresh `config_update` mid-session after a manual edit. `node paths add` and `node paths remove` modify `paths.yaml` and sync immediately.
@@ -168,9 +158,9 @@ A hub is the deployment mode for a machine shared by multiple users — a NAS, a
 | Token type | Bound to one user (`ExecutorTokenType.NODE`) | Service-level (`ExecutorTokenType.HUB`), not bound to any user |
 | Executing a request | Always runs as the connected user | Resolves the requesting user's OS account, then dispatches to a per-user **subnode** worker process running under that identity |
 
-Because the hub's token isn't tied to a single user, the relay forwards the caller's OIDC identity (`user_oidc_sub`, `user_claims`) in the RPC envelope so the hub can resolve who's actually asking. The hub maps that identity to a local OS username via a priority chain (custom OIDC claim → explicit `oidc_sub` → username map → opt-in `preferred_username`), then forks or reuses a worker that has `setuid()`'d to that user before touching the filesystem — so OS file permissions, not the hub process's own privilege, are what ultimately gate access within a share.
+Because the hub's token isn't tied to a single user, the relay forwards the caller's identity (`user_sub`, `user_groups`, `user_claims`) in the RPC envelope so the hub can resolve who's actually asking. The hub maps that identity to a local OS username via a priority chain (custom claim → explicit `sub` → username map → opt-in `preferred_username`), then forks or reuses a worker that has `setuid()`'d to that user before touching the filesystem — so OS file permissions, not the hub process's own privilege, are what ultimately gate access within a share.
 
-Permission evaluation happens twice: optimistically at the relay (the synced `hub_shares.permission_blob`, same `default` + per-`oidc_sub` `overrides` shape used for node shares) and authoritatively at the hub (full identity resolution against the admin config). The hub's decision always wins — the relay's check exists only to avoid an unnecessary round-trip for requests that are obviously going to be rejected.
+Permission evaluation happens twice: optimistically at the relay (the synced `hub_shares.permission_blob`, same `default` + per-`sub` or per-`group` `overrides` shape used for node shares) and authoritatively at the hub (full identity resolution against the admin config). The hub's decision always wins — the relay's check exists only to avoid an unnecessary round-trip for requests that are obviously going to be rejected.
 
 Full deployment, identity-resolution, UID/GID security model, and config reference: [docs/hub.md](hub.md). Hub-specific design decisions are in `docs/adr/0009-hub-nullable-user-id.md`, `0010-hub-three-tier-identity.md`, and `0013-hub-restart-only-config.md`.
 
@@ -178,20 +168,17 @@ Full deployment, identity-resolution, UID/GID security model, and config referen
 
 ## MCP Connection
 
-The relay exposes two standard discovery documents: protected resource metadata (RFC 9728) at `/.well-known/oauth-protected-resource/mcp` (plus the root `/.well-known/oauth-protected-resource`, kept for older clients) and `/.well-known/oauth-authorization-server` (RFC 8414). MCP clients that support OAuth discovery (Claude, ChatGPT, Cursor) find the authorization endpoint automatically when the relay URL is added to their config — no manual OAuth setup is required.
+The relay exposes protected resource metadata (RFC 9728) at `/.well-known/oauth-protected-resource/mcp`. MCP clients that support OAuth discovery (Claude, ChatGPT, Cursor) follow it to asterism automatically when the relay URL is added to their config — no manual OAuth setup is required.
 
 **First connection flow:**
 1. Client calls `POST /mcp` without a token; the relay returns `401` with `WWW-Authenticate: Bearer ... resource_metadata="<relay>/.well-known/oauth-protected-resource/mcp"`
-2. Client fetches the protected resource metadata, which names the relay as its authorization server
-3. Client fetches `/.well-known/oauth-authorization-server`
-4. Client identifies itself either with a Client ID Metadata Document URL as its `client_id` (preferred; the relay fetches and caches the document), or by Dynamic Client Registration (`POST /oauth/register`) as a public client (`token_endpoint_auth_method: "none"`)
-5. Client redirects the user to `/oauth/authorize` (with PKCE)
-6. In OIDC mode the relay shows a consent page naming the client and the redirect host; on approval it redirects to the upstream OIDC provider, where the user authenticates. In local-auth mode it renders its login page directly, with the same client disclosure
-7. Relay exchanges the OIDC code, upserts a user row, issues its own access + refresh tokens
-8. Client exchanges the auth code for tokens at `POST /oauth/token`
-9. Client calls `POST /mcp` with `Authorization: Bearer <access_token>`
+2. Client fetches the protected resource metadata, which names asterism as the authorization server and lists the `relay` scope
+3. Client discovers asterism's endpoints from its own metadata and identifies itself (a Client ID Metadata Document URL or asterism's registration)
+4. Client sends the user to asterism (with PKCE), where they sign in and approve the connection
+5. Client exchanges the code for tokens at asterism's token endpoint
+6. Client calls `POST /mcp` with `Authorization: Bearer <access_token>`; the relay verifies it and creates the user row if the `sub` is new
 
-Refresh tokens are rotated on use. If a refresh token expires, the client prompts re-authentication. Access tokens default to 24-hour lifetime; refresh tokens default to 30 days — both are configurable via relay environment variables.
+Refreshing tokens and revoking grants happen in asterism. For an admin-gated call the relay answers `403 insufficient_scope`, and the client asks asterism for a token with the `admin` scope.
 
 **Adding the relay to an MCP client:**
 
@@ -229,7 +216,7 @@ This check only covers the path supplied in the RPC — it does not re-run on en
 
 ### Token security
 
-- Executor tokens and OAuth tokens are 32-byte cryptographically random values, encoded as 64-character hex strings
+- Executor tokens are 32-byte cryptographically random values, encoded as 64-character hex strings. OAuth access tokens are issued and signed by asterism and verified by the relay; it stores none
 - Stored in Postgres as SHA-256 hashes; never logged in plaintext
 - Node tokens are long-lived credentials — `node.yaml` and `relay-session.yaml` should be `chmod 600`
 - The node refuses to transmit its token over an unencrypted connection to a non-localhost host
@@ -250,32 +237,15 @@ new is "rate limited too aggressively," never "not rate limited at all."
 |---|---|---|
 | MCP tool calls (standard tools) | 60 req/min per user | `RATE_LIMIT_TOOL_CALLS_PER_MIN` |
 | MCP tool calls (expensive tools — `grep_files`, `find_files`, recursive `list_directory`, **and any unclassified tool**) | 20 req/min per user | `RATE_LIMIT_EXPENSIVE_TOOLS_PER_MIN` |
-| OAuth endpoints (`/oauth/register`, `/oauth/authorize/consent`, `/oauth/device/code`, `/setup`, `/auth/login`, `/oauth/token` for non-device-code grants) | 10 req/15 min per IP | `RATE_LIMIT_OAUTH_PER_15MIN` |
-| Device code polling (`/oauth/token` with `grant_type=device_code`) | 200 req/15 min per IP | `RATE_LIMIT_DEVICE_POLL_PER_15MIN` |
-| Device-authorization consent flow (`/activate*`) | 20 req/15 min per IP | `RATE_LIMIT_DEVICE_AUTH_PER_15MIN` |
-| Any other HTTP route, including `/api/*` and the `/.well-known/*` documents — **and any route added later and not explicitly classified** | 10 req/15 min per IP | `RATE_LIMIT_DEFAULT_PER_15MIN` |
+| Discovery metadata and client metadata documents (`/.well-known/oauth-protected-resource/*`, `/clients/*.json`) | 300 req/15 min per IP | `RATE_LIMIT_STATIC_PER_15MIN` |
+| Any other HTTP route, including `/api/*` and `/api/executors/register` — **and any route added later and not explicitly classified** | 10 req/15 min per IP | `RATE_LIMIT_DEFAULT_PER_15MIN` |
 | Executor WebSocket reconnects | 10 req/min per executor token | `RATE_LIMIT_WS_RECONNECT_PER_MIN` |
 
-**Caveat: the defaults are sized for a single-user relay.** One MCP client authorization spends requests from both 10-per-15-minute buckets. The worst case is a native client (e.g. Claude Code) against an OIDC-mode relay, where every request comes from the same IP:
-
-| Step | Bucket | Requests |
-|---|---|---|
-| `POST /mcp` → 401 | exempt | – |
-| `GET /.well-known/oauth-protected-resource/mcp` | default | 1 |
-| `GET /.well-known/oauth-authorization-server` | default | 1 (2–3 if the client SDK also probes `openid-configuration` or path variants) |
-| `POST /oauth/register` (DCR clients, first time only) | oauth | 0–1 |
-| `GET /oauth/authorize` | default | 1 |
-| `POST /oauth/authorize/consent` (OIDC) or `POST /auth/login` (local, +1 per failed password) | oauth | 1 |
-| `GET /oauth/callback` (OIDC only) | default | 1 |
-| `POST /oauth/token` | oauth | 1 |
-
-That is about 4 default-bucket requests (up to 6 with extra discovery probing) and 2–3 oauth-bucket requests per authorization. Local-auth mode saves one default request because it has no callback. A single IP therefore gets about two full authorizations per 15 minutes, and the third runs out of default-bucket requests. Each later token refresh costs 1 oauth request. `/mcp` traffic itself is exempt and limited per user by the tool-call limiter. CIMD document fetches are outbound and don't count.
-
-Web clients such as claude.ai split these requests across two IPs. Discovery, registration and token requests come from the client vendor's servers; authorize, consent and callback come from the user's browser. Every user of that client shares the vendor's server IPs.
+**Caveat: the defaults are sized for a single-user relay.** The relay no longer handles sign-in, so connecting a client costs it only a discovery request (the static bucket) and later `/api/*` calls (the default bucket). `/mcp` traffic itself is exempt and limited per user by the tool-call limiter. Authorization endpoints are asterism's and are limited there.
 
 **Multi-user deployments belong behind a WAF.** The built-in limiter is in-memory, per-instance, and keyed only on IP. Use it for single-user deployments, prototyping and pilots. A multi-user production deployment should sit behind a WAF or an equivalent dedicated rate-limiting and abuse-protection tool (e.g. a cloud WAF, an API gateway, or a reverse proxy with rate-limiting and bot rules), as a security measure as well as for capacity.
 
-Several users connecting at once from the same office NAT, VPN exit, or hosted MCP client will exhaust the default buckets quickly. Whether you size the WAF's rules or raise `RATE_LIMIT_DEFAULT_PER_15MIN` and `RATE_LIMIT_OAUTH_PER_15MIN` for a pilot, start from the per-authorization costs above. Multiply them by the number of authorizations you expect per IP in 15 minutes, and add headroom for retries and refreshes. The table numbers are estimates: client SDKs differ in how many discovery URLs they probe, so verify against your relay's access logs.
+Several users connecting at once from the same office NAT, VPN exit, or hosted MCP client will exhaust the default buckets quickly. Whether you size the WAF's rules or raise `RATE_LIMIT_DEFAULT_PER_15MIN` for a pilot, start from the number of `/api/*` calls you expect per IP in 15 minutes and add headroom for retries. Client SDKs differ in how many discovery URLs they probe, so verify against your relay's access logs.
 
 Two routes are deliberately exempt from the HTTP-level buckets, not by oversight:
 `/healthz` (an infra liveness check, registered before the rate-limit dispatcher is
@@ -288,4 +258,4 @@ Rate limit state is in-memory — no Redis required. State is lost on relay rest
 
 ### Account deactivation
 
-Setting `deactivated_at` on a user record immediately blocks all MCP requests and node connections for that user. Config, node registrations, and path shares are preserved but inert. Re-activation requires a database-level change; there is no CLI command to re-activate.
+The relay has no account state of its own. Disabling a user or revoking a client's grant is done in asterism, and takes effect when the access token the client holds expires. To cut off a node or hub immediately, revoke its executor token (`DELETE /api/executors/:id/token`), which terminates its connection.

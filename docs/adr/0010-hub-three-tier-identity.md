@@ -1,6 +1,6 @@
 # ADR 0010: Three-Tier OS Identity Resolution for Hub
 
-**Status:** Accepted  
+**Status:** Superseded by [ADR 0023](0023-hub-identity-asterism-sub.md)  
 **Date:** 2026-06-06
 
 ## Context

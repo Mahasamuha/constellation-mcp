@@ -13,6 +13,11 @@
 > ADR's "Subtype approach... the indirection buys little" rejection below. See ADR 0018
 > for the full reasoning; this document is kept as-is for the historical record.
 
+> **Amendment (ADR 0023):** `user_oidc_sub` was replaced by `user_sub: string` and
+> `user_groups: string[]`. Wherever this ADR names `user_oidc_sub`, read those two
+> fields; the decision (the relay's envelope stays separate from the shared one) is
+> unchanged.
+
 ## Context
 
 `RpcEnvelope` is defined independently in two packages:

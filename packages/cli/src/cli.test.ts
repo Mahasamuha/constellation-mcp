@@ -2,13 +2,20 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 declare const __PKG_VERSION__: string;
 import { Command } from "commander";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { registerNodeCommands } from "@constellation/node/cli";
 import { registerRelayCommands, die } from "./cli/relay.js";
 import { registerHubCommands } from "@constellation/hub/cli";
 import { writeRelaySession, relaySessionPath, loadRelaySession } from "@constellation/node/config";
 import { makeTempDir, cleanTempDir } from "./test/fixtures.js";
 
+// Instant polling: the device flow sleeps `interval` seconds before every poll. The mock targets
+// cli-util itself because asterism-client and file-lock import sleep from there.
+vi.mock("../../shared/src/cli-util.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../shared/src/cli-util.js")>();
+  return { ...actual, sleep: async () => {} };
+});
+vi.mock("open", () => ({ default: vi.fn(async () => undefined) }));
 vi.mock("@constellation/shared", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@constellation/shared")>();
   return { ...actual, confirm: vi.fn() };
@@ -123,8 +130,12 @@ describe("relay --help", () => {
   it("lists relay subcommands", async () => {
     const { exitCode, out } = await runCli(["relay", "--help"], dir);
     expect(exitCode).toBe(0);
-    for (const sub of ["login", "logout", "executors", "shares", "filters", "sessions"]) {
+    for (const sub of ["login", "logout", "executors", "shares", "filters", "hub-shares"]) {
       expect(out).toContain(sub);
+    }
+    // Removed with the relay's own accounts and sessions: those live in asterism now.
+    for (const gone of ["sessions", "users", "account", "elevate", "promote"]) {
+      expect(out).not.toContain(gone);
     }
   });
 });
@@ -175,7 +186,6 @@ describe("relay commands without a session", () => {
     { cmd: ["relay", "executors", "list"] },
     { cmd: ["relay", "shares", "list"] },
     { cmd: ["relay", "filters", "list"] },
-    { cmd: ["relay", "sessions", "list"] },
   ])("$cmd exits 1 with 'Not logged in'", async ({ cmd }) => {
     const { exitCode, err } = await runCli(cmd, dir);
     expect(exitCode).toBe(1);
@@ -241,16 +251,26 @@ describe("relay status — valid session", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it("maps an ESCALATION_REQUIRED API error to an admin-privileges message", async () => {
+  it("maps an insufficient_scope API error to an admin-privileges message", async () => {
     vi.stubGlobal("fetch", vi.fn(async () =>
-      new Response(JSON.stringify({ error: "ESCALATION_REQUIRED" }), { status: 403 })
+      new Response(JSON.stringify({ error: "insufficient_scope" }), { status: 403 })
     ));
 
     const { exitCode, err } = await runCli(["relay", "status"], dir);
 
     expect(exitCode).toBe(1);
     expect(err).toContain("requires admin privileges");
-    expect(err).toContain("constellation relay elevate");
+  });
+
+  it("tells the user to sign in again when the relay answers 401", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () =>
+      new Response(JSON.stringify({ error: "invalid_token" }), { status: 401 })
+    ));
+
+    const { exitCode, err } = await runCli(["relay", "status"], dir);
+
+    expect(exitCode).toBe(1);
+    expect(err).toContain("constellation relay login");
   });
 });
 
@@ -265,7 +285,7 @@ describe("die()", () => {
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
 
-    const res = new Response(JSON.stringify({ error: "ESCALATION_REQUIRED" }), { status: 403 });
+    const res = new Response(JSON.stringify({ error: "insufficient_scope" }), { status: 403 });
     await die(res);
 
     expect(errorSpy).toHaveBeenCalled();
@@ -351,54 +371,228 @@ describe("relay executors list — pagination", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// asterism fake: metadata, device flow and token endpoint
+// ---------------------------------------------------------------------------
+
+const RELAY = "https://relay.example.com";
+const ISSUER = "https://auth.example.com";
+
+function jsonRes(status: number, body: unknown): Response {
+  return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+}
+
+interface Backend {
+  /** Every request, in order, with its form body parsed. */
+  calls: Array<{ url: string; form: Record<string, string>; auth: string | null; method: string }>;
+  /** Answers the token endpoint. Default: a device-code success / refresh success. */
+  token: (form: Record<string, string>) => Response;
+  /** Answers GET/POST on relay paths other than metadata. */
+  api: (path: string, init?: RequestInit) => Response;
+}
+
+function stubBackend(overrides: Partial<Pick<Backend, "token" | "api">> = {}): Backend {
+  const backend: Backend = {
+    calls: [],
+    token: (form) => form["grant_type"] === "refresh_token"
+      ? jsonRes(200, { access_token: "at-refreshed", token_type: "Bearer", expires_in: 600, refresh_token: "rt-rotated" })
+      : jsonRes(200, { access_token: form["resource"] ? "at-device" : "?", token_type: "Bearer", expires_in: 600, refresh_token: "rt-first", scope: "relay offline_access" }),
+    api: () => jsonRes(200, { status: "ok", uptime_seconds: 5, version: "9.9.9" }),
+    ...overrides,
+  };
+  vi.stubGlobal("fetch", vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+    const u = String(url);
+    const headers = (init?.headers ?? {}) as Record<string, string>;
+    const form = init?.body instanceof URLSearchParams ? Object.fromEntries(init.body) : {};
+    backend.calls.push({ url: u, form, auth: headers["Authorization"] ?? null, method: init?.method ?? "GET" });
+    if (u === `${RELAY}/.well-known/oauth-protected-resource/mcp`) return jsonRes(200, { resource: `${RELAY}/mcp`, authorization_servers: [ISSUER] });
+    if (u === `${ISSUER}/.well-known/oauth-authorization-server`) {
+      return jsonRes(200, { issuer: ISSUER, device_authorization_endpoint: `${ISSUER}/oauth/device/code`, token_endpoint: `${ISSUER}/oauth/token` });
+    }
+    if (u === `${ISSUER}/oauth/device/code`) {
+      return jsonRes(200, {
+        device_code: "dc-1", user_code: "ABCD-1234", verification_uri: `${ISSUER}/oauth/device`,
+        verification_uri_complete: `${ISSUER}/oauth/device?user_code=ABCD-1234`, expires_in: 900, interval: 5,
+      });
+    }
+    if (u === `${ISSUER}/oauth/token`) return backend.token(form);
+    if (u.startsWith(RELAY)) return backend.api(u.slice(RELAY.length), init);
+    throw new Error(`unexpected fetch: ${u}`);
+  }));
+  return backend;
+}
+
+const issuedAt = (offsetMs: number) => new Date(Date.now() + offsetMs).toISOString();
+
+// ---------------------------------------------------------------------------
+// relay login — device flow against asterism, scope relay offline_access, cli client
+// ---------------------------------------------------------------------------
+
+describe("relay login", () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it("signs in with the cli client and persists an access token plus refresh token", async () => {
+    const backend = stubBackend();
+    const { exitCode, out } = await runCli(["relay", "--relay", RELAY, "login"], dir);
+
+    expect(exitCode).toBe(0);
+    expect(out).toContain(`Logged in to ${RELAY}`);
+    expect(out).toContain("ABCD-1234");
+
+    const device = backend.calls.find((c) => c.url === `${ISSUER}/oauth/device/code`)!;
+    expect(device.form).toEqual({ client_id: `${RELAY}/clients/cli.json`, scope: "relay offline_access", resource: `${RELAY}/mcp` });
+    const token = backend.calls.find((c) => c.url === `${ISSUER}/oauth/token`)!;
+    expect(token.form).toMatchObject({ client_id: `${RELAY}/clients/cli.json`, resource: `${RELAY}/mcp`, device_code: "dc-1" });
+
+    const session = loadRelaySession(dir);
+    expect(session).toMatchObject({ relay_url: RELAY, access_token: "at-device", refresh_token: "rt-first" });
+    // Absolute 30 days from sign-in.
+    const days = (new Date(session.refresh_token_expires_at!).getTime() - Date.now()) / 86_400_000;
+    expect(days).toBeGreaterThan(29.9);
+    expect(days).toBeLessThanOrEqual(30);
+  });
+
+  it("opens the browser only for a URL on the authorization server's origin", async () => {
+    const { default: open } = await import("open");
+    vi.mocked(open).mockClear();
+    stubBackend();
+    await runCli(["relay", "--relay", RELAY, "login"], dir);
+    expect(open).toHaveBeenCalledWith(`${ISSUER}/oauth/device?user_code=ABCD-1234`);
+  });
+
+  it("exits 1 with a clear message when the sign-in is denied", async () => {
+    stubBackend({ token: () => jsonRes(400, { error: "access_denied" }) });
+    const { exitCode, err } = await runCli(["relay", "--relay", RELAY, "login"], dir);
+    expect(exitCode).toBe(1);
+    expect(err).toContain("denied");
+    expect(existsSync(relaySessionPath(dir))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// session refresh
+// ---------------------------------------------------------------------------
+
 describe("relay status — expired session with a refresh token", () => {
+  const refreshExpiry = issuedAt(20 * 86_400_000);
   beforeEach(() => {
     writeRelaySession(dir, {
-      relay_url: "https://relay.example.com",
+      relay_url: RELAY,
       access_token: "tok_old",
-      access_token_expires_at: new Date(Date.now() - 3_600_000).toISOString(),
+      access_token_expires_at: issuedAt(-3_600_000),
       refresh_token: "refresh_abc",
-      refresh_token_expires_at: new Date(Date.now() + 30 * 86_400_000).toISOString(),
+      refresh_token_expires_at: refreshExpiry,
     });
   });
 
-  afterEach(() => {
-    vi.unstubAllGlobals();
-  });
+  afterEach(() => { vi.unstubAllGlobals(); });
 
-  it("silently refreshes, persists the new session, and retries the call", async () => {
-    const fetchMock = vi.fn(async (url: string) => {
-      if (url === "https://relay.example.com/oauth/token") {
-        return new Response(JSON.stringify({ access_token: "tok_new", expires_in: 3600 }), { status: 200 });
-      }
-      if (url === "https://relay.example.com/api/status") {
-        return new Response(JSON.stringify({ status: "ok", uptime_seconds: 5, version: "9.9.9" }), { status: 200 });
-      }
-      throw new Error(`unexpected fetch: ${url}`);
-    });
-    vi.stubGlobal("fetch", fetchMock);
+  it("refreshes with client_id and resource, persists the rotated refresh token, and retries the call", async () => {
+    const backend = stubBackend();
+    let persistedBeforeApiCall: string | undefined;
+    const original = backend.api;
+    backend.api = (path, init) => {
+      persistedBeforeApiCall = loadRelaySession(dir).refresh_token;
+      return original(path, init);
+    };
 
     const { exitCode, out } = await runCli(["relay", "status"], dir);
 
     expect(exitCode).toBe(0);
     expect(out).toContain("Uptime:  5s");
-    expect(loadRelaySession(dir).access_token).toBe("tok_new");
-    // refresh_token wasn't rotated by the relay in this response, so the old one is kept.
-    expect(loadRelaySession(dir).refresh_token).toBe("refresh_abc");
+    const refresh = backend.calls.find((c) => c.form["grant_type"] === "refresh_token")!;
+    expect(refresh.form).toEqual({
+      grant_type: "refresh_token", refresh_token: "refresh_abc", client_id: `${RELAY}/clients/cli.json`, resource: `${RELAY}/mcp`,
+    });
+    const status = backend.calls.find((c) => c.url === `${RELAY}/api/status`)!;
+    expect(status.auth).toBe("Bearer at-refreshed");
+    // The rotated token was already on disk when the new access token was first used.
+    expect(persistedBeforeApiCall).toBe("rt-rotated");
+    const session = loadRelaySession(dir);
+    expect(session.access_token).toBe("at-refreshed");
+    // The 30-day limit is absolute: rotation does not extend it.
+    expect(session.refresh_token_expires_at).toBe(refreshExpiry);
+    expect(existsSync(relaySessionPath(dir) + ".lock")).toBe(false);
   });
 
-  it("falls through to 'Session expired' if the refresh request fails", async () => {
-    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
-      if (url === "https://relay.example.com/oauth/token") {
-        return new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400 });
-      }
-      throw new Error(`unexpected fetch: ${url}`);
-    }));
+  it("says 'Session expired' and drops the session when asterism answers invalid_grant", async () => {
+    stubBackend({ token: () => jsonRes(400, { error: "invalid_grant", error_description: "Refresh token already used" }) });
 
     const { exitCode, err } = await runCli(["relay", "status"], dir);
 
     expect(exitCode).toBe(1);
     expect(err).toContain("Session expired");
+    expect(err).toContain("constellation relay login");
+    expect(existsSync(relaySessionPath(dir))).toBe(false);
+  });
+
+  it("does not delete the session or claim it expired on a transient server error", async () => {
+    stubBackend({ token: () => jsonRes(503, {}) });
+    const { exitCode, err } = await runCli(["relay", "status"], dir);
+    expect(exitCode).toBe(1);
+    expect(err).toContain("Could not refresh");
+    expect(existsSync(relaySessionPath(dir))).toBe(true);
+  });
+
+  it("skips the refresh and reports expiry once past the 30-day absolute lifetime", async () => {
+    writeRelaySession(dir, {
+      relay_url: RELAY,
+      access_token: "tok_old",
+      access_token_expires_at: issuedAt(-3_600_000),
+      refresh_token: "refresh_abc",
+      refresh_token_expires_at: issuedAt(-1000),
+    });
+    const backend = stubBackend();
+    const { exitCode, err } = await runCli(["relay", "status"], dir);
+    expect(exitCode).toBe(1);
+    expect(err).toContain("Session expired");
+    expect(backend.calls.some((c) => c.form["grant_type"] === "refresh_token")).toBe(false);
+  });
+
+  it("runs the device flow again when a person is at the terminal", async () => {
+    const { default: open } = await import("open");
+    vi.mocked(open).mockClear();
+    const setTty = (v: boolean | undefined) => {
+      Object.defineProperty(process.stdin, "isTTY", { value: v, configurable: true });
+      Object.defineProperty(process.stderr, "isTTY", { value: v, configurable: true });
+    };
+    setTty(true);
+    try {
+      const backend = stubBackend({
+        token: (form) => form["grant_type"] === "refresh_token"
+          ? jsonRes(400, { error: "invalid_grant" })
+          : jsonRes(200, { access_token: "at-new-login", token_type: "Bearer", expires_in: 600, refresh_token: "rt-new" }),
+      });
+      const { exitCode, out, err } = await runCli(["relay", "status"], dir);
+      expect(exitCode).toBe(0);
+      expect(err).toContain("Signing in again");
+      // The code and URL go to stderr here, so a command's own stdout (e.g. --json) stays clean.
+      expect(err).toContain("ABCD-1234");
+      expect(out).not.toContain("ABCD-1234");
+      expect(loadRelaySession(dir).refresh_token).toBe("rt-new");
+      expect(backend.calls.find((c) => c.url === `${RELAY}/api/status`)!.auth).toBe("Bearer at-new-login");
+    } finally {
+      setTty(undefined);
+    }
+  });
+});
+
+describe("relay status — concurrent refreshes", () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it("spends the refresh token once when two CLI processes race", async () => {
+    writeRelaySession(dir, {
+      relay_url: RELAY, access_token: "tok_old", access_token_expires_at: issuedAt(-3_600_000),
+      refresh_token: "refresh_abc", refresh_token_expires_at: issuedAt(20 * 86_400_000),
+    });
+    const backend = stubBackend();
+    // Two commands at once, as two processes would: the second must wait on the lock, re-read the
+    // rotated session, and find it fresh, not present the spent token again.
+    const [a, b] = await Promise.all([runCli(["relay", "status"], dir), runCli(["relay", "status"], dir)]);
+
+    expect(a.exitCode).toBe(0);
+    expect(b.exitCode).toBe(0);
+    expect(backend.calls.filter((c) => c.form["grant_type"] === "refresh_token")).toHaveLength(1);
   });
 });
 
@@ -449,49 +643,6 @@ describe("relay executors revoke", () => {
   });
 });
 
-describe("relay sessions revoke", () => {
-  beforeEach(() => {
-    writeRelaySession(dir, {
-      relay_url: "https://relay.example.com",
-      access_token: "tok_valid",
-      access_token_expires_at: new Date(Date.now() + 3_600_000).toISOString(),
-    });
-  });
-
-  afterEach(() => {
-    vi.unstubAllGlobals();
-    vi.mocked(mockedConfirm).mockReset();
-  });
-
-  it("does not call the API when the user declines the confirmation", async () => {
-    vi.mocked(mockedConfirm).mockResolvedValue(false);
-    const fetchMock = vi.fn();
-    vi.stubGlobal("fetch", fetchMock);
-
-    const { exitCode, out } = await runCli(["relay", "sessions", "revoke", "sess-1"], dir);
-
-    expect(exitCode).toBe(0);
-    expect(out).toContain("Cancelled.");
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it("revokes the session when the user confirms", async () => {
-    vi.mocked(mockedConfirm).mockResolvedValue(true);
-    const fetchMock = vi.fn(async (url: string, opts?: RequestInit) => {
-      expect(url).toBe("https://relay.example.com/api/sessions/sess-1");
-      expect(opts?.method).toBe("DELETE");
-      return new Response(null, { status: 204 });
-    });
-    vi.stubGlobal("fetch", fetchMock);
-
-    const { exitCode, out } = await runCli(["relay", "sessions", "revoke", "sess-1"], dir);
-
-    expect(exitCode).toBe(0);
-    expect(out).toContain("Session revoked.");
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-  });
-});
-
 describe("relay filters remove", () => {
   beforeEach(() => {
     writeRelaySession(dir, {
@@ -536,149 +687,75 @@ describe("relay filters remove", () => {
 });
 
 // ---------------------------------------------------------------------------
-// relay users remove — regression test for a route mismatch (was calling
-// DELETE /api/users/:username, a route the relay never registered, instead
-// of POST /api/users/:username/deactivate) compounded by apiPost choking on
-// the deactivate route's 204 No Content response.
+// admin commands — a per-command step-up (scope "relay admin", no offline_access), never stored
 // ---------------------------------------------------------------------------
 
-describe("relay users remove", () => {
+describe("admin step-up", () => {
   beforeEach(() => {
     writeRelaySession(dir, {
-      relay_url: "https://relay.example.com",
-      access_token: "tok_valid",
-      access_token_expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+      relay_url: RELAY, access_token: "tok_session", access_token_expires_at: issuedAt(3_600_000),
+      refresh_token: "rt-session", refresh_token_expires_at: issuedAt(20 * 86_400_000),
     });
   });
-
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.mocked(mockedConfirm).mockReset();
   });
 
-  it("does not call the API when the user declines the confirmation", async () => {
+  const stepUpToken = () => jsonRes(200, { access_token: "at-admin", token_type: "Bearer", expires_in: 300, scope: "relay admin" });
+
+  it("hub-shares list runs a second device flow for scope 'relay admin' and uses that token for the call", async () => {
+    const backend = stubBackend({
+      token: stepUpToken,
+      api: () => jsonRes(200, {
+        data: [{
+          executor_id: "e1", executor_host: "hub-1", share: "docs", reported_path: "/srv/docs", updated_at: "x",
+          permission_blob: { default: "none", overrides: [{ sub: "u-1", access: "read" }, { group: "eng", access: "write" }] },
+        }],
+        total: 1, limit: 100, offset: 0,
+      }),
+    });
+
+    const { exitCode, out } = await runCli(["relay", "hub-shares", "list"], dir);
+
+    expect(exitCode).toBe(0);
+    const device = backend.calls.find((c) => c.url === `${ISSUER}/oauth/device/code`)!;
+    expect(device.form).toEqual({ client_id: `${RELAY}/clients/cli.json`, scope: "relay admin", resource: `${RELAY}/mcp` });
+    expect(device.form["scope"]).not.toContain("offline_access");
+    expect(backend.calls.find((c) => c.url === `${RELAY}/api/admin/hub-shares?limit=100&offset=0`)!.auth).toBe("Bearer at-admin");
+    // New override shapes: a user by sub, a group by name.
+    expect(out).toContain("overrides: u-1=read, group:eng=write");
+    // The admin token and its (absent) refresh token never reach disk.
+    const onDisk = readFileSync(relaySessionPath(dir), "utf8");
+    expect(onDisk).not.toContain("at-admin");
+    expect(loadRelaySession(dir)).toMatchObject({ access_token: "tok_session", refresh_token: "rt-session" });
+  });
+
+  it("explains a denied step-up", async () => {
+    stubBackend({ token: () => jsonRes(400, { error: "access_denied" }) });
+    const { exitCode, err } = await runCli(["relay", "hub-shares", "list"], dir);
+    expect(exitCode).toBe(1);
+    expect(err).toContain("admin group");
+  });
+
+  it("token create --shared steps up after the confirmation and prints the token", async () => {
+    vi.mocked(mockedConfirm).mockResolvedValue(true);
+    const backend = stubBackend({
+      token: stepUpToken,
+      api: () => jsonRes(201, { token: "hub-secret", token_id: "t1", created_at: "now" }),
+    });
+    const { exitCode, out } = await runCli(["relay", "token", "create", "--shared"], dir);
+    expect(exitCode).toBe(0);
+    expect(out).toContain("hub-secret");
+    expect(backend.calls.find((c) => c.url === `${RELAY}/api/tokens/shared`)!.auth).toBe("Bearer at-admin");
+  });
+
+  it("does not step up when the user declines the confirmation", async () => {
     vi.mocked(mockedConfirm).mockResolvedValue(false);
-    const fetchMock = vi.fn();
-    vi.stubGlobal("fetch", fetchMock);
-
-    const { exitCode, out } = await runCli(["relay", "users", "remove", "alice"], dir);
-
+    const backend = stubBackend();
+    const { exitCode, out } = await runCli(["relay", "token", "create", "--shared"], dir);
     expect(exitCode).toBe(0);
     expect(out).toContain("Cancelled.");
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it("deactivates the user via POST .../deactivate and handles the 204 response", async () => {
-    vi.mocked(mockedConfirm).mockResolvedValue(true);
-    const fetchMock = vi.fn(async (url: string, opts?: RequestInit) => {
-      expect(url).toBe("https://relay.example.com/api/users/alice/deactivate");
-      expect(opts?.method).toBe("POST");
-      return new Response(null, { status: 204 });
-    });
-    vi.stubGlobal("fetch", fetchMock);
-
-    const { exitCode, out } = await runCli(["relay", "users", "remove", "alice"], dir);
-
-    expect(exitCode).toBe(0);
-    expect(out).toContain("User 'alice' deactivated.");
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// relay account deactivate — same apiPost/204 bug as users remove above hit
-// this command too; deleteRelaySession() ran after the now-fixed apiPost
-// call, so the local session file was previously never being cleared either.
-// ---------------------------------------------------------------------------
-
-describe("relay account deactivate", () => {
-  beforeEach(() => {
-    writeRelaySession(dir, {
-      relay_url: "https://relay.example.com",
-      access_token: "tok_valid",
-      access_token_expires_at: new Date(Date.now() + 3_600_000).toISOString(),
-    });
-  });
-
-  afterEach(() => {
-    vi.unstubAllGlobals();
-    vi.mocked(mockedConfirm).mockReset();
-  });
-
-  it("deactivates the account, handles the 204 response, and clears the local session", async () => {
-    vi.mocked(mockedConfirm).mockResolvedValue(true);
-    const fetchMock = vi.fn(async (url: string, opts?: RequestInit) => {
-      expect(url).toBe("https://relay.example.com/api/account/deactivate");
-      expect(opts?.method).toBe("POST");
-      return new Response(null, { status: 204 });
-    });
-    vi.stubGlobal("fetch", fetchMock);
-
-    const { exitCode, out } = await runCli(["relay", "account", "deactivate"], dir);
-
-    expect(exitCode).toBe(0);
-    expect(out).toContain("Account deactivated.");
-    expect(existsSync(relaySessionPath(dir))).toBe(false);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// relay user promote/demote — --relay given on the `relay` parent must reach
-// a subcommand nested two levels deep (relay -> user -> promote/demote).
-// ---------------------------------------------------------------------------
-
-describe("relay user promote/demote", () => {
-  afterEach(() => {
-    vi.unstubAllGlobals();
-  });
-
-  it("promote resolves --relay from the `relay` parent, not just a local flag", async () => {
-    const fetchMock = vi.fn(async (url: string) => {
-      expect(url).toBe("https://relay.example.com/api/admin/users/alice/promote");
-      return new Response(null, { status: 200 });
-    });
-    vi.stubGlobal("fetch", fetchMock);
-    process.env["RELAY_ADMIN_TOKEN"] = "tok";
-
-    const { exitCode, out } = await runCli(
-      ["relay", "--relay", "https://relay.example.com", "user", "promote", "alice"],
-      dir
-    );
-
-    delete process.env["RELAY_ADMIN_TOKEN"];
-    expect(exitCode).toBe(0);
-    expect(out).toContain("promoted to admin");
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-  });
-
-  it("demote resolves --relay from the `relay` parent, not just a local flag", async () => {
-    const fetchMock = vi.fn(async (url: string) => {
-      expect(url).toBe("https://relay.example.com/api/admin/users/alice/demote");
-      return new Response(null, { status: 200 });
-    });
-    vi.stubGlobal("fetch", fetchMock);
-    process.env["RELAY_ADMIN_TOKEN"] = "tok";
-
-    const { exitCode, out } = await runCli(
-      ["relay", "--relay", "https://relay.example.com", "user", "demote", "alice"],
-      dir
-    );
-
-    delete process.env["RELAY_ADMIN_TOKEN"];
-    expect(exitCode).toBe(0);
-    expect(out).toContain("demoted to regular user");
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-  });
-
-  it("errors with the relay-URL hint when neither flag nor config provides one", async () => {
-    process.env["RELAY_ADMIN_TOKEN"] = "tok";
-    const { exitCode, err } = await runCli(
-      ["relay", "user", "promote", "alice"],
-      dir
-    );
-    delete process.env["RELAY_ADMIN_TOKEN"];
-
-    expect(exitCode).toBe(1);
-    expect(err).toContain("No relay URL configured");
+    expect(backend.calls).toHaveLength(0);
   });
 });

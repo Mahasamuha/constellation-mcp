@@ -1,6 +1,6 @@
 # ADR 0020: RFC 9728 Discovery; Dynamic Client Registration Is Public-Only
 
-**Status:** Accepted
+**Status:** Superseded by [ADR 0022](0022-asterism-authorization-server.md)
 **Date:** 2026-10-19
 
 ## Context

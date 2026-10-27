@@ -221,6 +221,12 @@ export function buildConfigUpdatePaths(
 // relay-session.yaml
 // ---------------------------------------------------------------------------
 
+/**
+ * The user CLI's sign-in: an asterism access token (scope `relay`) and its rotating refresh
+ * token (`offline_access`), both issued to the `cli` client. `refresh_token_expires_at` is
+ * asterism's absolute 30-day limit, set at sign-in and not extended by rotation. An `admin`
+ * step-up token is never stored here.
+ */
 export interface RelaySession {
   relay_url: string;
   access_token: string;
@@ -231,6 +237,11 @@ export interface RelaySession {
 
 export function relaySessionPath(dir: string): string {
   return join(dir, "relay-session.yaml");
+}
+
+/** Held while a process refreshes the session, so two never spend the same rotating refresh token. */
+export function relaySessionLockPath(dir: string): string {
+  return join(dir, "relay-session.yaml.lock");
 }
 
 export function loadRelaySession(dir: string): RelaySession {

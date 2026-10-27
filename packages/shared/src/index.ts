@@ -1,8 +1,8 @@
 export { logger, createLogger } from "./logger.js";
 export { generateToken, hashToken, safeEqual } from "./tokens.js";
 export { requireEnv, parseEnvInt } from "./env.js";
-export type { PermissionBlob } from "./permissions.js";
-export { evaluatePermissionBlob } from "./permissions.js";
+export type { PermissionBlob, PermissionOverride, PermissionSubject } from "./permissions.js";
+export { evaluatePermissionBlob, groupsFromClaims, MAX_GROUPS } from "./permissions.js";
 export type { RpcError, RpcResponse, PathEntry, RpcEnvelope } from "./rpc.js";
 export { MAX_SHARE_INSTRUCTIONS_LENGTH } from "./rpc.js";
 export type { ExecutorEntry, ExecutorShare } from "./admin-api.js";
@@ -19,3 +19,20 @@ export {
   type RotatableConnection,
   type ControlResult,
 } from "./control-channel.js";
+export {
+  clientIdFor,
+  resourceFor,
+  discoverAsterism,
+  requestDeviceAuthorization,
+  verificationUrlToOpen,
+  pollDeviceToken,
+  refreshTokens,
+  deviceSignIn,
+  AsterismError,
+  type ClientKind,
+  type AsterismEndpoints,
+  type DeviceAuthorization,
+  type TokenResponse,
+  type AsterismDeps,
+} from "./asterism-client.js";
+export { withLockFile } from "./file-lock.js";

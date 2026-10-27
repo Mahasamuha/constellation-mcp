@@ -1,14 +1,13 @@
 import { Command } from "commander";
-import open from "open";
 import {
   configDir,
   loadNodeConfig,
   loadRelaySession,
-  writeRelaySession,
   deleteRelaySession,
   type RelaySession,
 } from "@constellation/node/config";
-import { poll, confirm, type ExecutorEntry, assertSecureHttpUrl, isSameOrigin } from "@constellation/shared";
+import { confirm, type ExecutorEntry, assertSecureHttpUrl } from "@constellation/shared";
+import { adminStepUp, getValidSession, signIn } from "./session.js";
 
 // ---------------------------------------------------------------------------
 // API response types
@@ -28,22 +27,6 @@ interface FilterEntry {
   created_at: string;
 }
 
-interface SessionEntry {
-  id: string;
-  mcp_client_id: string;
-  issued_at: string;
-  expires_at: string;
-  has_refresh_token: boolean;
-}
-
-interface LocalUserEntry {
-  id: string;
-  username: string;
-  is_active: boolean;
-  created_at: string;
-  last_login_at: string | null;
-}
-
 interface HubShareEntry {
   executor_id: string;
   executor_host: string;
@@ -51,7 +34,7 @@ interface HubShareEntry {
   reported_path: string;
   permission_blob: {
     default: string;
-    overrides?: Array<{ oidc_sub: string; access: string }>;
+    overrides?: Array<{ sub: string; access: string } | { group: string; access: string }>;
   };
   updated_at: string;
 }
@@ -104,68 +87,22 @@ async function safeFetch(url: string, options?: RequestInit): Promise<Response> 
 }
 
 // ---------------------------------------------------------------------------
-// Session management with silent refresh
+// Session management: see session.ts for refresh, locking and the admin step-up
 // ---------------------------------------------------------------------------
 
-async function getValidSession(getConfigDir: () => string): Promise<RelaySession> {
-  const dir = getConfigDir();
-  let session: RelaySession;
-
-  try {
-    session = loadRelaySession(dir);
-  } catch {
-    console.error("Not logged in. Run 'constellation relay login' first.");
-    process.exit(1);
-  }
-
-  const expiresAt = new Date(session.access_token_expires_at);
-  if (expiresAt > new Date()) return session;
-
-  // Try silent refresh.
-  if (session.refresh_token) {
-    const refreshed = await tryRefresh(session);
-    if (refreshed) {
-      writeRelaySession(dir, refreshed);
-      return refreshed;
-    }
-  }
-
-  console.error("Session expired. Run 'constellation relay login' to re-authenticate.");
-  process.exit(1);
-}
-
-async function tryRefresh(session: RelaySession): Promise<RelaySession | null> {
-  if (!session.refresh_token) return null;
-
-  const res = await safeFetch(`${session.relay_url}/oauth/token`, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      grant_type: "refresh_token",
-      refresh_token: session.refresh_token,
-      client_id: "constellation-cli",
-    }),
-  });
-
-  if (!res.ok) return null;
-
-  const body = await parseJson<{
-    access_token: string;
-    expires_in: number;
-    refresh_token?: string;
-  }>(res);
-
-  const now = new Date();
-  const refreshTtlDays = 30;
-  return {
-    relay_url: session.relay_url,
-    access_token: body.access_token,
-    access_token_expires_at: new Date(now.getTime() + body.expires_in * 1000).toISOString(),
-    refresh_token: body.refresh_token ?? session.refresh_token,
-    refresh_token_expires_at: body.refresh_token
-      ? new Date(now.getTime() + refreshTtlDays * 86400 * 1000).toISOString()
-      : session.refresh_token_expires_at,
-  };
+/** A session carrying a one-command admin token, for the few commands the relay gates on the
+ * `admin` scope. Nothing is written to disk; the token is gone when the command ends. */
+async function getAdminSession(
+  getConfigDir: () => string,
+  relayUrlFlag: string | undefined
+): Promise<RelaySession> {
+  // Prefer the relay the user is signed in to over the node config's.
+  const signedIn = relayUrlFlag ? undefined : (() => {
+    try { return loadRelaySession(getConfigDir()).relay_url; } catch { return undefined; }
+  })();
+  const relayUrl = resolveRelayUrl(relayUrlFlag ?? signedIn, getConfigDir);
+  const accessToken = await adminStepUp(relayUrl);
+  return { relay_url: relayUrl, access_token: accessToken, access_token_expires_at: new Date(Date.now() + 300_000).toISOString() };
 }
 
 // ---------------------------------------------------------------------------
@@ -247,12 +184,12 @@ async function parseJson<T>(res: Response): Promise<T> {
 export async function die(res: Response): Promise<never> {
   try {
     const body: unknown = await res.json();
-    if (
-      typeof body === "object" && body !== null &&
-      (body as Record<string, unknown>)["error"] === "ESCALATION_REQUIRED"
-    ) {
-      console.error("This operation requires admin privileges.");
-      console.error("Run 'constellation relay elevate' to request temporary admin access, then retry.");
+    const error = typeof body === "object" && body !== null ? (body as Record<string, unknown>)["error"] : undefined;
+    if (error === "insufficient_scope") {
+      console.error("This operation requires admin privileges, and your account or this command's token lacks them.");
+    } else if (res.status === 401) {
+      console.error(`API error 401: ${JSON.stringify(body)}`);
+      console.error("The relay did not accept the stored sign-in. Run 'constellation relay login' to sign in again.");
     } else {
       console.error(`API error ${res.status}: ${JSON.stringify(body)}`);
     }
@@ -292,80 +229,10 @@ export function registerRelayCommands(program: Command): void {
 
   relay
     .command("login")
-    .description("Authenticate with the relay (OAuth device flow)")
+    .description("Sign in to the relay's authorization server (OAuth device flow)")
     .action(async () => {
       const relayUrl = resolveRelayUrl(getRelayFlag(), getConfigDir);
-
-      const dcRes = await safeFetch(`${relayUrl}/oauth/device/code`, {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({ scope: "relay:manage" }),
-      });
-      if (!dcRes.ok) {
-        console.error("Failed to start device flow:", await dcRes.text());
-        process.exit(1);
-      }
-      const dc = await parseJson<{
-        device_code: string;
-        user_code: string;
-        verification_uri_complete: string;
-        expires_in: number;
-        interval: number;
-      }>(dcRes);
-
-      console.log(`\nOpen the following URL to authenticate (opening browser automatically):`);
-      console.log(`  ${dc.verification_uri_complete}\n`);
-      console.log(`If the browser did not open, enter this code: ${dc.user_code}\n`);
-      if (isSameOrigin(relayUrl, dc.verification_uri_complete)) {
-        try { await open(dc.verification_uri_complete); } catch { /* ignore */ }
-      }
-
-      const result = await poll(
-        async ({ intervalMs, setIntervalMs }) => {
-          const r = await safeFetch(`${relayUrl}/oauth/token`, {
-            method: "POST",
-            headers: { "Content-Type": "application/x-www-form-urlencoded" },
-            body: new URLSearchParams({
-              grant_type: "urn:ietf:params:oauth:grant-type:device_code",
-              device_code: dc.device_code,
-            }),
-          });
-          if (r.status === 400) {
-            const body = await r.json() as { error: string };
-            if (body.error === "authorization_pending") return null;
-            if (body.error === "slow_down") { setIntervalMs(intervalMs + 5000); return null; }
-            console.error("\nDevice flow error:", body.error);
-            process.exit(1);
-          }
-          if (!r.ok) return null;
-          return parseJson<{
-            access_token: string;
-            expires_in: number;
-            refresh_token?: string;
-          }>(r);
-        },
-        dc.interval * 1000,
-        dc.expires_in * 1000
-      );
-
-      if (!result) {
-        console.error("Timed out waiting for authentication.");
-        process.exit(1);
-      }
-
-      const now = new Date();
-      const refreshTtlDays = 30;
-      const session: RelaySession = {
-        relay_url: relayUrl,
-        access_token: result.access_token,
-        access_token_expires_at: new Date(now.getTime() + result.expires_in * 1000).toISOString(),
-        refresh_token: result.refresh_token,
-        refresh_token_expires_at: result.refresh_token
-          ? new Date(now.getTime() + refreshTtlDays * 86400 * 1000).toISOString()
-          : undefined,
-      };
-
-      writeRelaySession(cfgDir(), session);
+      await signIn(relayUrl, cfgDir());
       console.log(`\nLogged in to ${relayUrl}`);
     });
 
@@ -389,7 +256,7 @@ export function registerRelayCommands(program: Command): void {
     .command("status")
     .description("Show relay health and uptime")
     .action(async () => {
-      const session = await getValidSession(cfgDir);
+      const session = await getValidSession(cfgDir());
       const data = await apiGet<{ status: string; uptime_seconds: number; version: string }>(
         session, "/api/status"
       );
@@ -411,7 +278,7 @@ export function registerRelayCommands(program: Command): void {
     .option("--offset <n>", "Rows to skip", "0")
     .option("--json", "Output as JSON")
     .action(async (opts: ListOpts & { json?: boolean }) => {
-      const session = await getValidSession(cfgDir);
+      const session = await getValidSession(cfgDir());
       const qs = buildListQuery(opts);
       const res = await apiGet<PaginatedResponse<ExecutorEntry>>(session, `/api/executors${qs}`);
       if (opts.json) { console.log(JSON.stringify(res.data, null, 2)); warnIfMore(res); return; }
@@ -430,7 +297,7 @@ export function registerRelayCommands(program: Command): void {
     .action(async (executorId: string) => {
       const ok = await confirm(`Revoke token for executor ${executorId}? The executor will go offline.`);
       if (!ok) { console.log("Cancelled."); return; }
-      const session = await getValidSession(cfgDir);
+      const session = await getValidSession(cfgDir());
       await apiDelete(session, `/api/executors/${encodeURIComponent(executorId)}/token`);
       console.log("Token revoked.");
     });
@@ -449,7 +316,7 @@ export function registerRelayCommands(program: Command): void {
     .option("--offset <n>", "Rows to skip", "0")
     .option("--json", "Output as JSON")
     .action(async (opts: ListOpts & { executor?: string; json?: boolean }) => {
-      const session = await getValidSession(cfgDir);
+      const session = await getValidSession(cfgDir());
       const qs = buildListQuery(opts, { executor_id: opts.executor });
       const res = await apiGet<PaginatedResponse<ShareEntry>>(session, `/api/shares${qs}`);
       if (opts.json) { console.log(JSON.stringify(res.data, null, 2)); warnIfMore(res); return; }
@@ -472,7 +339,7 @@ export function registerRelayCommands(program: Command): void {
     .option("--offset <n>", "Rows to skip", "0")
     .option("--json", "Output as JSON")
     .action(async (opts: ListOpts & { json?: boolean }) => {
-      const session = await getValidSession(cfgDir);
+      const session = await getValidSession(cfgDir());
       const qs = buildListQuery(opts);
       const res = await apiGet<PaginatedResponse<FilterEntry>>(session, `/api/filters${qs}`);
       if (opts.json) { console.log(JSON.stringify(res.data, null, 2)); warnIfMore(res); return; }
@@ -494,7 +361,7 @@ export function registerRelayCommands(program: Command): void {
         console.error("--type must be glob or regex");
         process.exit(1);
       }
-      const session = await getValidSession(cfgDir);
+      const session = await getValidSession(cfgDir());
       const body: Record<string, string> = { pattern, pattern_type: opts.type };
       if (opts.executor) body["executor_id"] = opts.executor;
       const data = await apiPost<{ id: string }>(session, "/api/filters", body);
@@ -508,263 +375,16 @@ export function registerRelayCommands(program: Command): void {
     .action(async (filterId: string) => {
       const ok = await confirm(`Remove deny filter ${filterId}? This widens access — anything it was blocking becomes reachable again.`);
       if (!ok) { console.log("Cancelled."); return; }
-      const session = await getValidSession(cfgDir);
+      const session = await getValidSession(cfgDir());
       await apiDelete(session, `/api/filters/${encodeURIComponent(filterId)}`);
       console.log("Filter removed.");
-    });
-
-  // -------------------------------------------------------------------------
-  // sessions
-  // -------------------------------------------------------------------------
-
-  const sessions = relay.command("sessions").description("Manage MCP client sessions");
-
-  sessions
-    .command("list")
-    .description("List active MCP client sessions")
-    .option("--limit <n>", "Max rows to return (server caps at 1000)", "100")
-    .option("--offset <n>", "Rows to skip", "0")
-    .option("--json", "Output as JSON")
-    .action(async (opts: ListOpts & { json?: boolean }) => {
-      const session = await getValidSession(cfgDir);
-      const qs = buildListQuery(opts);
-      const res = await apiGet<PaginatedResponse<SessionEntry>>(session, `/api/sessions${qs}`);
-      if (opts.json) { console.log(JSON.stringify(res.data, null, 2)); warnIfMore(res); return; }
-      for (const s of res.data) {
-        console.log(`${s.id}  client:${s.mcp_client_id}  issued:${s.issued_at}  expires:${s.expires_at}${s.has_refresh_token ? "  [refresh]" : ""}`);
-      }
-      warnIfMore(res);
-    });
-
-  sessions
-    .command("revoke")
-    .argument("<session-id>", "Session ID to revoke")
-    .description("Invalidate an MCP client session")
-    .action(async (sessionId: string) => {
-      const ok = await confirm(`Revoke session ${sessionId}? The MCP client will need to re-authenticate.`);
-      if (!ok) { console.log("Cancelled."); return; }
-      const session = await getValidSession(cfgDir);
-      await apiDelete(session, `/api/sessions/${encodeURIComponent(sessionId)}`);
-      console.log("Session revoked.");
-    });
-
-  // -------------------------------------------------------------------------
-  // users (AUTH_MODE=local only)
-  // -------------------------------------------------------------------------
-
-  const users = relay.command("users").description("Manage local relay users (requires AUTH_MODE=local on relay)");
-
-  users
-    .command("list")
-    .description("List all local users")
-    .option("--limit <n>", "Max rows to return (server caps at 1000)", "100")
-    .option("--offset <n>", "Rows to skip", "0")
-    .option("--json", "Output as JSON")
-    .action(async (opts: ListOpts & { json?: boolean }) => {
-      const session = await getValidSession(cfgDir);
-      const qs = buildListQuery(opts);
-      const res = await apiGet<PaginatedResponse<LocalUserEntry>>(session, `/api/users${qs}`);
-      if (opts.json) { console.log(JSON.stringify(res.data, null, 2)); warnIfMore(res); return; }
-      for (const u of res.data) {
-        const status = u.is_active ? "active" : "deactivated";
-        const last = u.last_login_at ? `  last login: ${u.last_login_at}` : "";
-        console.log(`${u.username}  [${status}]${last}`);
-      }
-      warnIfMore(res);
-    });
-
-  users
-    .command("add")
-    .argument("<username>", "Username for the new user")
-    .description("Create a new local user (prompts for password)")
-    .action(async (username: string) => {
-      const password = await promptPassword("Password (min 12 chars): ");
-      const confirm = await promptPassword("Confirm password: ");
-      if (password !== confirm) { console.error("Passwords do not match."); process.exit(1); }
-      if (password.length < 12) { console.error("Password must be at least 12 characters."); process.exit(1); }
-      const session = await getValidSession(cfgDir);
-      await apiPost(session, "/api/users", { username, password });
-      console.log(`User '${username}' created.`);
-    });
-
-  users
-    .command("remove")
-    .argument("<username>", "Username to deactivate")
-    .description("Deactivate a local user (soft delete)")
-    .action(async (username: string) => {
-      const ok = await confirm(`Deactivate user '${username}'? Their sessions will become invalid.`);
-      if (!ok) { console.log("Cancelled."); return; }
-      const session = await getValidSession(cfgDir);
-      await apiPost(session, `/api/users/${encodeURIComponent(username)}/deactivate`, {});
-      console.log(`User '${username}' deactivated.`);
-    });
-
-  users
-    .command("reset-password")
-    .argument("<username>", "Username to update")
-    .description("Reset a local user's password and invalidate their sessions")
-    .action(async (username: string) => {
-      const password = await promptPassword("New password (min 12 chars): ");
-      const confirm = await promptPassword("Confirm new password: ");
-      if (password !== confirm) { console.error("Passwords do not match."); process.exit(1); }
-      if (password.length < 12) { console.error("Password must be at least 12 characters."); process.exit(1); }
-      const session = await getValidSession(cfgDir);
-      await apiPost(session, `/api/users/${encodeURIComponent(username)}/reset-password`, { password });
-      console.log(`Password reset for '${username}'. All existing sessions have been invalidated.`);
-    });
-
-  // -------------------------------------------------------------------------
-  // account
-  // -------------------------------------------------------------------------
-
-  const account = relay.command("account").description("Manage your relay account");
-
-  account
-    .command("deactivate")
-    .description("Deactivate your account — blocks all access immediately")
-    .action(async () => {
-      console.log("WARNING: This will immediately block all executor connections and MCP client access.");
-      console.log("Your configuration is preserved but all tokens become invalid.\n");
-      const ok = await confirm("Are you sure you want to deactivate your account?");
-      if (!ok) { console.log("Cancelled."); return; }
-      const session = await getValidSession(cfgDir);
-      await apiPost(session, "/api/account/deactivate", { confirm: "deactivate my account" });
-      deleteRelaySession(cfgDir());
-      console.log("Account deactivated.");
-    });
-
-  // -------------------------------------------------------------------------
-  // elevate — request temporary admin session elevation
-  // -------------------------------------------------------------------------
-
-  relay
-    .command("elevate")
-    .description("Request temporary admin access via browser approval (step-up authentication)")
-    .action(async () => {
-      const session = await getValidSession(cfgDir);
-      const relayUrl = resolveRelayUrl(getRelayFlag(), getConfigDir);
-
-      // Fetch the current session ID from the relay (not stored locally).
-      const meRes = await apiFetch(session, "/api/me");
-      if (!meRes.ok) { console.error("Failed to fetch session info."); process.exit(1); }
-      const me = await parseJson<{ session_id: string }>(meRes);
-
-      const dcRes = await safeFetch(`${relayUrl}/oauth/device/code`, {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({
-          scope: "agent:escalate",
-          elevate_session_id: me.session_id,
-        }),
-      });
-
-      if (!dcRes.ok) {
-        console.error("Failed to start escalation flow:", await dcRes.text());
-        process.exit(1);
-      }
-      const dc = await parseJson<{
-        device_code: string;
-        user_code: string;
-        verification_uri_complete: string;
-        expires_in: number;
-        interval: number;
-      }>(dcRes);
-
-      console.log(`\nOpen the following URL to approve admin access (opening browser automatically):`);
-      console.log(`  ${dc.verification_uri_complete}\n`);
-      console.log(`If the browser did not open, enter this code: ${dc.user_code}\n`);
-      if (isSameOrigin(relayUrl, dc.verification_uri_complete)) {
-        try { await open(dc.verification_uri_complete); } catch { /* ignore */ }
-      }
-
-      const result = await poll(
-        async ({ intervalMs, setIntervalMs }) => {
-          const r = await safeFetch(`${relayUrl}/oauth/token`, {
-            method: "POST",
-            headers: { "Content-Type": "application/x-www-form-urlencoded" },
-            body: new URLSearchParams({
-              grant_type: "urn:ietf:params:oauth:grant-type:device_code",
-              device_code: dc.device_code,
-            }),
-          });
-          if (r.status === 400) {
-            const body = await r.json() as { error: string };
-            if (body.error === "authorization_pending") return null;
-            if (body.error === "slow_down") { setIntervalMs(intervalMs + 5000); return null; }
-            if (body.error === "access_denied") {
-              console.error("\nEscalation denied. Ensure your account has admin privileges.");
-              process.exit(1);
-            }
-            console.error("\nEscalation flow error:", body.error);
-            process.exit(1);
-          }
-          if (r.status === 204) return {};
-          if (!r.ok) return null;
-          return {};
-        },
-        dc.interval * 1000,
-        dc.expires_in * 1000
-      );
-
-      if (!result) {
-        console.error("Timed out waiting for approval.");
-        process.exit(1);
-      }
-
-      console.log("Admin access granted. Retry your command.");
-    });
-
-  // -------------------------------------------------------------------------
-  // user promote/demote — bootstrap role management (requires RELAY_ADMIN_TOKEN)
-  // -------------------------------------------------------------------------
-
-  const userAdmin = relay.command("user").description("Manage user roles (requires RELAY_ADMIN_TOKEN)");
-
-  userAdmin
-    .command("promote")
-    .argument("<identifier>", "OIDC sub or (local mode) username to promote to admin")
-    .description("Grant admin role — requires RELAY_ADMIN_TOKEN env var")
-    .action(async (identifier: string) => {
-      const adminToken = process.env["RELAY_ADMIN_TOKEN"];
-      if (!adminToken) {
-        console.error("RELAY_ADMIN_TOKEN is not set.");
-        process.exit(1);
-      }
-      const relayUrl = resolveRelayUrl(getRelayFlag(), getConfigDir);
-      const res = await safeFetch(`${relayUrl}/api/admin/users/${encodeURIComponent(identifier)}/promote`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${adminToken}` },
-      });
-      if (res.status === 404) { console.error("User not found."); process.exit(1); }
-      if (!res.ok) { console.error(`Error ${res.status}:`, await res.text()); process.exit(1); }
-      console.log(`User '${identifier}' promoted to admin.`);
-    });
-
-  userAdmin
-    .command("demote")
-    .argument("<identifier>", "OIDC sub or (local mode) username to demote")
-    .description("Revoke admin role — requires RELAY_ADMIN_TOKEN env var")
-    .action(async (identifier: string) => {
-      const adminToken = process.env["RELAY_ADMIN_TOKEN"];
-      if (!adminToken) {
-        console.error("RELAY_ADMIN_TOKEN is not set.");
-        process.exit(1);
-      }
-      const relayUrl = resolveRelayUrl(getRelayFlag(), getConfigDir);
-      const res = await safeFetch(`${relayUrl}/api/admin/users/${encodeURIComponent(identifier)}/demote`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${adminToken}` },
-      });
-      if (res.status === 404) { console.error("User not found."); process.exit(1); }
-      if (!res.ok) { console.error(`Error ${res.status}:`, await res.text()); process.exit(1); }
-      console.log(`User '${identifier}' demoted to regular user.`);
     });
 
   // -------------------------------------------------------------------------
   // hub-shares — admin view of the hub share registry
   // -------------------------------------------------------------------------
 
-  const hubShares = relay.command("hub-shares").description("View hub shares (requires admin session)");
+  const hubShares = relay.command("hub-shares").description("View hub shares (needs admin: asks you to approve an admin sign-in)");
 
   hubShares
     .command("list")
@@ -774,7 +394,7 @@ export function registerRelayCommands(program: Command): void {
     .option("--offset <n>", "Rows to skip", "0")
     .option("--json", "Output as JSON")
     .action(async (opts: ListOpts & { executor?: string; json?: boolean }) => {
-      const session = await getValidSession(cfgDir);
+      const session = await getAdminSession(cfgDir, getRelayFlag());
       const qs = buildListQuery(opts, { executor_id: opts.executor });
       const data = await apiGet<PaginatedResponse<HubShareEntry>>(session, `/api/admin/hub-shares${qs}`);
       if (opts.json) { console.log(JSON.stringify(data.data, null, 2)); warnIfMore(data); return; }
@@ -792,7 +412,7 @@ export function registerRelayCommands(program: Command): void {
         }
         const overrides = s.permission_blob.overrides ?? [];
         const overrideStr = overrides.length > 0
-          ? `  overrides: ${overrides.map((o) => `${o.oidc_sub}=${o.access}`).join(", ")}`
+          ? `  overrides: ${overrides.map((o) => `${"sub" in o ? o.sub : `group:${o.group}`}=${o.access}`).join(", ")}`
           : "";
         console.log(`  ${s.share}  →  ${s.reported_path}  [default: ${s.permission_blob.default}]${overrideStr}`);
       }
@@ -828,7 +448,7 @@ export function registerRelayCommands(program: Command): void {
       const ok = await confirm("Proceed with break-glass shared token creation?");
       if (!ok) { console.log("Cancelled."); return; }
 
-      const session = await getValidSession(cfgDir);
+      const session = await getAdminSession(cfgDir, getRelayFlag());
       const data = await apiPost<{ token: string; token_id: string; created_at: string }>(
         session, "/api/tokens/shared", {}
       );
@@ -849,34 +469,6 @@ export function registerRelayCommands(program: Command): void {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function promptPassword(prompt: string): Promise<string> {
-  return new Promise((resolve) => {
-    process.stdout.write(prompt);
-    process.stdin.setRawMode?.(true);
-    process.stdin.resume();
-    process.stdin.setEncoding("utf8");
-
-    let input = "";
-    const onData = (char: string) => {
-      if (char === "\r" || char === "\n") {
-        process.stdout.write("\n");
-        process.stdin.setRawMode?.(false);
-        process.stdin.pause();
-        process.stdin.off("data", onData);
-        resolve(input);
-      } else if (char === "") {
-        process.stdout.write("\n");
-        process.exit(1);
-      } else if (char === "") {
-        if (input.length > 0) input = input.slice(0, -1);
-      } else {
-        input += char;
-      }
-    };
-    process.stdin.on("data", onData);
-  });
-}
 
 function formatUptime(seconds: number): string {
   const d = Math.floor(seconds / 86400);

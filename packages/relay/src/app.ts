@@ -1,13 +1,13 @@
 import express, { Express, NextFunction, Request, Response } from "express";
-import { randomUUID, randomBytes } from "node:crypto";
-import cookieParser from "cookie-parser";
+import { randomUUID } from "node:crypto";
 import cors from "cors";
 import { rateLimit } from "express-rate-limit";
-import { oauthRouter } from "./oauth.js";
-import { deviceRouter } from "./device.js";
 import { mcpRouter } from "./mcp.js";
-import { apiRouter, adminTokenRouter } from "./api.js";
-import { setupRouter, setupMiddleware } from "./setup.js";
+import { apiRouter } from "./api.js";
+import { setupRouter } from "./setup.js";
+import { discoveryRouter } from "./discovery.js";
+import { clientMetadataRouter } from "./client-metadata.js";
+import { executorsRouter } from "./executors.js";
 import { prisma } from "./db.js";
 import { createLogger } from "@constellation/shared";
 import { config } from "./config.js";
@@ -33,7 +33,7 @@ if (preset === "railway") {
   app.set("trust proxy", trustProxyRaw);
 }
 
-// MCP and OAuth endpoints must be reachable from browser-based MCP clients
+// MCP, discovery and API endpoints must be reachable from browser-based MCP clients
 // (Claude.ai, Cursor web, etc.) which send CORS preflight requests.
 // Set ALLOWED_ORIGINS to a comma-separated list of trusted origins (e.g. "https://claude.ai").
 // Defaults to no cross-origin access if unset.
@@ -55,17 +55,6 @@ app.use(cors({
 app.use(express.json({ limit: "1mb" }));
 app.use(express.urlencoded({ extended: true, limit: "1mb" }));
 
-// COOKIE_SECRET signs flow-state cookies (authz_pending, login_pending, oidc_pending, activate_pending,
-// csrf_activate) so their redirectUri and PKCE state can't be tampered with. An
-// ephemeral random secret is generated at startup if not provided — this protects
-// within-process integrity; set COOKIE_SECRET for cross-restart consistency.
-const cookieSecret = process.env["COOKIE_SECRET"] ?? (() => {
-  const ephemeral = randomBytes(32).toString("hex");
-  process.stderr.write("WARNING: COOKIE_SECRET is not set — using an ephemeral secret. Set COOKIE_SECRET for cross-restart cookie integrity.\n");
-  return ephemeral;
-})();
-app.use(cookieParser(cookieSecret));
-
 app.use((req, res, next) => {
   const raw = req.headers["x-request-id"] as string | undefined;
   // Strip non-printable ASCII and clamp length to prevent log injection.
@@ -79,42 +68,18 @@ app.use((_req, res, next) => {
   res.set("X-Content-Type-Options", "nosniff");
   res.set("X-Frame-Options", "DENY");
   res.set("Referrer-Policy", "strict-origin-when-cross-origin");
-  // Inline styles are used in server-rendered auth/setup pages; no JS or external resources.
-  res.set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'");
+  // The relay serves only JSON; no scripts, styles or other resources are needed.
+  res.set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'");
   if (config.secureCookies) res.set("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
   next();
 });
 
 
-export const oauthLimiter = rateLimit({
+// Discovery and client metadata documents are cheap static GETs that clients re-fetch
+// routinely (and hit in bursts during connect), so they get a generous bucket.
+export const staticLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  limit: config.rateLimits.oauthPer15Min,
-  standardHeaders: "draft-7",
-  legacyHeaders: false,
-  message: { error: "rate_limit_exceeded" },
-});
-
-// Device code polling is high-frequency by design (5s interval, 15min TTL ≈ 180 polls).
-// Give it a separate, higher-capacity bucket so it doesn't exhaust the strict OAuth limit.
-// On trip, this bucket alone emits RFC 8628 §3.5's "slow_down" token-error response
-// (400 + {error: "slow_down"}) instead of a generic 429 — it's the only bucket whose
-// traffic is exclusively device-flow polling, so existing pollers that already
-// understand authorization_pending/access_denied can back off instead of hard-failing.
-export const devicePollLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  limit: config.rateLimits.devicePollPer15Min,
-  standardHeaders: "draft-7",
-  legacyHeaders: false,
-  statusCode: 400,
-  message: { error: "slow_down" },
-});
-
-// The device-authorization consent flow (/activate*) — a separate bucket from
-// oauthLimiter since one flow spans several requests (code entry, login or OIDC
-// callback, consent), not the single round-trip oauthPer15Min is sized for.
-export const deviceAuthLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  limit: config.rateLimits.deviceAuthPer15Min,
+  limit: config.rateLimits.staticPer15Min,
   standardHeaders: "draft-7",
   legacyHeaders: false,
   message: { error: "rate_limit_exceeded" },
@@ -133,17 +98,13 @@ export const defaultLimiter = rateLimit({
  * one bucket, decided by classifyHttpRoute() (rate-limit-classify.ts). See that
  * function for the exemptions and the unclassified-falls-through-to-strict rule. */
 app.use((req: Request, res: Response, next: NextFunction) => {
-  const bucket = classifyHttpRoute(req.path, (req.body as Record<string, unknown> | undefined)?.["grant_type"]);
+  const bucket = classifyHttpRoute(req.path);
   switch (bucket) {
     case "exempt": return next();
-    case "oauth": return oauthLimiter(req, res, next);
-    case "device-poll": return devicePollLimiter(req, res, next);
-    case "device-auth": return deviceAuthLimiter(req, res, next);
+    case "static": return staticLimiter(req, res, next);
     case "default": return defaultLimiter(req, res, next);
   }
 });
-
-app.use(setupMiddleware);
 
 // /healthz is after the rate-limit dispatcher (not before it) so it can't be used
 // to exhaust the PG connection pool unchecked. It gets its own generous bucket
@@ -165,12 +126,12 @@ app.get("/healthz", healthzLimiter, async (_req: Request, res: Response) => {
 });
 
 app.use("/", setupRouter);
-app.use("/", oauthRouter);
-app.use("/", deviceRouter);
+app.use("/", discoveryRouter);
+app.use("/", clientMetadataRouter);
 app.use("/", mcpRouter);
-if (process.env["RELAY_ADMIN_TOKEN"]) {
-  app.use("/", adminTokenRouter);
-}
+// executorsRouter applies its own bearer auth, so it must be mounted before apiRouter
+// (whose router-level requireBearerAuth would otherwise see this route first).
+app.use("/", executorsRouter);
 app.use("/", apiRouter);
 
 // Must be last — 4-argument signature is how Express identifies error handlers.

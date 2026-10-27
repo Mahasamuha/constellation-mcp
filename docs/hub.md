@@ -17,7 +17,7 @@ See [Architecture → Hub](architecture.md#hub) for how the hub fits into the re
 
 The hub model rests on two assumptions:
 
-1. **The relay is a trusted intermediary.** Identity claims forwarded in the RPC envelope arrive from the relay, which authenticated the user via OIDC. The hub trusts these claims as authoritative — the same trust model as SSSD or an LDAP client trusting a directory server.
+1. **The relay is a trusted intermediary.** Identity claims forwarded in the RPC envelope arrive from the relay, which verified the user's asterism access token. The hub trusts the `sub`, `groups` and claims as authoritative — the same trust model as SSSD or an LDAP client trusting a directory server.
 
 2. **The admin, not users, controls what is shared.** Shares (path mounts) are defined in the hub config by the operator. Users cannot register, modify, or remove shares. The hub connects to the relay with a service-level token that is not bound to any user.
 
@@ -28,22 +28,29 @@ The hub model rests on two assumptions:
 | Runs as | The user's own OS identity | A dedicated low-privilege service user |
 | Share registry | User-managed (via relay sync) | Admin-defined in config file |
 | Token scope | Bound to one user (`ExecutorTokenType.NODE`) | Service-level (`ExecutorTokenType.HUB`, not user-bound) |
-| Per-request identity | N/A — always the user | Resolved from OIDC claims in the RPC envelope |
+| Per-request identity | N/A — always the user | Resolved from the asterism `sub` and claims in the RPC envelope |
 | Sub-process spawning | None | Spawns a subnode per OS user on demand |
 
 ---
 
 ## 2. Security Model
 
-### Identity resolution (three-tier priority chain)
+### Identity resolution (two-tier priority chain)
 
-The hub resolves the requesting user's local OS username using a priority chain. The first tier to produce a valid OS account wins; if no tier succeeds, the request is rejected.
+The hub knows a user only by the asterism access token's `sub` (Constellation's user id) and the claims asterism releases: `groups`, `email` and `constellation_username`. It never sees the upstream identity provider's subject. It resolves the local OS username using a priority chain; the first tier to produce a valid OS account wins, and if no tier succeeds the request is rejected. There is no fallback to the hub's own identity. See [ADR 0023](adr/0023-hub-identity-asterism-sub.md).
 
-1. **Tier 1 — Custom OIDC claims** (`identity.claims` in config): Iterate configured claim names; look up the claim value from the RPC envelope; attempt OS account lookup (`getpwnam`). Suitable for LDAP-backed providers where the directory attribute (e.g. `uid`, `sAMAccountName`) is forwarded as a custom claim via an Authentik property mapping.
+1. **Tier 1 — Custom claims** (`identity.claims` in config, normally `constellation_username`): Iterate configured claim names; if the claim is present in the envelope's `user_claims`, resolve it to an OS account. Suitable for LDAP-backed providers where the directory attribute (e.g. `uid`, `sAMAccountName`) reaches asterism as `constellation_username`.
 
-2. **Tier 2 — Explicit `oidc_sub` → username map** (`identity.user_map`): Static mapping from provider-assigned subject identifier to local username. Used when custom claims are unavailable or a per-user override is needed.
+2. **Tier 2 — Explicit `sub` → username map** (`identity.user_map`): Static mapping from asterism user id to local username. Used when the claim is unavailable or a per-user override is needed. Only reached when no configured claim is present.
 
-3. **Tier 3 — `preferred_username` (opt-in, disabled by default)**: Directly resolves the `preferred_username` claim as a local OS username. **Disabled by default** because `preferred_username` is editable by users on many providers (including Authentik with default settings) and can be used for lateral movement. Enable only if your provider locks this claim and you understand the risk.
+There is no tier 3: `identity.allow_preferred_username` was removed, and a config that still sets it fails to load.
+
+**Claim values are untrusted input.** `constellation_username` chooses the OS user the hub drops privileges to, so the hub validates it before use:
+
+- It must match `^[A-Za-z_][A-Za-z0-9._@-]{0,255}$`. The first character is a letter or `_`, so a value is never numeric (`getent passwd 1000` would resolve a UID) and never starts with `-`. Mixed case, `.` and SSSD names such as `user@domain.example` are allowed; whitespace, `+`, `:`, `/`, `\`, unicode and control characters are not.
+- The passwd entry that comes back must have exactly that name (case-sensitive). The entry's own name is used from then on (ACLs, audit log, group lookup, subnode key).
+- A claim that is **present but invalid, unresolved, mismatched, or not a string** (array, object, number) is a hard refusal. It does not fall through to `user_map`. Only an **absent** claim moves on to tier 2.
+- `user_map[].local_username` gets the same pattern and exact-name check.
 
 ### Token security
 
@@ -122,11 +129,11 @@ See the config reference in [§5](#5-deployment) for details.
 ```
 MCP client
   → POST /mcp (Bearer token)
-    → Relay authenticates session → retrieves userId, oidcSub, lastKnownClaims
+    → Relay authenticates session → takes the user id (`sub`), groups and claims from the verified access token
     → Relay resolves share → checks HubShare registry (optimistic permission check)
-    → Relay builds RPC envelope: { tool, share, absolute_root, user_oidc_sub, user_claims, params }
+    → Relay builds RPC envelope: { tool, share, absolute_root, user_sub, user_groups, user_claims, params }
     → Relay forwards RPC via WebSocket to hub
-      → Hub resolves OS identity (3-tier chain)
+      → Hub resolves OS identity (2-tier chain)
       → Hub checks permissions (share-level access against admin config)
       → Hub looks up or spawns subnode for resolved user
         → Subnode runs under user's OS identity (uid + full supplementary groups via initgroups)
@@ -137,8 +144,10 @@ MCP client
     → Relay returns result to MCP client
 ```
 
+The envelope fields changed with the asterism cutover (`user_oidc_sub` became `user_sub` plus `user_groups`). There is no protocol version negotiation: upgrade the relay and every hub together. A hub refuses an envelope without a non-empty `user_sub`, and the relay rejects a `hub_share_sync` that still carries `oidc_sub` overrides.
+
 Two enforcement points:
-- **Relay (optimistic):** evaluates the synced permission blob (`default` access and per-`oidc_sub` overrides) at share resolution time. May grant access that the hub subsequently denies (e.g. due to Tier 1 identity resolution failure).
+- **Relay (optimistic):** evaluates the synced permission blob (`default` access and per-`sub` / per-`group` overrides) at share resolution time. May grant access that the hub subsequently denies (e.g. due to Tier 1 identity resolution failure).
 - **Hub (authoritative):** full identity resolution and permission check. Result at the hub always takes precedence.
 
 ### Subnode worker pool
@@ -194,8 +203,11 @@ this is an opt-in extra ceiling, not a mandatory one.
 Permissions are defined per-share in the config. The evaluation order:
 
 1. If the share is not in the admin config → reject.
-2. If `permissions.overrides` contains an entry for the user's `oidc_sub` → use that access level.
-3. Otherwise use `permissions.default`.
+2. If `permissions.overrides` contains a `sub` entry for the user's asterism `sub` → use that access level. A `sub` entry wins outright.
+3. Otherwise, if the user's `groups` match one or more `group` entries → use the most permissive of them (`read-write` over `read-only` over `none`). A group entry can restrict as well as grant, because the default may be more permissive than the group's level; to deny a group everything, give it `none` and make sure no other matching group grants more.
+4. Otherwise use `permissions.default`.
+
+Each override has exactly one of `sub` or `group`. The old `oidc_sub` key is a config error (naming the share and index); re-key it to `sub` (the asterism user id) or `group`.
 
 Access levels:
 - `read-only` — permits read, search, and listing tools; blocks write tools (`write_file`, `edit_file`, `create_directory`, `delete`, `move`, `copy`).
@@ -210,7 +222,7 @@ Access levels:
 
 - Linux (Windows support is deferred).
 - A dedicated low-privilege service user (e.g. `constellation`) with `CAP_SETUID` and `CAP_SETGID` capabilities. **Do not run as root.**
-- An OIDC provider configured to forward a stable user attribute as a claim (Tier 1 identity), or a static `user_map` (Tier 2).
+- asterism releasing a stable OS username as the `constellation_username` claim (Tier 1 identity), or a static `user_map` (Tier 2).
 - An audit log directory writable by the service user.
 
 ### Registration
@@ -224,7 +236,7 @@ sudo constellation hub register \
   --env-file /etc/constellation/hub.env
 ```
 
-The browser opens automatically for admin approval. The token is written to the env file — the operator never sees the raw token.
+The browser opens automatically for an admin sign-in (scope `relay admin`). The approving account must be in asterism's `constellation-admins` group; add it there in your identity provider before registering. The token is written to the env file — the operator never sees the raw token.
 
 Options:
 - `--relay` — required (or set `RELAY_URL`)
@@ -235,7 +247,7 @@ Break-glass alternative (scripted provisioning or token recovery):
 
 ```sh
 constellation relay token create --shared
-# Requires admin session (run 'constellation relay elevate' first)
+# Starts a second sign-in with scope 'relay admin' (account must be in constellation-admins)
 ```
 
 The token is displayed once and must be stored immediately.
@@ -333,16 +345,19 @@ shares:
     permissions:
       default: read-write                  # read-only | read-write | none
       overrides:
-        - oidc_sub: auth0|abc123           # Per-user access override
+        - sub: 4f1c2a9e-0000-0000-0000-000000000000   # Per-user override: the asterism sub (= Constellation user id)
           access: read-only
+        - group: engineering               # Per-group override: a name from the token's groups claim
+          access: read-write
+                                           # Exactly one of sub or group per entry. oidc_sub is no longer accepted.
 
 identity:
   claims:
-    - constellation_username               # OIDC claim names to try (Tier 1)
+    - constellation_username               # Claim names to try (Tier 1)
   user_map:
-    - oidc_sub: auth0|abc123              # Tier 2: explicit oidc_sub → local username map
-      local_username: alice
-  allow_preferred_username: false          # Tier 3: use preferred_username claim (risky — see §2)
+    - sub: 4f1c2a9e-0000-0000-0000-000000000000   # Tier 2: asterism sub → local username
+      local_username: alice                # Must match the username pattern and be the exact passwd name
+                                           # allow_preferred_username was removed (config error if present)
 ```
 
 `instructions`/`context_file` share the same 500-char hard cap, 250-char recommendation, and fallback behavior as a node's `paths.yaml` — see [Configuration → `paths.yaml`](configuration.md#pathsyaml) for the full explanation.
@@ -434,7 +449,7 @@ constellation relay executors list --json
 constellation relay executors revoke <executor-id>
 ```
 
-The hub goes offline immediately. To re-register, run `constellation hub register` again (requires admin approval).
+The hub goes offline immediately. To re-register, run `constellation hub register` again (needs an admin sign-in, see Registration).
 
 ### Audit log
 
@@ -445,7 +460,7 @@ Each tool call produces one JSONL entry:
   "ts": "2026-06-06T12:00:00.000Z",
   "hub_name": "nas-shared",
   "request_id": "<uuid>",
-  "user_oidc_sub": "auth0|abc123",
+  "user_sub": "4f1c2a9e-0000-0000-0000-000000000000",
   "local_username": "alice",
   "share": "projects",
   "tool": "read_file",
@@ -453,6 +468,8 @@ Each tool call produces one JSONL entry:
   "error": null
 }
 ```
+
+`user_sub` is the asterism `sub`. Group membership is not written to the audit log.
 
 `outcome` values: `ok` | `identity_error` | `permission_denied` | `exec_error` | `uid_blocked` | `gid_blocked` | `spawn_failed` | `timeout` | `worker_error` | `subnode_limit`.
 
@@ -470,4 +487,4 @@ constellation relay hub-shares list --executor <executor-id>
 constellation relay hub-shares list --json
 ```
 
-Requires an elevated admin session (`constellation relay elevate`).
+Needs the `admin` scope: the command starts a second device sign-in with scope `relay admin`, which asterism grants only to members of the `constellation-admins` group. The admin token is held in memory for that command only; there is no `relay elevate`.

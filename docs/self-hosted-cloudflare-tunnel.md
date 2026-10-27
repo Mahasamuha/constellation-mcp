@@ -49,7 +49,7 @@ Fill in the required values:
 RELAY_URL=https://relay.example.com      # your tunnel URL from step 2
 CLOUDFLARE_TUNNEL_TOKEN=<paste token>    # from step 1
 POSTGRES_PASSWORD=<replace with a strong password>   # .env.example ships a placeholder — change it
-AUTH_MODE=local                          # or oidc if you have a provider
+ASTERISM_ISSUER=https://auth.example.com # your asterism instance (https)
 TRUST_PROXY_PRESET=cloudflare-tunnel     # already set in .env.example
 ```
 
@@ -63,9 +63,9 @@ docker compose up -d
 
 This starts three containers: `postgres`, `relay`, and `cloudflared`.
 
-### 5. Complete setup
+### 5. Register the relay in asterism
 
-Open your tunnel URL in a browser. The first-run setup wizard will guide you through creating your admin account.
+In asterism, register the relay as a resource server using your tunnel URL. asterism fetches the relay's metadata at `https://relay.example.com/.well-known/oauth-protected-resource/mcp`, which declares the `relay` scope and the step-up-only `admin` scope. Add the people who should administer the relay to asterism's `constellation-admins` group. Accounts are created and managed in asterism.
 
 ## Updating
 

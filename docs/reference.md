@@ -20,10 +20,12 @@ constellation node [--config-dir <dir>] <command>
 ### `node init`
 
 ```sh
-constellation node init --relay <url>
+constellation node init --relay <url> [--host-name <name>]
 ```
 
-Runs the device code OAuth flow, creates a node registration on the relay, and writes `node.yaml` and an empty `paths.yaml`. Safe to re-run — rewrites credentials without touching existing path config.
+Signs in to the relay's authorization server (asterism) with the OAuth device flow (scope `relay`, client `<relay>/clients/node.json`), then calls `POST /api/executors/register` with `type: "node"` and the host name to create the node registration. Writes `node.yaml` and an empty `paths.yaml`. Safe to re-run — rewrites credentials without touching existing path config.
+
+`--host-name` (1–63 characters) defaults to the host from an existing `node.yaml`, else the machine's hostname. The sign-in access token is used once and not stored; the node token in `node.yaml` is the long-lived credential.
 
 ### `node install`
 
@@ -107,7 +109,7 @@ Every subcommand below that takes `--config-file <path>` resolves it the same wa
 constellation hub register --relay <url> [--host-name <name>] [--env-file <path>]
 ```
 
-Starts a device code OAuth flow that requires admin approval. Once approved, writes the service token to the env file (default `/etc/constellation/hub.env`, mode 0600). The token is never printed to the terminal.
+Starts an OAuth device flow against the relay's authorization server (asterism) with scope `relay admin` and client `<relay>/clients/hub.json`. Only members of the admin group can approve it. The approved admin token (5 minutes, not stored) is then used for `POST /api/executors/register` with `type: "hub"`; the resulting service token is written to the env file (default `/etc/constellation/hub.env`, mode 0600). The token is never printed to the terminal.
 
 | Flag | Default | Description |
 |---|---|---|
@@ -196,7 +198,7 @@ The tray icon reflects connection state (blue = connected, yellow = connecting, 
 
 ### Auth window
 
-Runs the device code OAuth flow (`constellation node init`). Enter the relay URL, then approve the login in your browser. On success, writes `node.yaml` and creates `paths.yaml` if absent.
+Runs the same sign-in and registration as `constellation node init`. Enter the relay URL, then approve the login in your browser (on the authorization server's page). On success, writes `node.yaml` and creates `paths.yaml` if absent. The host name is the one already in `node.yaml`, else the machine's hostname.
 
 ### Status window
 
@@ -227,9 +229,25 @@ Edits `node.yaml` fields:
 
 These commands manage the relay remotely via the management API. Requires `constellation relay login` first. The session in `relay-session.yaml` is refreshed silently as needed.
 
+The session holds an asterism access token and a rotating refresh token (scope `relay offline_access`, client `<relay>/clients/cli.json`):
+
+```yaml
+relay_url: https://relay.example.com
+access_token: <JWT>
+access_token_expires_at: 2026-10-27T12:00:00.000Z
+refresh_token: <opaque>
+refresh_token_expires_at: 2026-11-26T11:00:00.000Z   # absolute, 30 days from login
+```
+
+The shape is unchanged from earlier versions, but tokens issued by the old relay no longer work: sign in again after upgrading. Refreshes are serialized across processes with `relay-session.yaml.lock`, and the rotated refresh token is written before the new access token is used. When the refresh token is spent, revoked (for example in asterism's `/grants`) or past its 30 days, the command says "Session expired"; run `relay login` again (in an interactive terminal it starts the sign-in for you).
+
+Commands that need admin (`relay hub-shares list`, `relay token create --shared`) do a second device flow with scope `relay admin` and no `offline_access`, only for that command. The admin token is kept in memory and never written to disk; it needs membership in asterism's `constellation-admins` group. There is no `relay elevate`.
+
+User accounts, admin roles and sessions are managed in asterism, not here: use asterism's `/grants` page to review or revoke what each client may do, and asterism's `local-user` CLI to manage local accounts.
+
 `--config-dir <dir>` (e.g. `constellation relay --config-dir /path login`) and `CONSTELLATION_CONFIG_DIR` override the default config directory where `relay-session.yaml` is read and written.
 
-`--relay <url>` is declared on the `relay` command itself, not on `login`, `elevate`, `user promote`, or `user demote` individually — it must appear somewhere after `relay` on the command line. The recommended, always-safe position is right after `relay` and before the subcommand (e.g. `constellation relay --relay <url> login`).
+`--relay <url>` is declared on the `relay` command itself, not on `login` or any other subcommand individually — it must appear somewhere after `relay` on the command line. The recommended, always-safe position is right after `relay` and before the subcommand (e.g. `constellation relay --relay <url> login`).
 
 ### `relay login`
 
@@ -237,11 +255,11 @@ These commands manage the relay remotely via the management API. Requires `const
 constellation relay --relay <url> login
 ```
 
-Runs the device code OAuth flow for `relay:manage` scope. Writes session to `relay-session.yaml`. Relay URL defaults to the one in `node.yaml` if not specified.
+Runs the OAuth device flow against the relay's authorization server (scope `relay offline_access`). Writes the session to `relay-session.yaml`. Relay URL defaults to the one in `node.yaml` if not specified.
 
 ### `relay logout`
 
-Deletes `relay-session.yaml`. Does not revoke the token on the relay.
+Deletes `relay-session.yaml`. Does not revoke the grant; do that in asterism's `/grants` page.
 
 ### `relay status`
 
@@ -271,61 +289,9 @@ Adds a deny filter. `--type` defaults to `glob`. `--executor` scopes it to a spe
 
 Removes a deny filter by ID.
 
-### `relay sessions list [--limit <n>] [--offset <n>] [--json]`
-
-Lists active MCP client OAuth sessions (non-expired only). Paginated — see `relay executors list` above.
-
-### `relay sessions revoke <session-id>`
-
-Immediately invalidates an MCP client session (both access and refresh tokens).
-
-### `relay users list [--limit <n>] [--offset <n>] [--json]`
-
-Lists all local user accounts. Only available when the relay is running in `AUTH_MODE=local`. Paginated — see `relay executors list` above.
-
-### `relay users add <username>`
-
-Creates a new local user. Prompts for a password (minimum 12 characters).
-
-### `relay users remove <username>`
-
-Deactivates a local user (soft delete). Prompts for confirmation. Access is cut immediately — every existing session and executor connection for that user is rejected on its very next request, not just future logins.
-
-### `relay users reset-password <username>`
-
-Sets a new password for a local user and immediately invalidates all of their existing OAuth sessions. Prompts for the new password (minimum 12 characters).
-
-### `relay account deactivate`
-
-Deactivates your account after an interactive confirmation prompt. All executor connections and MCP client sessions are immediately blocked. There is no CLI command to restore a deactivated account — reactivation requires a database-level change.
-
-### `relay elevate`
-
-```sh
-constellation relay --relay <url> elevate
-```
-
-Requests temporary admin access via a browser-approved device code flow (step-up authentication). Opens the approval URL automatically. On success, the current `relay:manage` session is elevated and subsequent admin-required commands succeed. Admin approval is required; the request is denied if the account does not have admin privileges.
-
-### `relay user promote <identifier>`
-
-```sh
-constellation relay --relay <url> user promote <identifier> [--admin-token <token>]
-```
-
-Grants admin role to a user. `<identifier>` is the OIDC sub or (in `AUTH_MODE=local`) the username. Requires `RELAY_ADMIN_TOKEN` env var or `--admin-token` flag — this is a bootstrap operation not gated by OAuth. Prefer the env var: the `--admin-token` flag value appears in shell history and `ps` output.
-
-### `relay user demote <identifier>`
-
-```sh
-constellation relay --relay <url> user demote <identifier> [--admin-token <token>]
-```
-
-Revokes admin role from a user. Same auth requirements as `relay user promote` — prefer `RELAY_ADMIN_TOKEN` env var over the `--admin-token` flag.
-
 ### `relay hub-shares list [--executor <id>] [--json]`
 
-Lists all hub shares synced to the relay. Requires an elevated admin session (`relay elevate` first). `--executor` filters to a specific hub by ID.
+Lists all hub shares synced to the relay. Asks you to approve an admin sign-in (see above). `--executor` filters to a specific hub by ID.
 
 ### `relay token create --shared`
 
@@ -333,7 +299,7 @@ Lists all hub shares synced to the relay. Requires an elevated admin session (`r
 constellation relay token create --shared
 ```
 
-Break-glass operation: creates a hub service token without going through the device code flow. Use only when `constellation hub register` is unavailable (e.g. scripted provisioning). Requires an elevated admin session. The token is shown once — store it immediately. Displays a prominent warning before proceeding.
+Break-glass operation: creates a hub service token without registering a host. Use only when `constellation hub register` is unavailable (e.g. scripted provisioning). Asks you to approve an admin sign-in. The token is shown once — store it immediately. Displays a prominent warning before proceeding.
 
 ---
 
@@ -627,9 +593,9 @@ Delete a file or directory. If the target is a directory and `recursive` is abse
 
 ## Management API
 
-All `/api/*` endpoints require a valid Bearer token obtained via `constellation relay login`. The token is an OAuth access token tied to a user session — there is no separate API key or scope requirement.
+The relay is an OAuth resource server; [asterism](adr/0022-asterism-authorization-server.md) is the authorization server. Every `/api/*` endpoint (and `POST /api/executors/register`) requires an asterism-issued JWT access token as `Authorization: Bearer <token>`, with audience `<RELAY_URL>/mcp` and the `relay` scope. Get one with `constellation relay login`.
 
-Admin-only endpoints additionally require the session to be elevated (see `relay elevate`). Requests without admin privileges receive `403 ESCALATION_REQUIRED`.
+Admin-only endpoints (`POST /api/tokens/shared`, `GET /api/admin/hub-shares`, `GET /api/admin/activity`, and `POST /api/executors/register` with `type: "hub"`) additionally need the `admin` scope in the token. `admin` is step-up only: asterism grants it only to members of the `constellation-admins` group, and only when a client asks for it with `scope=relay admin`. A token without it gets a `403 insufficient_scope` whose `WWW-Authenticate` header asks for `scope="relay admin"`. The CLI does this for you with a second device sign-in; the admin token is not stored.
 
 All error responses follow:
 ```json
@@ -640,9 +606,10 @@ Common auth errors:
 
 | Status | `error` | Meaning |
 |---|---|---|
-| `401` | `unauthorized` | Bearer token missing |
-| `401` | `invalid_token` | Token expired or not found |
-| `403` | `ESCALATION_REQUIRED` | Admin endpoint — run `constellation relay elevate` |
+| `401` | `unauthorized` | Bearer token missing. `WWW-Authenticate` carries `resource_metadata` pointing at `/.well-known/oauth-protected-resource/mcp` |
+| `401` | `invalid_token` | Token malformed, expired, or wrong issuer or audience. Same `WWW-Authenticate` challenge, with `error="invalid_token"` |
+| `403` | `insufficient_scope` | The token lacks the `relay` scope, or an admin endpoint was called without `admin`. `WWW-Authenticate` names the scopes needed (`relay admin` for admin endpoints) |
+| `503` | `temporarily_unavailable` | The relay could not fetch asterism's signing keys (`jwks_unavailable`). The token was not judged invalid; retry after the `Retry-After` interval (30 seconds) |
 
 List endpoints support pagination via `limit` (default 100, max 1000) and `offset` (default 0) query parameters and return:
 ```json
@@ -663,11 +630,11 @@ Process uptime and version. Requires a Bearer token like every other `/api/*` en
 
 ### `GET /api/me`
 
-Returns the current session ID and user ID. Used internally by `relay elevate` to identify the session to escalate.
+Returns the caller's Constellation user ID (the token's `sub`) and the scopes and groups carried by the access token. Useful for checking whether a token holds `admin`.
 
 **Response `200`**
 ```json
-{ "session_id": "...", "user_id": "..." }
+{ "user_id": "...", "scopes": ["relay"], "groups": ["engineering"] }
 ```
 
 ---
@@ -772,40 +739,9 @@ Remove a path filter.
 
 ---
 
-### `GET /api/sessions`
-
-List active MCP client OAuth sessions (non-expired only).
-
-**Response `200`** — paginated:
-
-| Field | Type | Description |
-|---|---|---|
-| `id` | string | Session ID |
-| `mcp_client_id` | string | OAuth client that holds this session |
-| `is_dynamic_client` | boolean | Whether the client registered via Dynamic Client Registration (`false` for metadata document clients) |
-| `is_metadata_document_client` | boolean | Whether the client identified itself with a Client ID Metadata Document URL |
-| `client_name` | string \| null | Client's display name (set for metadata document clients; `null` for DCR clients) |
-| `issued_at` | ISO 8601 | |
-| `expires_at` | ISO 8601 | Access token expiry |
-| `has_refresh_token` | boolean | |
-| `refresh_token_expires_at` | ISO 8601 \| null | |
-
----
-
-### `DELETE /api/sessions/:id`
-
-Revoke an OAuth session. Both access and refresh tokens are invalidated immediately.
-
-| Status | Meaning |
-|---|---|
-| `204` | Session revoked |
-| `404` | Not found or belongs to another user |
-
----
-
 ### `POST /api/tokens/shared`
 
-Break-glass hub token creation. Requires an elevated admin session. Creates a user-less `HUB` token that a hub can use to authenticate. The preferred path is `constellation hub register` — use this endpoint only when the device code flow is unavailable.
+Break-glass hub token creation. Requires the `admin` scope. Creates a user-less `HUB` token that a hub can use to authenticate. The preferred path is `constellation hub register` — use this endpoint only when `POST /api/executors/register` is unavailable (for example scripted provisioning). From the CLI: `constellation relay token create --shared`.
 
 **Response `201`**
 ```json
@@ -813,6 +749,32 @@ Break-glass hub token creation. Requires an elevated admin session. Creates a us
 ```
 
 The token is returned once and not stored. Revoke via `DELETE /api/executors/:id/token`.
+
+---
+
+### `POST /api/executors/register`
+
+Registers a node or hub and mints its long-lived executor token. It replaces the old device-code registration. The caller sends an asterism access token as a bearer: a node needs the `relay` scope, a hub also needs `admin`. `constellation node init` and `constellation hub register` call this for you after their device sign-in.
+
+**Request body**
+
+| Field | Required | Description |
+|---|---|---|
+| `type` | yes | `"node"` or `"hub"` |
+| `host` | yes | Host name, trimmed, at most 63 characters |
+
+**Response `200`**
+```json
+{ "access_token": "...", "token_type": "agent", "host": "nas-shared" }
+```
+
+`access_token` is the executor token used on `/executor/connect`. It is returned once and not stored. Registering the same host again revokes the previous token (for a hub, the previous active hub token for that host).
+
+| Status | Meaning |
+|---|---|
+| `200` | Registered |
+| `400` | `type` is not `node` or `hub`, or `host` is missing or too long |
+| `401` / `403` | Missing or invalid token; `type: "hub"` without the `admin` scope returns `403 insufficient_scope` |
 
 ---
 
@@ -875,65 +837,9 @@ Accepts the same `event_type`, `limit`, and `offset` query params, and returns t
 
 ---
 
-### `GET /api/users` · `POST /api/users` · `POST /api/users/:username/deactivate` · `POST /api/users/:username/reset-password`
-
-User management endpoints. Available in `AUTH_MODE=local` only — return `404` in `AUTH_MODE=oidc`. All require an elevated admin session.
-
-**`GET /api/users`** — list all local users. Paginated.
-
-**Response `200`**
-```json
-{
-  "data": [
-    {
-      "id": "...",
-      "username": "alice",
-      "is_active": true,
-      "created_at": "2026-05-25T12:00:00.000Z",
-      "last_login_at": "2026-05-25T14:00:00.000Z"
-    }
-  ],
-  "total": 1,
-  "limit": 100,
-  "offset": 0
-}
-```
-
-**`POST /api/users`** — create a new local user. Body: `{ username, password }`. Password must be at least 12 characters. Returns `409` if the username is already taken.
-
-**`POST /api/users/:username/deactivate`** — deactivate a user. Marks the user account as deactivated; every existing session and executor connection for that user is rejected on its very next request, not just future logins.
-
-**`POST /api/users/:username/reset-password`** — set a new password. Body: `{ password }`. Immediately invalidates all existing OAuth sessions for that user.
-
----
-
-### `POST /api/admin/users/:identifier/promote`
-
-Grant admin role to a user. `<identifier>` is the OIDC sub or (in `AUTH_MODE=local`) the username. Protected by `RELAY_ADMIN_TOKEN` — not an OAuth-gated route.
-
-| Status | Meaning |
-|---|---|
-| `204` | Role updated |
-| `401` | Invalid or missing admin token |
-| `404` | User not found, or `RELAY_ADMIN_TOKEN` not set |
-
----
-
-### `POST /api/admin/users/:identifier/demote`
-
-Revoke admin role from a user. Same auth requirements as promote.
-
-| Status | Meaning |
-|---|---|
-| `204` | Role updated |
-| `401` | Invalid or missing admin token |
-| `404` | User not found, or `RELAY_ADMIN_TOKEN` not set |
-
----
-
 ### `GET /api/admin/hub-shares`
 
-List all hub shares synced to the relay from hubs. Requires an elevated admin session.
+List all hub shares synced to the relay from hubs. Requires the `admin` scope.
 
 **Query params**: `executor_id` — filter to a specific hub by ID (optional).
 
@@ -947,8 +853,8 @@ List all hub shares synced to the relay from hubs. Requires an elevated admin se
       "share": "projects",
       "reported_path": "/srv/projects",
       "permission_blob": {
-        "default": "read",
-        "overrides": [{ "oidc_sub": "user|abc", "access": "write" }]
+        "default": "read-only",
+        "overrides": [{ "sub": "user-id-abc", "access": "read-write" }, { "group": "engineering", "access": "read-only" }]
       },
       "updated_at": "2026-06-01T10:00:00.000Z"
     }
@@ -958,16 +864,14 @@ List all hub shares synced to the relay from hubs. Requires an elevated admin se
 
 ---
 
-### `POST /api/account/deactivate`
+## Discovery and client metadata
 
-Deactivate the authenticated user's account. All subsequent token lookups will fail.
+These are unauthenticated, cacheable `GET` endpoints outside `/api/*`. The relay serves no `/oauth/*`, `/activate*`, `/setup`, `/auth/*` or `/.well-known/oauth-authorization-server`; sign-in, accounts and revocation (`/grants`) are asterism's.
 
-**Request body**
-```json
-{ "confirm": "deactivate my account" }
-```
+### `GET /.well-known/oauth-protected-resource/mcp`
 
-| Status | Meaning |
-|---|---|
-| `204` | Account deactivated |
-| `400` | Confirmation string missing or wrong |
+RFC 9728 protected resource metadata. Names asterism (`ASTERISM_ISSUER`) as the authorization server for the resource `<RELAY_URL>/mcp`, and lists the `relay` scope. The `admin` scope is step-up only and is deliberately not in `scopes_supported`. Every `401` from `/mcp` and `/api` points here through `resource_metadata` in `WWW-Authenticate`.
+
+### `GET /clients/cli.json` · `GET /clients/node.json` · `GET /clients/hub.json`
+
+OAuth Client ID Metadata Documents for the CLI, node and hub. Each document's `client_id` is the URL it is served from (`<RELAY_URL>/clients/<kind>.json`); asterism fetches it when the client first asks for a device code. They are separate clients so that revoking one grant in asterism does not end the others. The documents declare `token_endpoint_auth_method: "none"` and the authorization code, device code and refresh token grant types.

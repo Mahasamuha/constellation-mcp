@@ -6,7 +6,7 @@ The relay component of [Constellation](https://github.com/Mahasamuha/constellati
 MCP client → relay (VPS / Railway / Fly) → node (your machine)
 ```
 
-Nodes connect outbound to the relay over WebSocket — no inbound ports required on the machines you expose. The relay handles OAuth 2.0 authentication for MCP clients and routes tool calls to the appropriate node.
+Nodes connect outbound to the relay over WebSocket — no inbound ports required on the machines you expose. The relay verifies OAuth 2.1 access tokens issued by asterism (an external authorization server) and routes tool calls to the appropriate node.
 
 ## Quick Start
 
@@ -19,7 +19,7 @@ services:
     environment:
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/constellation
       RELAY_URL: https://your-relay.example.com
-      AUTH_MODE: local
+      ASTERISM_ISSUER: https://auth.example.com
       TRUST_PROXY: "127.0.0.1"
     depends_on:
       - postgres
@@ -46,23 +46,14 @@ Pre-configured Compose files for standard and Cloudflare Tunnel deployments are 
 | Variable | Description |
 |---|---|
 | `DATABASE_URL` | PostgreSQL connection string |
-| `RELAY_URL` | Public base URL of the relay, no trailing slash (e.g. `https://relay.example.com`) — used to construct OAuth callback URLs |
+| `RELAY_URL` | Public base URL of the relay, no trailing slash (e.g. `https://relay.example.com`) — the token audience is this URL plus `/mcp` |
 | `TRUST_PROXY` | Trusted reverse proxy IPs/CIDRs (e.g. `127.0.0.1`). Use `TRUST_PROXY_PRESET` instead for Railway, Fly, or Cloudflare Tunnel. |
 
-### Auth Mode
-
-| `AUTH_MODE` | Behaviour |
-|---|---|
-| `local` (default) | Built-in username/password. A setup wizard creates the admin account on first visit. No external provider required. |
-| `oidc` | Delegates to an external OIDC provider (Google, Azure AD, Authentik, or any OIDC-compliant provider). |
-
-**OIDC variables** (required when `AUTH_MODE=oidc`):
+### Authorization
 
 | Variable | Description |
 |---|---|
-| `OIDC_ISSUER` | Issuer URL (e.g. `https://accounts.google.com`) |
-| `OIDC_CLIENT_ID` | Client ID from your provider |
-| `OIDC_CLIENT_SECRET` | Client secret from your provider |
+| `ASTERISM_ISSUER` | Issuer URL of your [asterism](https://github.com/Mahasamuha/constellation-mcp/blob/main/docs/adr/0022-asterism-authorization-server.md) authorization server (`https:`). asterism handles sign-in and accounts; register the relay in asterism as a resource server. |
 
 ### Common Optional Variables
 
@@ -72,14 +63,12 @@ Pre-configured Compose files for standard and Cloudflare Tunnel deployments are 
 | `TRUST_PROXY_PRESET` | — | Shorthand for `TRUST_PROXY`: `railway`, `fly`, or `cloudflare-tunnel` |
 | `RPC_TIMEOUT_MS` | `30000` | Max wait for a node response, in milliseconds |
 | `LOG_LEVEL` | `warn` | Pino log level: `trace` … `fatal` |
-| `OAUTH_ACCESS_TOKEN_TTL_HOURS` | `24` | MCP client access token lifetime |
-| `OAUTH_REFRESH_TOKEN_TTL_DAYS` | `30` | MCP client refresh token lifetime |
 
 Full variable reference: [docs/configuration.md](https://github.com/Mahasamuha/constellation-mcp/blob/main/docs/configuration.md)
 
 ## First Run
 
-Database migrations apply automatically on every start. On first visit the relay runs a setup wizard to create your admin account (when `AUTH_MODE=local`).
+Database migrations apply automatically on every start. Register the relay in asterism as a resource server and add administrators to its `constellation-admins` group; there is no setup wizard.
 
 ## Node Setup
 

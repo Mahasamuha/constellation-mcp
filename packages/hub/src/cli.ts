@@ -5,7 +5,7 @@ import { readFileSync, writeFileSync, chmodSync, mkdirSync, statSync, statfsSync
 import { dirname } from "node:path";
 import WebSocket from "ws";
 import open from "open";
-import { poll, assertSecureRelayUrl, assertSecureHttpUrl, isSameOrigin, requestRotateViaControlChannel } from "@constellation/shared";
+import { AsterismError, assertSecureRelayUrl, assertSecureHttpUrl, deviceSignIn, requestRotateViaControlChannel } from "@constellation/shared";
 import { loadHubConfig, validateHubConfig } from "./config.js";
 import { getpwnam } from "./identity.js";
 import { runHub, sourceEnvFile } from "./index.js";
@@ -91,61 +91,41 @@ export function registerHubCommands(program: Command): void {
       console.log(`\nRegistering hub '${hostName}' with relay: ${relayUrl}`);
       console.log("An admin must approve this request in the browser.\n");
 
-      const dcRes = await fetch(`${relayUrl}/oauth/device/code`, {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({ scope: "agent:register:shared", host_name: hostName }),
-      });
-      if (!dcRes.ok) {
-        console.error("Failed to start device flow:", await dcRes.text());
+      // Hub registration is admin-only: the sign-in asks for the step-up `admin` scope, which the
+      // authorization server grants only to members of the admin group. That access token is used
+      // once, here, to mint the hub token, and is not stored.
+      let accessToken: string;
+      try {
+        ({ tokens: { access_token: accessToken } } = await deviceSignIn(relayUrl, {
+          kind: "hub",
+          scope: "relay admin",
+          onCode: async (dc, openUrl) => {
+            console.log(`Share the following URL with an admin (opening browser automatically):`);
+            console.log(`  ${dc.verification_uri_complete}\n`);
+            console.log(`If the browser did not open, the admin should enter this code: ${dc.user_code}\n`);
+            console.log("Waiting for admin approval...\n");
+            if (openUrl) {
+              try { await open(openUrl); } catch { /* ignore */ }
+            }
+          },
+        }));
+      } catch (err) {
+        if (err instanceof AsterismError && err.code === "access_denied") {
+          console.error("\nAccess denied. Ensure the approving user is in the admin group.");
+        } else {
+          console.error(`\n${(err as Error).message}`);
+        }
         process.exit(1);
       }
-      const dc = await dcRes.json() as {
-        device_code: string;
-        user_code: string;
-        verification_uri_complete: string;
-        expires_in: number;
-        interval: number;
-      };
 
-      console.log(`Share the following URL with an admin (opening browser automatically):`);
-      console.log(`  ${dc.verification_uri_complete}\n`);
-      console.log(`If the browser did not open, the admin should enter this code: ${dc.user_code}\n`);
-      console.log("Waiting for admin approval...\n");
-      if (isSameOrigin(relayUrl, dc.verification_uri_complete)) {
-        try { await open(dc.verification_uri_complete); } catch { /* ignore */ }
-      }
-
-      const result = await poll(
-        async ({ intervalMs, setIntervalMs }) => {
-          const r = await fetch(`${relayUrl}/oauth/token`, {
-            method: "POST",
-            headers: { "Content-Type": "application/x-www-form-urlencoded" },
-            body: new URLSearchParams({
-              grant_type: "urn:ietf:params:oauth:grant-type:device_code",
-              device_code: dc.device_code,
-            }),
-          });
-          if (r.status === 400) {
-            const body = await r.json() as { error: string };
-            if (body.error === "authorization_pending") return null;
-            if (body.error === "slow_down") { setIntervalMs(intervalMs + 5000); return null; }
-            if (body.error === "access_denied") {
-              console.error("\nAccess denied. Ensure the approving user has admin privileges.");
-              process.exit(1);
-            }
-            console.error("\nDevice flow error:", body.error);
-            process.exit(1);
-          }
-          if (!r.ok) return null;
-          return r.json() as Promise<{ access_token: string; token_type: string; host: string }>;
-        },
-        dc.interval * 1000,
-        dc.expires_in * 1000
-      );
-
-      if (!result) {
-        console.error("Timed out waiting for approval.");
+      const regRes = await fetch(`${relayUrl}/api/executors/register`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
+        body: JSON.stringify({ type: "hub", host: hostName }),
+      });
+      const result = await regRes.json().catch(() => ({})) as { access_token?: string; host?: string; error?: string; error_description?: string };
+      if (!regRes.ok || !result.access_token || !result.host) {
+        console.error("The relay refused the registration:", result.error_description ?? result.error ?? `status ${regRes.status}`);
         process.exit(1);
       }
 
@@ -204,7 +184,7 @@ export function registerHubCommands(program: Command): void {
       for (const entry of cfg.identity.user_map) {
         const pw = await getpwnam(entry.local_username);
         if (!pw) {
-          console.error(`Error: user_map entry for oidc_sub '${entry.oidc_sub}' maps to '${entry.local_username}' which does not exist on this system`);
+          console.error(`Error: user_map entry for sub '${entry.sub}' maps to '${entry.local_username}' which does not exist on this system`);
           hasError = true;
         }
       }

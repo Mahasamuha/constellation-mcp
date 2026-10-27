@@ -33,10 +33,13 @@ export function isIdentityError(v: ResolvedIdentity | IdentityResolutionError): 
 // ---------------------------------------------------------------------------
 
 /**
- * Resolves a username to uid/gid/home via getent passwd (NSS-aware; works with LDAP/SSSD).
- * Returns null if the user does not exist on this system.
+ * Resolves a username to name/uid/gid/home via getent passwd (NSS-aware; works with LDAP/SSSD).
+ * Returns null if the user does not exist on this system. `name` is the passwd entry's own
+ * name field: getent also resolves a numeric argument as a UID, so callers that took the
+ * username from untrusted input must compare `name` to what they asked for (see
+ * resolveOsUser).
  */
-export async function getpwnam(username: string): Promise<{ uid: number; gid: number; home: string } | null> {
+export async function getpwnam(username: string): Promise<{ name: string; uid: number; gid: number; home: string } | null> {
   if (!username) return null;
   try {
     const { stdout } = await execFileAsync("getent", ["passwd", "--", username]);
@@ -52,7 +55,7 @@ export async function getpwnam(username: string): Promise<{ uid: number; gid: nu
     // field. Don't fail resolution over it — fall back to "/" the way most
     // tools do when HOME is unset, rather than rejecting an otherwise-valid user.
     const home = parts[5] || "/";
-    return { uid, gid, home };
+    return { name: parts[0]!, uid, gid, home };
   } catch {
     return null;
   }
@@ -81,66 +84,83 @@ export async function getGroupIds(username: string): Promise<number[] | null> {
 }
 
 // ---------------------------------------------------------------------------
-// Three-tier resolution chain
+// Username validation
 // ---------------------------------------------------------------------------
 
 /**
- * Resolves OS identity for an incoming RPC using a three-tier chain:
- *   Tier 1 — custom OIDC claims (config.claims list)
- *   Tier 2 — explicit oidc_sub → local username map (config.user_map)
- *   Tier 3 — preferred_username claim (opt-in, disabled by default)
+ * Cheap pre-filter for a username that came from a token claim or the config. The first
+ * character must be a letter or underscore, so a value is never numeric (getent resolves
+ * "1000" as a UID) and never starts with "-". Allows mixed case, ".", and SSSD names like
+ * "user@domain.example". This is only a pre-filter; the exact-name check in resolveOsUser
+ * is the real guard.
+ */
+export const USERNAME_PATTERN = /^[A-Za-z_][A-Za-z0-9._@-]{0,255}$/;
+
+/**
+ * Looks up `candidate` and returns the account only if it is exactly the passwd entry
+ * named `candidate` (case-sensitive). Returns null on an invalid pattern, no such user,
+ * or a passwd name that differs from the candidate (for example a UID or alias match).
+ * Callers must use the returned `username` (the passwd name) from then on.
+ */
+async function resolveOsUser(candidate: unknown): Promise<ResolvedIdentity | null> {
+  if (typeof candidate !== "string" || !USERNAME_PATTERN.test(candidate)) return null;
+  const pw = await getpwnam(candidate);
+  if (!pw || pw.name !== candidate) return null;
+  return { username: pw.name, uid: pw.uid, gid: pw.gid, home: pw.home };
+}
+
+// ---------------------------------------------------------------------------
+// Two-tier resolution chain
+// ---------------------------------------------------------------------------
+
+const REFUSED: IdentityResolutionError = {
+  kind: "identity_error",
+  message: "Could not resolve an OS identity for this user. Contact the hub administrator.",
+};
+
+/**
+ * Resolves OS identity for an incoming RPC using a two-tier chain:
+ *   Tier 1 — custom claims (config.claims list; asterism releases constellation_username)
+ *   Tier 2 — explicit sub -> local username map (config.user_map)
  *
- * Returns a typed error if no tier resolves. Never falls through to the
- * hub's own identity.
+ * Claim values are untrusted input and must match the pre-filter pattern and be the exact
+ * passwd name of an existing account. A claim that is present but not a valid, resolvable
+ * username is a hard refusal: only an absent claim moves on to the next tier. Returns a
+ * typed error if no tier resolves. Never falls through to the hub's own identity.
  */
 export async function resolveIdentity(
   userClaims: Record<string, unknown>,
-  userOidcSub: string | null,
+  userSub: string,
   config: IdentityConfig
 ): Promise<ResolvedIdentity | IdentityResolutionError> {
-  // Tier 1: custom OIDC claims in config order
+  // Tier 1: custom claims in config order
   for (const claimName of config.claims) {
+    if (!Object.hasOwn(userClaims, claimName)) continue;
     const claimValue = userClaims[claimName];
-    if (typeof claimValue === "string" && claimValue) {
-      const pw = await getpwnam(claimValue);
-      if (pw) {
-        return { username: claimValue, uid: pw.uid, gid: pw.gid, home: pw.home };
-      }
-    }
+    if (claimValue === undefined) continue;
+    const resolved = await resolveOsUser(claimValue);
+    if (resolved) return resolved;
+    // Log the detail operator-side only; the value is attacker-influenced, so bound it.
+    log.warn(
+      { sub: userSub, claim: claimName, value: typeof claimValue === "string" ? claimValue.slice(0, 64) : typeof claimValue },
+      "identity claim is present but invalid, unresolved or not the exact account name — refusing"
+    );
+    return REFUSED;
   }
 
-  // Tier 2: explicit oidc_sub → local username map
-  if (userOidcSub) {
-    const entry = config.user_map.find((e) => e.oidc_sub === userOidcSub);
+  // Tier 2: explicit sub -> local username map
+  if (userSub) {
+    const entry = config.user_map.find((e) => e.sub === userSub);
     if (entry) {
-      const pw = await getpwnam(entry.local_username);
-      if (pw) {
-        return { username: entry.local_username, uid: pw.uid, gid: pw.gid, home: pw.home };
-      }
-      // user_map entry found but the mapped username doesn't exist on this OS — hard rejection,
-      // no fallthrough to Tier 3. The admin explicitly mapped this sub; ambiguity is worse than failure.
+      const resolved = await resolveOsUser(entry.local_username);
+      if (resolved) return resolved;
+      // user_map entry found but the mapped username doesn't resolve — hard refusal. The admin
+      // explicitly mapped this sub; ambiguity is worse than failure.
       // Log the detail operator-side; return a generic message so local_username is not disclosed.
-      log.warn({ oidc_sub: userOidcSub, local_username: entry.local_username }, "user_map entry maps to non-existent local user");
-      return {
-        kind: "identity_error",
-        message: "Could not resolve an OS identity for this user. Contact the hub administrator.",
-      };
+      log.warn({ sub: userSub, local_username: entry.local_username }, "user_map entry maps to a non-existent or non-exact local user");
+      return REFUSED;
     }
   }
 
-  // Tier 3: preferred_username (opt-in; disabled by default)
-  if (config.allow_preferred_username) {
-    const preferred = userClaims["preferred_username"];
-    if (typeof preferred === "string" && preferred) {
-      const pw = await getpwnam(preferred);
-      if (pw) {
-        return { username: preferred, uid: pw.uid, gid: pw.gid, home: pw.home };
-      }
-    }
-  }
-
-  return {
-    kind: "identity_error",
-    message: "Could not resolve an OS identity for this user. Contact the hub administrator.",
-  };
+  return REFUSED;
 }

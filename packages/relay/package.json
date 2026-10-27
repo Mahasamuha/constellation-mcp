@@ -10,16 +10,13 @@
   },
   "dependencies": {
     "@constellation/shared": "*",
+    "@mahasamuha/asterism-verify": "^0.3.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@prisma/adapter-pg": "^7.8.0",
     "@prisma/client": "^7.8.0",
-    "bcryptjs": "^3.0.3",
-    "cookie-parser": "^1.4.7",
     "cors": "^2.8.6",
-    "escape-html": "^1.0.3",
     "express": "^5.2.1",
     "express-rate-limit": "^8.5.1",
-    "openid-client": "^6.8.4",
     "pg": "^8.20.0",
     "picomatch": "^4.0.4",
     "pino": "10.3.1",
@@ -29,9 +26,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@types/cookie-parser": "^1.4.10",
     "@types/cors": "^2.8.19",
-    "@types/escape-html": "^1.0.4",
     "@types/express": "^5.0.6",
     "@types/node": "^24.0.0",
     "@types/pg": "^8.20.0",

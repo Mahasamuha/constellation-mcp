@@ -15,7 +15,7 @@ export interface AuditEntry {
   ts: string;
   hub_name: string;
   request_id: string;
-  user_oidc_sub: string | null;
+  user_sub: string | null;
   local_username: string | null;
   share: string;
   tool: string;

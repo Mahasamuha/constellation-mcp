@@ -1,4 +1,4 @@
-export type RateLimitBucket = "exempt" | "oauth" | "device-poll" | "device-auth" | "default";
+export type RateLimitBucket = "exempt" | "static" | "default";
 
 /**
  * Pure HTTP route → rate-limit-bucket classification, kept dependency-free (no env
@@ -18,19 +18,18 @@ export type RateLimitBucket = "exempt" | "oauth" | "device-poll" | "device-auth"
  * this one endpoint than the default bucket allows for an arbitrary route.
  * (/healthz has its own dedicated limiter mounted after this dispatcher — it gets
  * a generous per-minute cap rather than the strict default bucket.)
+ *
+ * "static" is for the unauthenticated, cheap, cacheable GETs: RFC 9728 discovery
+ * metadata and the /clients/*.json client metadata documents.
+ *
+ * /api/executors/register is authenticated (bearer token) but deliberately left to
+ * the strict default: it is called once per executor setup, never in a loop.
  */
-export function classifyHttpRoute(path: string, grantType?: unknown): RateLimitBucket {
+export function classifyHttpRoute(path: string): RateLimitBucket {
   if (path === "/mcp") return "exempt";
 
-  if (path === "/oauth/token") {
-    return grantType === "urn:ietf:params:oauth:grant-type:device_code" ? "device-poll" : "oauth";
-  }
-  if (path === "/oauth/register" || path === "/oauth/device/code" || path === "/setup" || path === "/auth/login" || path === "/oauth/authorize/consent") {
-    return "oauth";
-  }
-  if (path.startsWith("/activate")) {
-    return "device-auth";
-  }
+  if (path.startsWith("/.well-known/oauth-protected-resource")) return "static";
+  if (/^\/clients\/[a-z0-9-]+\.json$/.test(path)) return "static";
 
   return "default";
 }

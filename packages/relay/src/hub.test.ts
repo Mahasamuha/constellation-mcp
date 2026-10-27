@@ -23,6 +23,7 @@ vi.mock("./config.js", () => ({
 vi.mock("./db.js", () => ({
   prisma: {
     executor: { update: vi.fn() },
+    $transaction: vi.fn(),
   },
 }));
 
@@ -39,10 +40,10 @@ vi.mock("./registry.js", () => ({
 }));
 
 import { prisma } from "./db.js";
-import { handleUpdateHost } from "./hub.js";
+import { handleUpdateHost, handleHubShareSync } from "./hub.js";
 import type { ConnectedExecutor } from "./registry.js";
 
-const db = prisma as unknown as { executor: { update: ReturnType<typeof vi.fn> } };
+const db = prisma as unknown as { executor: { update: ReturnType<typeof vi.fn> }; $transaction: ReturnType<typeof vi.fn> };
 
 function mockConn(overrides: Partial<ConnectedExecutor> = {}): { conn: ConnectedExecutor; sent: unknown[] } {
   const sent: unknown[] = [];
@@ -116,5 +117,50 @@ describe("handleUpdateHost", () => {
     expect(sent).toEqual([
       { type: "update_host_error", error: "Hubs use a fixed host (machine ID); update_host is not supported" },
     ]);
+  });
+});
+
+describe("hub_share_sync override validation", () => {
+  const share = (overrides: unknown[]) => ({
+    name: "docs",
+    reported_path: "/srv/docs",
+    permission_blob: { default: "none", overrides },
+  });
+  const sync = async (overrides: unknown[]) => {
+    const { conn, sent } = mockConn({ tokenType: "HUB" as ConnectedExecutor["tokenType"] });
+    await handleHubShareSync(conn, { type: "hub_share_sync", shares: [share(overrides)] });
+    return sent[0] as { type: string; error?: string };
+  };
+
+  beforeEach(() => {
+    db.$transaction.mockResolvedValue(undefined);
+  });
+
+  it("accepts sub and group overrides", async () => {
+    const reply = await sync([{ sub: "u-1", access: "read-write" }, { group: "eng", access: "read-only" }]);
+    expect(reply.type).toBe("hub_share_sync_ok");
+  });
+
+  it("rejects a legacy oidc_sub entry with a message to re-key it", async () => {
+    const reply = await sync([{ oidc_sub: "abc", access: "read-only" }]);
+    expect(reply.type).toBe("hub_share_sync_error");
+    expect(reply.error).toContain("oidc_sub");
+    expect(reply.error).toMatch(/re-key.*sub.*group/);
+    expect(db.$transaction).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["both sub and group", { sub: "u", group: "g", access: "none" }],
+    ["neither", { access: "none" }],
+    ["an empty sub", { sub: "", access: "none" }],
+    ["an empty group", { group: "", access: "none" }],
+    ["a non-string group", { group: 5, access: "none" }],
+    ["an invalid access", { sub: "u", access: "admin" }],
+    ["a missing access", { sub: "u" }],
+    ["a non-object entry", "nope"],
+  ])("rejects %s", async (_label, entry) => {
+    const reply = await sync([entry]);
+    expect(reply.type).toBe("hub_share_sync_error");
+    expect(db.$transaction).not.toHaveBeenCalled();
   });
 });
