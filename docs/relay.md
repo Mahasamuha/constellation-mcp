@@ -21,7 +21,7 @@ flowchart TD
     Auth --> Tool
     Tool --> Router
     Router -->|"dispatchRpc · { tool, absolute_root, params }"| Node
-    Router -->|"dispatchRpc · { tool, absolute_root, share, user_oidc_sub, user_claims, params }"| Hub
+    Router -->|"dispatchRpc · { tool, absolute_root, share, user_sub, user_groups, user_claims, params }"| Hub
     Node -->|"RPC response (or timeout)"| RouterR
     Hub -->|"RPC response (or timeout)"| RouterR
     RouterR -->|"MCP tool response"| ClientR
@@ -37,7 +37,7 @@ Executors come in two modalities, distinguished by `ExecutorTokenType`:
 - **Node** (`NODE`) — bound to one user; runs under the user's own OS identity. Shares are user-managed, synced via `config_update`, and stored as `PathShare` rows.
 - **Hub** (`HUB`) — service-level, not bound to any user; runs on machines shared by multiple people (NAS, dev server). Shares are admin-defined in the hub's config, synced via `hub_share_sync`, and stored as `HubShare` rows alongside a per-share `permission_blob`. The relay performs an *optimistic* permission check against that blob during share resolution — final enforcement (OS identity resolution, share access, sub-path permissions) happens authoritatively at the hub. See [Hub](hub.md) for the full request flow, identity resolution chain, and permission model.
 
-Because the relay cannot resolve a hub's per-request OS identity itself, requests routed to a hub carry the requesting user's `share`, `user_oidc_sub`, and `user_claims` in the RPC envelope — see [RPC Protocol](#rpc-protocol).
+Because the relay cannot resolve a hub's per-request OS identity itself, requests routed to a hub carry the requesting user's `share`, `user_sub`, `user_groups`, and `user_claims` in the RPC envelope — see [RPC Protocol](#rpc-protocol).
 
 ---
 
@@ -73,9 +73,9 @@ This maps onto how humans and agents tend to work with files differently: a huma
 
 ## Management API
 
-All `/api/*` endpoints require a valid Bearer token obtained via `constellation relay login` (OAuth device code flow). The token is an OAuth access token tied to a user session — there is no separate API key or scope requirement.
+All `/api/*` endpoints require a valid Bearer token: a JWT access token issued by asterism for this relay, carrying the `relay` scope. Every endpoint except `POST /api/executors/register` also requires the token to have been issued to the Constellation CLI client (`<RELAY_URL>/clients/cli.json`); a token issued to any other client, such as an MCP client like Claude.ai, gets `403 invalid_client`. MCP clients can use `/mcp` only and cannot change filters, revoke tokens or call `/api`. Registration checks its own client and scopes (see below). See [Authorization](#authorization).
 
-**Admin-gated endpoints** additionally require an active admin elevation window, obtained via `constellation relay elevate`. Without elevation those endpoints return `403 ESCALATION_REQUIRED`.
+**Admin-gated endpoints** (hub registration, `GET /api/admin/hub-shares`, `GET /api/admin/activity`) additionally require the `admin` scope on the token. asterism issues it only on a fresh sign-in: the relay answers `403 insufficient_scope` with a `WWW-Authenticate` challenge naming the scope, and the client asks asterism for a token with it. The token's `groups` must also contain `ADMIN_GROUP` (default `constellation-admins`); otherwise the relay answers a plain `403` with no challenge. A token whose `groups` claim is malformed (not an array of at most 256 non-empty strings of at most 256 characters) is refused on every endpoint with `403 invalid_token_claims`.
 
 **Error responses** follow:
 ```json
@@ -87,8 +87,10 @@ Common auth errors:
 | Status | `error` | Meaning |
 |---|---|---|
 | `401` | `unauthorized` | Bearer token missing |
-| `401` | `invalid_token` | Token expired or not found |
-| `403` | `ESCALATION_REQUIRED` | Admin endpoint — run `constellation relay elevate` |
+| `401` | `invalid_token` | Token expired, wrong issuer or audience, or bad signature |
+| `403` | `insufficient_scope` | Admin endpoint or registration — the token needs the `admin` or `register` scope (fresh sign-in in asterism) |
+| `403` | `invalid_client` | `/api` called with a token issued to a client other than the CLI |
+| `429` | `rate_limit_exceeded` | Authenticated `/api` calls are limited per user; failed or unauthenticated ones per IP |
 
 ### Pagination
 
@@ -118,11 +120,11 @@ Process uptime and version. Requires a Bearer token like every other `/api/*` en
 
 ### `GET /api/me`
 
-Return current session info.
+Return the caller's identity from the access token.
 
 **Response `200`**
 ```json
-{ "session_id": "<id>", "user_id": "<id>" }
+{ "user_id": "<id>", "scopes": ["relay"], "groups": ["constellation-admins"] }
 ```
 
 ---
@@ -216,7 +218,7 @@ Add a relay path filter.
 | `pattern_type` | yes | `"glob"` or `"regex"` |
 | `executor_id` | no | Scope to a specific executor; omit for all executors |
 
-Regex patterns are validated server-side before storage. Invalid patterns return `400`. Patterns are limited to 1000 characters.
+Patterns are validated server-side before storage, with the same compile the executor uses (RE2: no lookarounds or backreferences). Invalid patterns return `400`. Patterns are limited to 1000 characters, and a user may have at most 100 filters.
 
 **Response `201`** — the created filter object (same shape as `GET /api/filters` entries).
 
@@ -225,7 +227,7 @@ Regex patterns are validated server-side before storage. Invalid patterns return
 | Status | Meaning |
 |---|---|
 | `201` | Filter created |
-| `400` | Missing/invalid fields, invalid regex, or pattern exceeds 1000 characters |
+| `400` | Missing/invalid fields, invalid glob or regex, pattern exceeds 1000 characters, or the user already has 100 filters |
 | `404` | `executor_id` specified but not found for this user |
 
 ---
@@ -240,56 +242,6 @@ Remove a path filter.
 |---|---|
 | `204` | Deleted |
 | `404` | Not found or belongs to another user |
-
----
-
-### `GET /api/sessions`
-
-List active MCP client OAuth sessions (non-expired only). Paginated.
-
-**Response `200`** — paginated array:
-
-| Field | Type | Description |
-|---|---|---|
-| `id` | string | Session ID |
-| `mcp_client_id` | string | OAuth client that holds this session |
-| `is_dynamic_client` | boolean | Whether the client was registered via Dynamic Client Registration (`false` for metadata document clients) |
-| `is_metadata_document_client` | boolean | Whether the client identified itself with a Client ID Metadata Document URL |
-| `client_name` | string \| null | Client's display name (set for metadata document clients; `null` for DCR clients) |
-| `issued_at` | ISO 8601 | |
-| `expires_at` | ISO 8601 | Access token expiry |
-| `has_refresh_token` | boolean | |
-| `refresh_token_expires_at` | ISO 8601 \| null | |
-
----
-
-### `DELETE /api/sessions/:id`
-
-Revoke an OAuth session. Both access and refresh tokens are invalidated immediately by setting their expiry to now.
-
-**Responses**
-
-| Status | Meaning |
-|---|---|
-| `204` | Session revoked |
-| `404` | Not found or belongs to another user |
-
----
-
-### `POST /api/tokens/shared` · Admin
-
-Break-glass: create a hub token without going through the device code flow. Prefer `constellation hub register` — it handles token delivery automatically without exposing the raw token.
-
-The token is returned once in the response and cannot be retrieved again.
-
-**Response `201`**
-```json
-{
-  "token": "<raw-token>",
-  "token_id": "<id>",
-  "created_at": "<ISO 8601>"
-}
-```
 
 ---
 
@@ -334,7 +286,7 @@ Activity log for the authenticated user. Returns tool calls, errors, rate limit 
 |---|---|---|
 | `tool_call` | `host`, `tool`, `share`, `request_id`, `duration_ms`; `error_code` + `error_message` when the executor returned an error | RPC reached the executor and a response was received |
 | `tool_error` | `host`, `tool`, `share`, `request_id`, `error_code` | RPC could not be delivered: `executor_offline`, `executor_disconnected`, or `timeout` |
-| `rate_limited` | `tool`, `share`, `request_id` | Call rejected before dispatch — per-user rate limit exceeded |
+| `rate_limited` | `tool`, `share`, `request_id` | Call rejected before dispatch — per-user rate limit exceeded. Written at most once per user per minute |
 | `executor_connect` | `host` | Executor opened a WebSocket connection |
 | `executor_disconnect` | `host`; `error_code` (`timeout` or `error`) for non-clean disconnects | Executor connection closed |
 
@@ -349,55 +301,6 @@ The log is capped at `ACTIVITY_LOG_MAX_ENTRIES` rows per user (default 1000). Ol
 Activity log entries with no associated user — `executor_connect`/`executor_disconnect` events for **hubs**, which aren't bound to any single user. Admins collectively own this data, since no individual user does. Newest first.
 
 Accepts the same `event_type`, `limit`, and `offset` query params, and returns the same response shape, as `GET /api/activity`. Entries are capped and pruned the same way, as their own ring buffer (`user_id IS NULL` rows are partitioned together by `ACTIVITY_LOG_MAX_ENTRIES`).
-
----
-
-### `GET /api/users` · `POST /api/users` · `POST /api/users/:username/deactivate` · `POST /api/users/:username/reset-password` · Admin
-
-User management endpoints. Available in `AUTH_MODE=local` only. Return `404` in `AUTH_MODE=oidc`.
-
-**`GET /api/users`** — list all local users. Paginated.
-
-**Query params**: `limit` (default 100, max 1000), `offset` (default 0).
-
-**Response `200`**
-```json
-{
-  "data": [
-    {
-      "id": "...",
-      "username": "alice",
-      "is_active": true,
-      "created_at": "2026-05-25T12:00:00.000Z",
-      "last_login_at": "2026-05-25T14:00:00.000Z"
-    }
-  ],
-  "total": 1,
-  "limit": 100,
-  "offset": 0
-}
-```
-
-**`POST /api/users`** — create a new local user. Body: `{ username, password }`. Password must be at least 12 characters. Returns `409` if the username is already taken.
-
-**`POST /api/users/:username/deactivate`** — deactivate a user. Every existing session and executor connection for that user is rejected on its very next request — not just future logins.
-
-**`POST /api/users/:username/reset-password`** — set a new password. Body: `{ password }`. Immediately invalidates all existing OAuth sessions for that user.
-
----
-
-### `POST /api/admin/users/:identifier/promote` · `POST /api/admin/users/:identifier/demote` · Admin
-
-Grant or revoke the admin role on a user account. `:identifier` may be either a user ID or username.
-
-Requires `RELAY_ADMIN_TOKEN` env var on the relay, passed as `Authorization: Bearer <RELAY_ADMIN_TOKEN>` (bypasses the normal session auth). CLI wrappers: `constellation relay user promote` / `constellation relay user demote`.
-
-**Responses**
-
-| Status | Meaning |
-|---|---|
-| `204` | Role updated |
-| `404` | User not found |
 
 ---
 
@@ -423,122 +326,36 @@ List all hub shares synced to the relay from hubs. Paginated by executor.
 }
 ```
 
-CLI wrapper: `constellation relay hub-shares list [--executor <id>] [--json]` (requires `constellation relay elevate`).
+CLI wrapper: `constellation relay hub-shares list [--executor <id>] [--json]` (requires the `admin` scope).
 
 ---
 
-### `POST /api/account/deactivate`
+### `POST /api/executors/register`
 
-Deactivate the authenticated user's account. All subsequent token lookups for this user will fail with `account deactivated`.
-
-**Request body**
-```json
-{ "confirm": "deactivate my account" }
-```
-
-The `confirm` field must be exactly `"deactivate my account"`. Any other value returns `400 confirmation_required`.
-
-**Responses**
-
-| Status | Meaning |
-|---|---|
-| `204` | Account deactivated |
-| `400` | Confirmation string missing or wrong |
+Register a node or hub and mint its long-lived executor token. Requires a bearer access token (the `relay` scope) issued to the matching Constellation client: `<RELAY_URL>/clients/node.json` for `type: "node"`, `<RELAY_URL>/clients/hub.json` for `type: "hub"`; any other client gets `403 invalid_client`. The token must also carry the `register` scope, which asterism grants only after a fresh sign-in and a consent screen ("Permanently connect a computer to your files (until you remove it)"); without it the relay answers `403 insufficient_scope` asking for `relay register`. `type: "hub"` also requires `admin` (scope and group) and asks for `relay admin register`. Replacing a token also cancels any pending token rotation for that executor. Body: `{ "type": "node" | "hub", "host": "<name>" }` (`host` is 1 to 63 characters of letters, digits, `.`, `_` and `-`, after trimming). Registering a host that already exists revokes and replaces its token and closes that executor's live connection. Concurrent registrations of the same host are serialized; a lost race answers `409`. Response `201`: `{ "access_token": "<executor token>", "token_type": "agent", "host": "<host>" }`. Replaces the old device-code registration.
 
 ---
 
-## OAuth Flows
+## Authorization
 
-The relay acts as an OAuth 2.0 authorization server backed by an upstream OIDC provider. It is also the protected resource (`/mcp`), and exposes both discovery documents:
+The relay is an OAuth resource server only. [asterism](adr/0022-asterism-authorization-server.md) is the authorization server: it handles sign-in, local accounts, consent, grants and revocation, and issues the JWT access tokens. The relay verifies each token's signature, issuer (`ASTERISM_ISSUER`), expiry and audience (`<RELAY_URL>/mcp`) with `@mahasamuha/asterism-verify`, and creates a `users` row the first time it sees a token's `sub`.
 
-| Document | Spec | Key fields |
+| Document | Spec | Contents |
 |---|---|---|
-| `/.well-known/oauth-protected-resource/mcp` | RFC 9728 | `resource` (`<RELAY_URL>/mcp`), `authorization_servers` (the relay origin), `bearer_methods_supported: ["header"]` |
-| `/.well-known/oauth-protected-resource` | RFC 9728 | Same, but `resource` is the relay origin. Kept for older clients that probe the root directly |
-| `/.well-known/oauth-authorization-server` | RFC 8414 | `issuer`, endpoints, `code_challenge_methods_supported: ["S256"]`, `token_endpoint_auth_methods_supported: ["none"]`, `client_id_metadata_document_supported: true` |
+| `/.well-known/oauth-protected-resource/mcp` | RFC 9728 | `resource` (`<RELAY_URL>/mcp`), `authorization_servers` (the asterism issuer), `bearer_methods_supported: ["header"]`, and the scopes below |
+| `/clients/cli.json`, `/clients/node.json`, `/clients/hub.json` | CIMD | Client ID Metadata Documents for the CLI, node and hub, used as their `client_id` |
 
-Every `401` from `/mcp` (missing or invalid token) includes `resource_metadata` in its `WWW-Authenticate` header pointing at `/.well-known/oauth-protected-resource/mcp` (RFC 9728 §3.3 requires `resource` to equal the requested URL, `<RELAY_URL>/mcp`), which is how MCP clients begin discovery. `WWW-Authenticate` is exposed via CORS for browser-based clients.
+Scopes:
 
-The documents are built from `RELAY_URL`, which must be a bare origin (no path, trailing slash, uppercase host, or explicit default port); the relay refuses to start otherwise. See [ADR 0020](adr/0020-rfc9728-discovery-public-only-dcr.md).
+- `relay` — use the MCP tools; with the CLI client, the caller's own `/api/*` resources.
+- `admin` — fresh sign-in (implies step-up); not listed in `scopes_supported`. Covers hub registration, viewing hub-share configuration and the admin activity log. The relay no longer manages users. asterism grants it only to the `constellation-admins` group.
+- `register` — fresh sign-in; not listed in `scopes_supported`. Required to register a node or hub, so that permanently connecting a computer is always a deliberate, freshly approved act.
 
-### Authorization Code Flow (MCP clients)
+Every `401` from `/mcp` (missing or invalid token) includes `resource_metadata` in its `WWW-Authenticate` header pointing at `/.well-known/oauth-protected-resource/mcp` (RFC 9728 §3.3 requires `resource` to equal the requested URL, `<RELAY_URL>/mcp`), which is how MCP clients begin discovery. An admin endpoint called without the `admin` scope (or registration without `register`) returns `403 insufficient_scope`. `WWW-Authenticate` is exposed via CORS for browser-based clients.
 
-Used by Claude, ChatGPT, Cursor, and any OAuth 2.0 client.
+The documents are built from `RELAY_URL`, which must be a bare origin (no path, trailing slash, uppercase host, or explicit default port); the relay refuses to start otherwise. The relay does not serve `/.well-known/oauth-authorization-server`, `/oauth/*` or `/activate*`; clients get those from asterism.
 
-```mermaid
-sequenceDiagram
-    participant Client
-    participant Relay
-    participant OIDC as OIDC Provider
-
-    Client->>Relay: GET /oauth/authorize
-    Note over Relay: resolve client (fetch metadata document if CIMD)
-    Relay-->>Client: consent page (OIDC mode; client name, verified host, redirect host)
-    Client->>Relay: POST /oauth/authorize/consent (approve)
-    Relay-->>Client: 302 → OIDC /authorize
-    Client->>OIDC: browser follows redirect
-    OIDC-->>Client: user authenticates
-    Client->>Relay: GET /oauth/callback?code=...
-    Relay->>OIDC: exchange code
-    OIDC-->>Relay: tokens
-    Note over Relay: upsert user row
-    Relay-->>Client: 302 → redirect_uri?code=...
-    Client->>Relay: POST /oauth/token
-    Relay-->>Client: access_token + refresh_token
-```
-
-PKCE (`S256`) is **required**. `/oauth/authorize` rejects with `400 invalid_request` a missing `code_challenge`, a `code_challenge_method` that is absent or anything other than `S256` (including `plain`), a `code_challenge` that is not 43–128 base64url characters, a `state` over 512 characters, and any parameter that is repeated or not a plain string. The MCP auth spec is based on OAuth 2.1, which mandates PKCE for all authorization code flows. All compliant MCP clients (Claude, ChatGPT, Cursor) support it.
-
-**Dynamic Client Registration** (`POST /oauth/register`, RFC 7591) is supported for clients that auto-discover the relay, for **public clients only**. Clients send `token_endpoint_auth_method: "none"` or omit it (it is then set to `"none"`); any other value is rejected with `400 invalid_client_metadata`, as is any `grant_types` entry other than `authorization_code` and `refresh_token` (the default when omitted). No client secret is issued — PKCE protects the authorization code. Clients registered with a secret before this restriction continue to authenticate with `client_secret` in the token request body.
-
-**Client ID Metadata Documents** (CIMD, draft-ietf-oauth-client-id-metadata-document) are the registration method the MCP spec now prefers; DCR is retained as a fallback. A client using CIMD sends an HTTPS URL as its `client_id`, and the relay fetches the JSON document at that URL during `/oauth/authorize`:
-
-- The URL must be canonical, `https`, with a non-root path and no userinfo, fragment, dot segments, or trailing dot on the host. An existing client row that was not created from a metadata document is never overwritten; such an id is refused.
-- The document's `client_id` must equal the URL; `client_name` and `redirect_uris` are required; `token_endpoint_auth_method` must be `none` or absent; client secrets are rejected. `grant_types` is filtered to the supported values and must include `authorization_code`; if absent it defaults to `authorization_code` and `refresh_token`.
-- Each redirect URI is checked against the same rules as DCR (loopback `http:`, or a full origin in `OAUTH_ALLOWED_REDIRECT_ORIGINS`; fragments are rejected). Disallowed entries are ignored. The request's `redirect_uri` must match a registered one exactly, except that `http:` loopback URIs match regardless of port (RFC 8252 §7.3; `localhost` and `127.0.0.1` are not equated). The requested URI is stored with the auth code and compared exactly at `/oauth/token`.
-- Fetches refuse private, loopback, link-local, and other special-use addresses, do not follow redirects, require a `200` with a JSON content type, and are capped at 5 KB and 5 seconds. They go direct over HTTPS (`HTTPS_PROXY` is ignored).
-- The document is cached in `oauth_clients` per its `Cache-Control: max-age`, clamped to 5 minutes – 24 hours (default 1 hour); `no-store`, `no-cache`, or `max-age=0` re-fetch on every authorization. Failed fetches are not cached and fail the authorization with `400 invalid_client` and a generic description ("client metadata document could not be retrieved"); the cause is only in the server log.
-
-**Consent display.** In OIDC mode the relay shows a consent page before redirecting to the upstream provider, for every authorization-code client. It shows the client's name, who vouches for its identity (the metadata document's host for CIMD; "not verified" for DCR), the hostname the user will be redirected to, and a warning when that is a loopback address. Deny redirects back with `error=access_denied`. In local-auth mode `/oauth/authorize` renders the login page directly (not a redirect to `/auth/login`, which remains) with the same information, and failed-login and rate-limited re-renders keep it. Consent and login pages are sent with `Cache-Control: no-store`.
-
-Refresh tokens rotate atomically: a refresh token presented twice (e.g. concurrently) succeeds once and the other request gets `400 invalid_grant`. See [ADR 0021](adr/0021-client-id-metadata-documents.md).
-
-### Device Code Flow (node init + relay login)
-
-Used by `constellation node init` (scope `agent:register`), `constellation relay login` (scope `relay:manage`), `constellation relay elevate` (scope `agent:escalate`), and `constellation hub register` (scope `agent:register:shared`).
-
-```mermaid
-sequenceDiagram
-    participant CLI
-    participant Relay
-    participant Browser
-
-    CLI->>Relay: POST /oauth/device/code
-    Relay-->>CLI: device_code, user_code, verification_uri
-    Note over CLI: display user_code
-    par CLI polls every 5s
-        loop until approved
-            CLI->>Relay: POST /oauth/token
-            Relay-->>CLI: authorization_pending
-        end
-    and User authenticates in browser
-        Browser->>Relay: GET /activate
-        Relay->>Browser: OIDC auth + consent form
-        Browser-->>Relay: POST /activate/confirm
-    end
-    Relay-->>CLI: access_token (next poll succeeds)
-```
-
-- `agent:register` — on approval, the relay creates an `Executor` row and an `ExecutorToken`, then returns `{ access_token, token_type: "agent", host }`.
-- `agent:register:shared` — creates a shared (non-user-bound) `ExecutorToken`; requires admin approval.
-- `relay:manage` — issues a standard OAuth session tied to a static first-party client.
-- `agent:escalate` — sets `adminUntil` on the requester's existing session (no new token is issued) and returns `204`; requires the *approving* user to already hold the admin role.
-
-Device codes expire after 15 minutes. The polling interval is 5 seconds. Responses follow RFC 8628: `authorization_pending`, `slow_down`, `access_denied`, `expired_token`.
-
-### Refresh Token Flow
-
-Standard `grant_type=refresh_token`. Issues a new access token and rotates the refresh token (old refresh token is invalidated on use). Fails if the account is deactivated.
+To use a relay, register it in asterism as a resource server (asterism fetches the metadata above) and add administrators to `constellation-admins`. Revoking a client or signing a user out is done in asterism's grants page; a revoked client's access token stops working at its expiry. See [ADR 0022](adr/0022-asterism-authorization-server.md).
 
 ---
 
@@ -608,7 +425,7 @@ If the executor does not reconnect within 5 minutes, the new token is revoked an
 { "type": "rotate_token" }
 ```
 
-**`update_host`** — rename the node's host identifier. Fails if the name is already taken by another node on the same account.
+**`update_host`** — rename the node's host identifier (same rules as registration: 1 to 63 characters of letters, digits, `.`, `_` and `-`). Fails if the name is already taken by another node on the same account.
 ```json
 { "type": "update_host", "host": "new-name" }
 ```
@@ -644,14 +461,15 @@ When an MCP client calls a tool, the relay forwards it to the executor as an RPC
 }
 ```
 
-For hubs the envelope also includes identity fields:
+For hubs the envelope also includes identity fields (`user_sub` is the token's `sub`; `user_groups` is the token's groups; `user_claims` is the token's other released claims, optionally narrowed by `FORWARDED_CLAIMS`):
 ```json
 {
   "request_id": "...",
   "tool": "...",
   "share": "projects",
   "absolute_root": "...",
-  "user_oidc_sub": "auth0|abc123",
+  "user_sub": "<asterism sub>",
+  "user_groups": ["staff"],
   "user_claims": { "constellation_username": "alice" },
   "params": { "<param>": "<value>" }
 }
@@ -707,21 +525,25 @@ Filters are evaluated against every path field in the tool call:
 - `src_relative_path` — evaluated against the source share root for `copy` and `move`.
 - `dst_relative_path` — evaluated against the destination share root for `copy` and `move` (uses `dst_root` for cross-share operations).
 
-A call is blocked if **any** of its candidate paths matches a filter.
+A call is blocked if **any** of its candidate paths matches a filter. The relay compiles the user's filters for the target executor once per call and sends them in the RPC envelope (`path_filters`, as RE2 sources); its own check is an early pre-check, and paths longer than 4096 characters are refused. The **executor enforces the filters again on resolved real paths**, so symlinks and `..` can't route around them. Listing and search tools (`list_directory`, `find_files`, `grep_files`) skip filtered entries. On a share with any active filter, `copy`, `move` and recursive `delete` of a directory are refused, because they can't be checked entry by entry.
 
 ### Pattern types
 
-**Glob** — uses [micromatch](https://github.com/micromatch/micromatch) syntax.
+**Glob** — matched against the absolute path. `*` and `?` stay within one path segment, `**` crosses `/`, `[...]` is a character class and `{a,b}` an alternation. A glob that doesn't start with `/` matches at any depth (`*.env` behaves like `**/*.env`), and dotfiles match like any other name.
 ```
 /home/user/projects/secret/**
 *.env
 **/.git/**
 ```
 
-**Regex** — a JavaScript `RegExp`. Validated at creation time; invalid patterns are rejected with `400`.
+**Regex** — RE2 syntax (no lookarounds or backreferences), matched anywhere in the absolute path (anchor with `^` and `$` yourself, e.g. `\.key$`). Validated at creation time; invalid patterns are rejected with `400`. Matching runs in linear time, so a pattern can't stall the relay or an executor.
 ```
-/home/user/secrets/.*\.key$
+/home/user/secrets/.*\.key
 ```
+
+The file tools use the same engine for their own patterns, but match globs against entry names; see [Pattern syntax](reference.md#pattern-syntax).
+
+A path is also blocked when any of its parent directories matches, so a filter on a directory covers everything in it. A stored pattern that no longer compiles blocks every path on that user's shares.
 
 ### Scope
 

@@ -31,6 +31,8 @@ class FakeChild extends EventEmitter {
   /** The most recent "init" message sent to this worker — lets tests assert what
    * SubnodePool actually threads through (e.g. max_file_size_kb from HubConfig). */
   lastInit: Record<string, unknown> | null = null;
+  /** Every "request" message received, by request_id. */
+  requestMsgs = new Map<string, Record<string, unknown>>();
   private requests = new Map<string, () => void>();
 
   send(msg: unknown): boolean {
@@ -40,6 +42,7 @@ class FakeChild extends EventEmitter {
       queueMicrotask(() => this.emit("message", { type: "ready" }));
     } else if (m["type"] === "request") {
       const requestId = m["request_id"] as string;
+      this.requestMsgs.set(requestId, m);
       this.requests.set(requestId, () => {
         this.requests.delete(requestId);
         this.emit("message", { type: "response", request_id: requestId, result: { ok: true } });
@@ -118,7 +121,7 @@ function configWith(
     subnode_uid,
     subnode_gid: {},
     shares: [],
-    identity: { claims: [], user_map: [], allow_preferred_username: false },
+    identity: { claims: [], user_map: [] },
     audit_log: "/var/log/constellation/audit.jsonl",
     max_file_size_kb: 100,
   };
@@ -205,7 +208,7 @@ describe("SubnodePool.dispatch", () => {
   it("dispatches a request and returns the result", async () => {
     const pool = new SubnodePool(makeConfig(), {});
 
-    const dispatchPromise = pool.dispatch(identity, "list_directory", "docs", {}, "req-1");
+    const dispatchPromise = pool.dispatch(identity, "list_directory", "docs", {}, "req-1", []);
     await waitUntil(() => forkedChildren[0]?.hasPending("req-1") ?? false);
     forkedChildren[0]!.respond("req-1");
 
@@ -219,7 +222,7 @@ describe("SubnodePool.dispatch", () => {
   it("sends the configured max_file_size_kb to the spawned worker, not a hardcoded default", async () => {
     const pool = new SubnodePool(makeConfig({ max_file_size_kb: 250 }), {});
 
-    const dispatchPromise = pool.dispatch(identity, "list_directory", "docs", {}, "req-1");
+    const dispatchPromise = pool.dispatch(identity, "list_directory", "docs", {}, "req-1", []);
     await waitUntil(() => forkedChildren[0]?.hasPending("req-1") ?? false);
 
     expect(forkedChildren[0]!.lastInit).toMatchObject({ max_file_size_kb: 250 });
@@ -232,12 +235,12 @@ describe("SubnodePool.dispatch", () => {
   it("reuses the pooled worker for a second dispatch from the same user", async () => {
     const pool = new SubnodePool(makeConfig(), {});
 
-    const d1 = pool.dispatch(identity, "list_directory", "docs", {}, "req-1");
+    const d1 = pool.dispatch(identity, "list_directory", "docs", {}, "req-1", []);
     await waitUntil(() => forkedChildren[0]?.hasPending("req-1") ?? false);
     forkedChildren[0]!.respond("req-1");
     await d1;
 
-    const d2 = pool.dispatch(identity, "list_directory", "docs", {}, "req-2");
+    const d2 = pool.dispatch(identity, "list_directory", "docs", {}, "req-2", []);
     await waitUntil(() => forkedChildren[0]!.hasPending("req-2"));
     forkedChildren[0]!.respond("req-2");
     await d2;
@@ -250,7 +253,7 @@ describe("SubnodePool.dispatch", () => {
   it("does not set an idle timer until after the first request completes", async () => {
     const pool = new SubnodePool(makeConfig(), {});
 
-    const d = pool.dispatch(identity, "list_directory", "docs", {}, "req-1");
+    const d = pool.dispatch(identity, "list_directory", "docs", {}, "req-1", []);
     await waitUntil(() => forkedChildren[0]?.hasPending("req-1") ?? false);
 
     const child = forkedChildren[0]!;
@@ -266,8 +269,8 @@ describe("SubnodePool.dispatch", () => {
   it("spawns a burst worker when all warm workers are busy (max > min)", async () => {
     const pool = new SubnodePool(makeConfig({ subnode_workers: workersConfig({ min: 1, max: 2 }) }), {});
 
-    const d1 = pool.dispatch(identity, "list_directory", "docs", {}, "req-1");
-    const d2 = pool.dispatch(identity, "list_directory", "docs", {}, "req-2");
+    const d1 = pool.dispatch(identity, "list_directory", "docs", {}, "req-1", []);
+    const d2 = pool.dispatch(identity, "list_directory", "docs", {}, "req-2", []);
 
     // Wait for both spawns and request sends to settle.
     await waitUntil(() =>
@@ -291,9 +294,9 @@ describe("SubnodePool.dispatch", () => {
   it("queues requests beyond max and drains them in order as workers free up", async () => {
     const pool = new SubnodePool(makeConfig({ subnode_workers: workersConfig({ min: 1, max: 1 }) }), {});
 
-    const d1 = pool.dispatch(identity, "list_directory", "docs", {}, "req-1");
-    const d2 = pool.dispatch(identity, "list_directory", "docs", {}, "req-2");
-    const d3 = pool.dispatch(identity, "list_directory", "docs", {}, "req-3");
+    const d1 = pool.dispatch(identity, "list_directory", "docs", {}, "req-1", []);
+    const d2 = pool.dispatch(identity, "list_directory", "docs", {}, "req-2", []);
+    const d3 = pool.dispatch(identity, "list_directory", "docs", {}, "req-3", []);
 
     await waitUntil(() => forkedChildren[0]?.hasPending("req-1") ?? false);
 
@@ -324,8 +327,8 @@ describe("SubnodePool.dispatch", () => {
 
     const pool = new SubnodePool(makeConfig({ subnode_workers: workersConfig({ min: 1, max: 1 }) }), {});
 
-    const d1 = pool.dispatch(identity, "list_directory", "docs", {}, "req-1");
-    const d2 = pool.dispatch(identity, "list_directory", "docs", {}, "req-2");
+    const d1 = pool.dispatch(identity, "list_directory", "docs", {}, "req-1", []);
+    const d2 = pool.dispatch(identity, "list_directory", "docs", {}, "req-2", []);
 
     await waitUntil(() => forkedChildren[0]?.hasPending("req-1") ?? false);
     forkedChildren[0]!.respond("req-1");
@@ -349,8 +352,8 @@ describe("SubnodePool.dispatch", () => {
       {}
     );
 
-    const d1 = pool.dispatch(identity, "list_directory", "docs", {}, "req-1");
-    const d2 = pool.dispatch(identity, "list_directory", "docs", {}, "req-2");
+    const d1 = pool.dispatch(identity, "list_directory", "docs", {}, "req-1", []);
+    const d2 = pool.dispatch(identity, "list_directory", "docs", {}, "req-2", []);
 
     await waitUntil(() => forkedChildren[0]?.hasPending("req-1") ?? false);
 
@@ -378,8 +381,8 @@ describe("SubnodePool.dispatch", () => {
       {}
     );
 
-    const d1 = pool.dispatch(identity, "list_directory", "docs", {}, "req-1");
-    const d2 = pool.dispatch(identity, "list_directory", "docs", {}, "req-2");
+    const d1 = pool.dispatch(identity, "list_directory", "docs", {}, "req-1", []);
+    const d2 = pool.dispatch(identity, "list_directory", "docs", {}, "req-2", []);
     await waitUntil(() =>
       forkedChildren.length === 2 &&
       forkedChildren[0]!.hasPending("req-1") &&
@@ -403,7 +406,7 @@ describe("SubnodePool.dispatch", () => {
   it("removes the subnode map entry once all workers are gone; next dispatch spawns fresh", async () => {
     const pool = new SubnodePool(makeConfig(), {});
 
-    const d1 = pool.dispatch(identity, "list_directory", "docs", {}, "req-1");
+    const d1 = pool.dispatch(identity, "list_directory", "docs", {}, "req-1", []);
     await waitUntil(() => forkedChildren[0]?.hasPending("req-1") ?? false);
     forkedChildren[0]!.respond("req-1");
     await d1;
@@ -415,7 +418,7 @@ describe("SubnodePool.dispatch", () => {
     await waitUntil(() => forkedChildren[0]!.exited);
 
     // Next dispatch should spawn a new worker (second entry in forkedChildren).
-    const d2 = pool.dispatch(identity, "list_directory", "docs", {}, "req-2");
+    const d2 = pool.dispatch(identity, "list_directory", "docs", {}, "req-2", []);
     await waitUntil(() => forkedChildren.length === 2 && forkedChildren[1]!.hasPending("req-2"));
     forkedChildren[1]!.respond("req-2");
 
@@ -429,7 +432,7 @@ describe("SubnodePool.dispatch", () => {
   it("evicts a stale worker and spawns fresh when the same username resolves to a different uid", async () => {
     const pool = new SubnodePool(makeConfig(), {});
 
-    const d1 = pool.dispatch(identity, "list_directory", "docs", {}, "req-1");
+    const d1 = pool.dispatch(identity, "list_directory", "docs", {}, "req-1", []);
     await waitUntil(() => forkedChildren[0]?.hasPending("req-1") ?? false);
     forkedChildren[0]!.respond("req-1");
     await d1;
@@ -439,7 +442,7 @@ describe("SubnodePool.dispatch", () => {
     // not hand this request to the already-warm worker still running under
     // the old uid.
     const remappedIdentity: ResolvedIdentity = { ...identity, uid: identity.uid + 1 };
-    const d2 = pool.dispatch(remappedIdentity, "list_directory", "docs", {}, "req-2");
+    const d2 = pool.dispatch(remappedIdentity, "list_directory", "docs", {}, "req-2", []);
 
     await waitUntil(() => forkedChildren[0]!.exited);
     await waitUntil(() => forkedChildren.length === 2 && forkedChildren[1]!.hasPending("req-2"));
@@ -453,11 +456,42 @@ describe("SubnodePool.dispatch", () => {
     await pool.shutdown(0);
   });
 
+  it("sends the caller's path filters to the worker with the request", async () => {
+    const pool = new SubnodePool(makeConfig(), {});
+    const d = pool.dispatch(identity, "read_file", "docs", {}, "req-1", ["^/x$"]);
+    await waitUntil(() => forkedChildren[0]?.hasPending("req-1") ?? false);
+    expect(forkedChildren[0]!.requestMsgs.get("req-1")!["path_filters"]).toEqual(["^/x$"]);
+    forkedChildren[0]!.respond("req-1");
+    await d;
+    await pool.shutdown(0);
+  });
+
+  it("evicts a busy worker whose uid no longer matches when it is handed a queued request", async () => {
+    const pool = new SubnodePool(makeConfig({ subnode_workers: workersConfig({ min: 1, max: 1 }) }), {});
+
+    const d1 = pool.dispatch(identity, "list_directory", "docs", {}, "req-1", []);
+    await waitUntil(() => forkedChildren[0]?.hasPending("req-1") ?? false);
+    // Queued behind the busy worker, with an identity that has since changed uid.
+    const remapped: ResolvedIdentity = { ...identity, uid: identity.uid + 1 };
+    const d2 = pool.dispatch(remapped, "list_directory", "docs", {}, "req-2", []);
+    await new Promise((r) => setTimeout(r, 30)); // let d2 reach the queue before the worker frees up
+
+    forkedChildren[0]!.respond("req-1");
+    await d1;
+    const r2 = await d2;
+
+    expect(isDispatchError(r2)).toBe(true);
+    expect(forkedChildren[0]!.hasPending("req-2")).toBe(false);
+    expect(forkedChildren[0]!.killed).toBe(true);
+
+    await pool.shutdown(0);
+  });
+
   it("evicts already-warm workers immediately when a uid is newly blocked by policy", async () => {
     const subnodeUid: SubnodeUidConfig = {};
     const pool = new SubnodePool(makeConfig({ subnode_uid: subnodeUid }), {});
 
-    const d1 = pool.dispatch(identity, "list_directory", "docs", {}, "req-1");
+    const d1 = pool.dispatch(identity, "list_directory", "docs", {}, "req-1", []);
     await waitUntil(() => forkedChildren[0]?.hasPending("req-1") ?? false);
     forkedChildren[0]!.respond("req-1");
     await d1;
@@ -465,7 +499,7 @@ describe("SubnodePool.dispatch", () => {
     // Operator blocks this uid after the worker is already warm.
     subnodeUid.blocked_uids = [identity.uid];
 
-    const r2 = await pool.dispatch(identity, "list_directory", "docs", {}, "req-2");
+    const r2 = await pool.dispatch(identity, "list_directory", "docs", {}, "req-2", []);
     expect(isDispatchError(r2)).toBe(true);
     expect((r2 as { kind: string }).kind).toBe("uid_blocked");
 
@@ -481,7 +515,7 @@ describe("SubnodePool.dispatch", () => {
     try {
       const pool = new SubnodePool(makeConfig({ subnode_rpc_timeout_seconds: 5 }), {});
 
-      const d1 = pool.dispatch(identity, "list_directory", "docs", {}, "req-1");
+      const d1 = pool.dispatch(identity, "list_directory", "docs", {}, "req-1", []);
       await waitUntil(() => forkedChildren[0]?.hasPending("req-1") ?? false);
 
       // This worker never responds and won't honor SIGTERM — simulates a
@@ -516,20 +550,20 @@ describe("SubnodePool.dispatch", () => {
     it("rejects a new identity once the global cap is reached, without disturbing identities already tracked", async () => {
       const pool = new SubnodePool(configWith({}, undefined, 1), {});
 
-      const d1 = pool.dispatch(identity, "list_directory", "docs", {}, "req-1");
+      const d1 = pool.dispatch(identity, "list_directory", "docs", {}, "req-1", []);
       await waitUntil(() => forkedChildren[0]?.hasPending("req-1") ?? false);
       forkedChildren[0]!.respond("req-1");
       expect(isDispatchError(await d1)).toBe(false);
 
       // alice's subnode now occupies the one slot the cap allows — bob, a new
       // identity, must be rejected rather than spawning a second one.
-      const bobResult = await pool.dispatch(bob, "list_directory", "docs", {}, "req-2");
+      const bobResult = await pool.dispatch(bob, "list_directory", "docs", {}, "req-2", []);
       expect(isDispatchError(bobResult)).toBe(true);
       expect((bobResult as { kind: string }).kind).toBe("subnode_limit");
       expect(forkedChildren.length).toBe(1);
 
       // alice is already tracked, so the cap must not block her further requests.
-      const d3 = pool.dispatch(identity, "list_directory", "docs", {}, "req-3");
+      const d3 = pool.dispatch(identity, "list_directory", "docs", {}, "req-3", []);
       await waitUntil(() => forkedChildren[0]!.hasPending("req-3"));
       forkedChildren[0]!.respond("req-3");
       expect(isDispatchError(await d3)).toBe(false);
@@ -541,7 +575,7 @@ describe("SubnodePool.dispatch", () => {
       const pool = new SubnodePool(configWith({}, undefined, 0), {});
 
       for (const [id, reqId] of [[identity, "req-1"], [bob, "req-2"], [carol, "req-3"]] as const) {
-        const d = pool.dispatch(id, "list_directory", "docs", {}, reqId);
+        const d = pool.dispatch(id, "list_directory", "docs", {}, reqId, []);
         await waitUntil(() => forkedChildren.at(-1)?.hasPending(reqId) ?? false);
         forkedChildren.at(-1)!.respond(reqId);
         expect(isDispatchError(await d)).toBe(false);

@@ -6,7 +6,7 @@
  * outside of a forked context.
  */
 
-import { createLogger, type ToolResult } from "@constellation/shared";
+import { createLogger, parsePathFilters, type ToolResult } from "@constellation/shared";
 
 const log = createLogger("hub:subnode-worker");
 
@@ -26,6 +26,8 @@ export interface SubnodeRequest {
   tool: string;
   share: string;
   params: unknown;
+  /** The caller's relay path filters (RE2 sources), enforced by the executor. Required. */
+  path_filters: string[];
 }
 
 export interface SubnodeReady {
@@ -53,7 +55,8 @@ export function isValidMessage(msg: unknown): msg is SubnodeInit | SubnodeReques
   if (m["type"] === "request") {
     return typeof m["request_id"] === "string"
       && typeof m["tool"] === "string"
-      && typeof m["share"] === "string";
+      && typeof m["share"] === "string"
+      && parsePathFilters(m["path_filters"]) !== null;
   }
   return false;
 }
@@ -63,7 +66,7 @@ export function isValidMessage(msg: unknown): msg is SubnodeInit | SubnodeReques
 // ---------------------------------------------------------------------------
 
 export interface MinimalExecutor {
-  execute(tool: string, share: string, params: unknown): Promise<ToolResult>;
+  execute(tool: string, share: string, params: unknown, pathFilters: readonly string[]): Promise<ToolResult>;
 }
 
 export async function handleRequest(
@@ -71,10 +74,10 @@ export async function handleRequest(
   msg: SubnodeRequest,
   send: (msg: SubnodeResponse) => void
 ): Promise<void> {
-  const { request_id, tool, share, params } = msg;
+  const { request_id, tool, share, params, path_filters } = msg;
 
   try {
-    const result = await executor.execute(tool, share, params);
+    const result = await executor.execute(tool, share, params, path_filters);
     if (result.isError) {
       send({ type: "response", request_id, error: result.content });
     } else {

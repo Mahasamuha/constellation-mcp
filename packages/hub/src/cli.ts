@@ -1,11 +1,11 @@
 import { Command } from "commander";
 import { hostname } from "node:os";
 import { execFileSync } from "node:child_process";
-import { readFileSync, writeFileSync, chmodSync, mkdirSync, statSync, statfsSync } from "node:fs";
+import { readFileSync, mkdirSync, statSync, statfsSync } from "node:fs";
 import { dirname } from "node:path";
 import WebSocket from "ws";
 import open from "open";
-import { poll, assertSecureRelayUrl, assertSecureHttpUrl, isSameOrigin, requestRotateViaControlChannel } from "@constellation/shared";
+import { AsterismError, EXECUTOR_TOKEN_PATTERN, writeEnvFileValue, readEnvFileValue, relayWsUrl, assertSecureHttpUrl, deviceSignIn, registerExecutor, checkHostName, deviceCodeLines, sanitizeForTerminal as t, requestRotateViaControlChannel } from "@constellation/shared";
 import { loadHubConfig, validateHubConfig } from "./config.js";
 import { getpwnam } from "./identity.js";
 import { runHub, sourceEnvFile } from "./index.js";
@@ -68,7 +68,8 @@ export function registerHubCommands(program: Command): void {
     .requiredOption("--relay <url>", "Relay URL", process.env["RELAY_URL"])
     .option("--host-name <name>", "Host name for this hub", hostname())
     .option("--env-file <path>", "Path to write CONSTELLATION_HUB_TOKEN", "/etc/constellation/hub.env")
-    .action(async (opts: { relay: string; hostName: string; envFile: string }) => {
+    .option("--accept-new-issuer", "Trust the authorization server the relay names now, even though this hub registered with another")
+    .action(async (opts: { relay: string; hostName: string; envFile: string; acceptNewIssuer?: boolean }) => {
       const { relay: relayUrl, hostName, envFile } = opts;
 
       if (!relayUrl) {
@@ -76,84 +77,77 @@ export function registerHubCommands(program: Command): void {
         process.exit(1);
       }
 
-      if (!hostName || hostName.length > 63) {
-        console.error("Error: host name must be 1–63 characters");
+      const checkedHost = checkHostName(hostName ?? "");
+      if (!checkedHost.ok) {
+        console.error("Error:", checkedHost.error);
         process.exit(1);
       }
 
       try {
         assertSecureHttpUrl(relayUrl);
       } catch (err) {
-        console.error("Error:", (err as Error).message);
+        console.error("Error:", t((err as Error).message));
         process.exit(1);
       }
 
-      console.log(`\nRegistering hub '${hostName}' with relay: ${relayUrl}`);
-      console.log("An admin must approve this request in the browser.\n");
+      console.log(`\nRegistering hub '${checkedHost.host}' with relay: ${relayUrl}`);
+      console.log("An admin must approve this request in the browser, with a fresh sign-in: expect to be asked for");
+      console.log("their password even if they are already signed in.\n");
 
-      const dcRes = await fetch(`${relayUrl}/oauth/device/code`, {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({ scope: "agent:register:shared", host_name: hostName }),
-      });
-      if (!dcRes.ok) {
-        console.error("Failed to start device flow:", await dcRes.text());
-        process.exit(1);
-      }
-      const dc = await dcRes.json() as {
-        device_code: string;
-        user_code: string;
-        verification_uri_complete: string;
-        expires_in: number;
-        interval: number;
-      };
+      // Hub registration is admin-only: the sign-in asks for the step-up `admin` scope, which the
+      // authorization server grants only to members of the admin group. That access token is used
+      // once, here, to mint the hub token, and is not stored.
+      // The authorization server this hub registered with before is recorded in the env file; a repeat
+      // registration is pinned to it, so a relay that now names another one gets nothing.
+      let expectedIssuer: string | undefined;
+      try {
+        expectedIssuer = opts.acceptNewIssuer ? undefined : readEnvFileValue(envFile, HUB_ISSUER_VAR);
+      } catch { /* unreadable env file: the write below reports it */ }
 
-      console.log(`Share the following URL with an admin (opening browser automatically):`);
-      console.log(`  ${dc.verification_uri_complete}\n`);
-      console.log(`If the browser did not open, the admin should enter this code: ${dc.user_code}\n`);
-      console.log("Waiting for admin approval...\n");
-      if (isSameOrigin(relayUrl, dc.verification_uri_complete)) {
-        try { await open(dc.verification_uri_complete); } catch { /* ignore */ }
-      }
-
-      const result = await poll(
-        async ({ intervalMs, setIntervalMs }) => {
-          const r = await fetch(`${relayUrl}/oauth/token`, {
-            method: "POST",
-            headers: { "Content-Type": "application/x-www-form-urlencoded" },
-            body: new URLSearchParams({
-              grant_type: "urn:ietf:params:oauth:grant-type:device_code",
-              device_code: dc.device_code,
-            }),
-          });
-          if (r.status === 400) {
-            const body = await r.json() as { error: string };
-            if (body.error === "authorization_pending") return null;
-            if (body.error === "slow_down") { setIntervalMs(intervalMs + 5000); return null; }
-            if (body.error === "access_denied") {
-              console.error("\nAccess denied. Ensure the approving user has admin privileges.");
-              process.exit(1);
+      let accessToken: string;
+      let issuer: string;
+      try {
+        const signedIn = await deviceSignIn(relayUrl, {
+          kind: "hub",
+          scope: HUB_REGISTER_SCOPE,
+          ...(expectedIssuer ? { expectedIssuer } : {}),
+          onCode: async (dc, openUrl) => {
+            for (const line of deviceCodeLines("Share the following URL with an admin", dc, openUrl, "the admin")) console.log(line);
+            console.log("Waiting for admin approval...\n");
+            if (openUrl) {
+              try { await open(openUrl); } catch { /* ignore */ }
             }
-            console.error("\nDevice flow error:", body.error);
-            process.exit(1);
-          }
-          if (!r.ok) return null;
-          return r.json() as Promise<{ access_token: string; token_type: string; host: string }>;
-        },
-        dc.interval * 1000,
-        dc.expires_in * 1000
-      );
+          },
+        });
+        accessToken = signedIn.tokens.access_token;
+        issuer = signedIn.endpoints.issuer;
+      } catch (err) {
+        if (err instanceof AsterismError && err.code === "access_denied") {
+          console.error("\nAccess denied. Ensure the approving user is in the admin group.");
+        } else if (err instanceof AsterismError && err.code === "issuer_changed") {
+          console.error(`\n${t(err.message)}\nPass --accept-new-issuer if you trust the change.`);
+        } else {
+          console.error(`\n${t((err as Error).message)}`);
+        }
+        process.exit(1);
+      }
 
-      if (!result) {
-        console.error("Timed out waiting for approval.");
+      const result = await registerExecutor(relayUrl, accessToken, { type: "hub", host: checkedHost.host });
+      if (!result.ok) {
+        console.error(result.message);
         process.exit(1);
       }
 
       // Write the token to the env file. Never print the raw token value.
+      if (!EXECUTOR_TOKEN_PATTERN.test(result.access_token)) {
+        console.error("The relay returned a malformed token; nothing was written.");
+        process.exit(1);
+      }
       writeEnvToken(envFile, result.access_token);
+      writeEnvFileValue(envFile, HUB_ISSUER_VAR, issuer);
       warnIfEnvFileInsecure(envFile);
 
-      console.log(`Hub '${result.host}' registered successfully.`);
+      console.log(`Hub '${t(result.host)}' registered successfully.`);
       console.log(`Token written to: ${envFile}`);
       console.log(`\nSet CONSTELLATION_HUB_TOKEN from this file before starting the hub,`);
       console.log(`or pass --env-file to 'constellation hub start'.`);
@@ -204,7 +198,7 @@ export function registerHubCommands(program: Command): void {
       for (const entry of cfg.identity.user_map) {
         const pw = await getpwnam(entry.local_username);
         if (!pw) {
-          console.error(`Error: user_map entry for oidc_sub '${entry.oidc_sub}' maps to '${entry.local_username}' which does not exist on this system`);
+          console.error(`Error: user_map entry for sub '${entry.sub}' maps to '${entry.local_username}' which does not exist on this system`);
           hasError = true;
         }
       }
@@ -393,7 +387,7 @@ WantedBy=multi-user.target
         if (viaControl.ok) {
           console.log("Token rotated — the running hub has reconnected with the new token. No restart needed.");
         } else {
-          console.error("Error:", viaControl.error);
+          console.error("Error:", t(viaControl.error));
           process.exit(1);
         }
         return;
@@ -415,12 +409,11 @@ WantedBy=multi-user.target
         process.exit(1);
       }
 
-      const wsUrl = cfg.relay_url.replace(/^http/, "ws") + "/executor/connect";
-
+      let wsUrl: string;
       try {
-        assertSecureRelayUrl(wsUrl);
+        wsUrl = relayWsUrl(cfg.relay_url) + "/executor/connect";
       } catch (err) {
-        console.error("Error:", (err as Error).message);
+        console.error("Error:", t((err as Error).message));
         process.exit(1);
       }
 
@@ -440,12 +433,17 @@ WantedBy=multi-user.target
           if (msg["type"] === "token_rotated" && typeof msg["token"] === "string") {
             clearTimeout(timeout);
             ws.close();
+            if (!EXECUTOR_TOKEN_PATTERN.test(msg["token"])) {
+              console.error("The relay sent a malformed token; the hub token was not changed.");
+              resolve(null);
+              return;
+            }
             resolve(msg["token"]);
           }
         });
         ws.on("error", (err) => {
           clearTimeout(timeout);
-          console.error("Error:", err.message);
+          console.error("Error:", t(err.message));
           resolve(null);
         });
       });
@@ -473,32 +471,24 @@ WantedBy=multi-user.target
 // Helpers
 // ---------------------------------------------------------------------------
 
+/** The env file also records which authorization server issued the hub token, so a later `hub register` can pin to it. */
+const HUB_ISSUER_VAR = "CONSTELLATION_HUB_ISSUER";
+/** Registering mints a long-lived credential: the relay requires `register` (a fresh sign-in) and, for a hub, `admin`. */
+const HUB_REGISTER_SCOPE = "relay admin register";
+
 function writeEnvToken(envFile: string, token: string): void {
-  const dir = dirname(envFile);
   try {
-    mkdirSync(dir, { recursive: true });
+    mkdirSync(dirname(envFile), { recursive: true });
   } catch {
     // Directory may already exist or be /etc (no write permission without sudo).
-    // Let the writeFileSync below surface the real error.
+    // The write below surfaces the real error.
   }
-
-  // Preserve any existing env vars in the file and update/add CONSTELLATION_HUB_TOKEN.
-  let existing: string[] = [];
   try {
-    existing = readFileSync(envFile, "utf8").split("\n");
-  } catch {
-    // File doesn't exist yet.
+    writeEnvFileValue(envFile, "CONSTELLATION_HUB_TOKEN", token);
+  } catch (err) {
+    console.error(`Could not write the hub token to ${envFile}: ${t((err as Error).message)}`);
+    process.exit(1);
   }
-
-  const key = "CONSTELLATION_HUB_TOKEN";
-  const updated = existing.filter((line) => !line.startsWith(`${key}=`) && line !== "");
-  updated.push(`${key}=${token}`);
-
-  // chmodSync before writing: writeFileSync's mode option only applies when creating
-  // the file, not when overwriting an existing one. A pre-existing file at 0o644
-  // would have the new token written to it before mode is corrected.
-  try { chmodSync(envFile, 0o600); } catch { /* file may not exist yet — writeFileSync will create it with mode */ }
-  writeFileSync(envFile, updated.join("\n") + "\n", { mode: 0o600 });
 }
 
 function warnIfEnvFileInsecure(envFile: string): void {

@@ -1,10 +1,13 @@
+import { promises as fs } from "node:fs";
 import { join, sep } from "node:path";
+import { createPathFilter } from "../path-filter.js";
 import { createLogger } from "../logger.js";
 import { listDirectory, fileInfo, readFile } from "./tools/fs-read.js";
 import { writeFile, createDirectory, deletePath, movePath, copyPath } from "./tools/fs-write.js";
 import { findFiles, grepFiles } from "./tools/fs-search.js";
 import { editFile } from "./tools/fs-edit.js";
 import { safeRealpath } from "./tools/safe-path.js";
+import type { PathFilter } from "./tools/path-guard.js";
 
 const log = createLogger("executor");
 
@@ -13,7 +16,7 @@ export interface ToolResult {
   isError?: boolean;
 }
 
-const KNOWN_CODES = new Set(["FILE_TOO_LARGE", "READ_TOO_LARGE", "WRITE_TOO_LARGE", "EDIT_NO_MATCH", "EDIT_AMBIGUOUS", "DEST_EXISTS", "MOVE_INCOMPLETE", "SRC_IS_SYMLINK"]);
+const KNOWN_CODES = new Set(["FILE_TOO_LARGE", "READ_TOO_LARGE", "WRITE_TOO_LARGE", "EDIT_NO_MATCH", "EDIT_AMBIGUOUS", "DEST_EXISTS", "MOVE_INCOMPLETE", "SRC_IS_SYMLINK", "PATH_FILTERED", "FILTERED_DIRECTORY_OP", "INVALID_PATTERN"]);
 
 // MOVE_INCOMPLETE is "known" in the sense that its message is deliberately constructed and
 // caller-safe (see crossDeviceMove in fs-write.ts), but unlike the other known codes it
@@ -27,7 +30,14 @@ export class FileExecutor {
     private readonly maxFileSizeKb: number
   ) {}
 
-  async execute(tool: string, share: string, params: unknown): Promise<ToolResult> {
+  /**
+   * `pathFilters` are the caller's relay path filters for this executor (RE2 sources, see
+   * path-filter.ts). They are a per-call argument, never stored: every resolved target path is
+   * checked against them, and traversal tools skip blocked entries. Required, so a caller can't
+   * forget them; pass `[]` for none.
+   */
+  async execute(tool: string, share: string, params: unknown, pathFilters: readonly string[]): Promise<ToolResult> {
+    const filter = createPathFilter(pathFilters);
     const root = this.shareRegistry[share];
     if (root === undefined) {
       log.warn({ tool, share }, "Share not found in registry");
@@ -89,6 +99,10 @@ export class FileExecutor {
           log.warn({ tool, field, resolved, boundaryRoot }, "Path traversal attempt rejected");
           return { content: { message: "Path rejected" }, isError: true };
         }
+        if (filter.blocks(resolved)) {
+          log.warn({ tool, field }, "Path blocked by relay path filter");
+          return { content: pathFilteredError(rp), isError: true };
+        }
         resolvedPaths.set(field, resolved);
       } catch (err) {
         log.warn({ tool, field, rp, err }, "safeRealpath failed");
@@ -145,7 +159,7 @@ export class FileExecutor {
     }
 
     try {
-      const content = await this.dispatch(tool, root, resolvedDstRoot, p, resolvedPaths);
+      const content = await this.dispatch(tool, root, resolvedDstRoot, p, resolvedPaths, filter);
       return { content };
     } catch (err) {
       const e = err as Error & {
@@ -168,7 +182,8 @@ export class FileExecutor {
     root: string,
     resolvedDstRoot: string | undefined,
     p: Record<string, unknown>,
-    resolvedPaths: Map<string, string>
+    resolvedPaths: Map<string, string>,
+    filter: PathFilter
   ): Promise<object> {
     // Operate on the realpath-resolved, boundary-checked paths computed during
     // validation — never re-derive join(root, relative_path), which would
@@ -180,6 +195,18 @@ export class FileExecutor {
     const srcPath = resolvedPaths.get("src_relative_path");
     const dstPath = resolvedPaths.get("dst_relative_path");
 
+    // A directory copy, move or delete would carry along (or destroy, or count in its
+    // confirmation summary) content the filters hide, so with any filter active they are refused.
+    if (filter.active) {
+      const dirOpPath = tool === "delete" ? relPath : tool === "copy" || tool === "move" ? srcPath : undefined;
+      if (dirOpPath !== undefined && (await isDirectory(dirOpPath))) {
+        throw Object.assign(
+          new Error(`Refused: ${tool} of a directory is not allowed on a share with path filters`),
+          { code: "FILTERED_DIRECTORY_OP" }
+        );
+      }
+    }
+
     switch (tool) {
       case "list_directory":
         return listDirectory(root, relPath ?? root, {
@@ -187,6 +214,7 @@ export class FileExecutor {
           max_depth: n(p, "max_depth"),
           limit: n(p, "limit"),
           exclude: arr(p, "exclude"),
+          filter,
         });
 
       case "file_info":
@@ -196,6 +224,7 @@ export class FileExecutor {
         return findFiles(root, relPath ?? root, {
           pattern: req(p, "pattern"),
           type: p["type"] as "glob" | "regex" | undefined,
+          filter,
         });
 
       case "read_file":
@@ -210,6 +239,7 @@ export class FileExecutor {
           pattern: req(p, "pattern"),
           file_glob: s(p, "file_glob"),
           type: p["type"] as "literal" | "regex" | undefined,
+          filter,
         });
 
       case "write_file":
@@ -254,6 +284,32 @@ export class FileExecutor {
       default:
         throw new Error(`Unknown tool: ${tool}`);
     }
+  }
+}
+
+/** Most path filters the relay may send in one envelope (it caps a user's filters well below this). */
+export const MAX_ENVELOPE_PATH_FILTERS = 100;
+
+/**
+ * Validates an envelope's `path_filters`: an array of at most MAX_ENVELOPE_PATH_FILTERS strings.
+ * Returns it, or null when it is missing or malformed, which means an old or buggy relay; the
+ * caller refuses the request rather than run it unfiltered.
+ */
+export function parsePathFilters(value: unknown): string[] | null {
+  if (!Array.isArray(value) || value.length > MAX_ENVELOPE_PATH_FILTERS) return null;
+  return value.every((v) => typeof v === "string") ? (value as string[]) : null;
+}
+
+function pathFilteredError(relativePath: string): object {
+  return { message: `Path is blocked by a path filter: ${relativePath}`, code: "PATH_FILTERED", path: relativePath };
+}
+
+/** lstat-based, so a symlink is not a directory; a missing path falls through to the tool's own error. */
+async function isDirectory(absPath: string): Promise<boolean> {
+  try {
+    return (await fs.lstat(absPath)).isDirectory();
+  } catch {
+    return false;
   }
 }
 

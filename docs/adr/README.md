@@ -5,13 +5,13 @@
 | [0001](0001-rpc-envelope-not-shared.md) | Do Not Share RpcEnvelope Across Node and Relay | Superseded by [0018](0018-share-rpcenvelope-via-inheritance.md) |
 | [0002](0002-agent-is-security-boundary.md) | The Node Is the Security Boundary | Accepted |
 | [0003](0003-outbound-only-agent-websocket.md) | Outbound-Only Node WebSocket (No Inbound Ports) | Accepted |
-| [0004](0004-oauth-mcp-auth.md) | OAuth 2.0 as the MCP Client Authentication Standard | Partially superseded by [0020](0020-rfc9728-discovery-public-only-dcr.md) |
+| [0004](0004-oauth-mcp-auth.md) | OAuth 2.0 as the MCP Client Authentication Standard | Superseded by [0022](0022-asterism-authorization-server.md) |
 | [0005](0005-local-config-authority.md) | Node Config Is Local Authority; Relay Config Is Derived | Accepted |
 | [0006](0006-agent-initiated-token-rotation.md) | Node-Initiated Token Rotation; Tokens Stored as Hashes | Accepted |
 | [0007](0007-remove-broker-manage-scope.md) | Remove relay:manage Scope; Replace with Per-User RLS Filtering | Accepted |
-| [0008](0008-admin-elevation-admin-until.md) | Admin Elevation via adminUntil on OauthSession (Not a Separate Token) | Accepted |
+| [0008](0008-admin-elevation-admin-until.md) | Admin Elevation via adminUntil on OauthSession (Not a Separate Token) | Superseded by [0022](0022-asterism-authorization-server.md) |
 | [0009](0009-hub-nullable-user-id.md) | Hub Uses Nullable userId on ExecutorToken (Service-Level Token) | Accepted |
-| [0010](0010-hub-three-tier-identity.md) | Three-Tier OS Identity Resolution for Hub | Accepted |
+| [0010](0010-hub-three-tier-identity.md) | Three-Tier OS Identity Resolution for Hub | Superseded by [0023](0023-hub-identity-asterism-sub.md) |
 | [0011](0011-shared-label-discovery-optimistic.md) | Hub Share Discovery Is Optimistic (Not Authoritative) | Accepted |
 | [0012](0012-in-memory-rate-limiting.md) | In-Memory Rate Limiting (No Redis for v1) | Accepted |
 | [0013](0013-hub-restart-only-config.md) | Hub Config Changes Require Process Restart (No Live Reload) | Accepted |
@@ -21,5 +21,7 @@
 | [0017](0017-ambiguous-share-resolution.md) | Ambiguous Share Resolution Returns an Error Instead of Requiring `host` | Accepted |
 | [0018](0018-share-rpcenvelope-via-inheritance.md) | Share RpcEnvelope via Inheritance; Nest Tool Params | Accepted |
 | [0019](0019-hub-live-token-rotation.md) | Hub Token Rotation Is Live, Not Restart-Bound | Accepted |
-| [0020](0020-rfc9728-discovery-public-only-dcr.md) | RFC 9728 Discovery; Dynamic Client Registration Is Public-Only | Accepted |
-| [0021](0021-client-id-metadata-documents.md) | Client ID Metadata Documents; Relay Consent Interstitial in OIDC Mode | Accepted |
+| [0020](0020-rfc9728-discovery-public-only-dcr.md) | RFC 9728 Discovery; Dynamic Client Registration Is Public-Only | Superseded by [0022](0022-asterism-authorization-server.md) |
+| [0021](0021-client-id-metadata-documents.md) | Client ID Metadata Documents; Relay Consent Interstitial in OIDC Mode | Superseded by [0022](0022-asterism-authorization-server.md) |
+| [0022](0022-asterism-authorization-server.md) | asterism Is the Authorization Server; Constellation Is a Resource Server | Accepted |
+| [0023](0023-hub-identity-asterism-sub.md) | Hub Identity Keys on the asterism Sub; constellation_username Is Untrusted Input | Accepted |

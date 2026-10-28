@@ -57,8 +57,23 @@ export function clearActivitySinks(): void {
 // Generator — called from router and hub
 // ---------------------------------------------------------------------------
 
-/** Emit an activity event to all registered sinks. */
-export function logEvent(event: ActivityEvent): void {
+/** Longest text field an activity event keeps; share, host, tool and error strings come from callers. */
+export const MAX_ACTIVITY_FIELD_LENGTH = 128;
+
+function clip(value: string | undefined): string | undefined {
+  return value !== undefined && value.length > MAX_ACTIVITY_FIELD_LENGTH ? `${value.slice(0, MAX_ACTIVITY_FIELD_LENGTH)}…` : value;
+}
+
+/** Emit an activity event to all registered sinks, with its free-text fields truncated. */
+export function logEvent(raw: ActivityEvent): void {
+  const event: ActivityEvent = {
+    ...raw,
+    host: clip(raw.host),
+    tool: clip(raw.tool),
+    share: clip(raw.share),
+    errorCode: clip(raw.errorCode),
+    errorMessage: clip(raw.errorMessage),
+  };
   for (const sink of sinks) {
     try {
       sink(event);

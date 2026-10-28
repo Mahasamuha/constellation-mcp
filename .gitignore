@@ -15,3 +15,9 @@ pnpm-lock.yaml
 .claude
 .idea
 CLAUDE.local.md
+
+# Compiled output belongs in dist/; a tsc run with the wrong outDir must not be committable.
+packages/*/src/**/*.js
+packages/*/src/**/*.js.map
+packages/*/src/**/*.d.ts
+!packages/*/src/**/vite-env.d.ts

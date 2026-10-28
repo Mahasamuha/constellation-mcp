@@ -1,12 +1,11 @@
-import picomatch from "picomatch";
-import RE2 from "re2";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { prisma } from "./db.js";
 import { dispatchRpc, getConnection, type RpcEnvelope, type RpcError } from "./hub.js";
 import { logEvent } from "./activity.js";
-import { createLogger, evaluatePermissionBlob, type PermissionBlob } from "@constellation/shared";
+import { createLogger, evaluatePermissionBlob, filterSource, createPathFilter, type PermissionBlob } from "@constellation/shared";
 import { config } from "./config.js";
+import type { RequestUser } from "./request-user.js";
 
 const log = createLogger("router");
 
@@ -76,6 +75,10 @@ function sanitizeExecutorError(error: RpcError): RpcError {
 // using express-rate-limit's store interface instead.
 const toolCallTimestamps = new Map<string, number[]>();
 const expensiveToolTimestamps = new Map<string, number[]>();
+const mcpRequestTimestamps = new Map<string, number[]>();
+/** When each user's last `rate_limited` activity event was written. */
+const rateLimitedLoggedAt = new Map<string, number>();
+const RATE_WINDOW_MS = 60_000;
 
 /** Tools cheap enough for the standard per-minute budget. Anything else — including
  * any tool not listed here at all — uses the stricter expensive-tools budget. */
@@ -99,18 +102,45 @@ export function classifyTool(tool: string, params: Record<string, unknown>): "st
   return STANDARD_TOOLS.has(tool) ? "standard" : "expensive";
 }
 
-export function checkToolRateLimit(userId: string, tool: string, params: Record<string, unknown>): boolean {
+/**
+ * Sliding window: true (and records the call) when `key` has made fewer than `limit` calls in
+ * the last minute. Only allowed calls are recorded, so a flood of rejected calls neither grows
+ * the array (it holds at most `limit` entries) nor costs more than `limit` steps per call.
+ */
+function allowInWindow(timestamps: Map<string, number[]>, key: string, limit: number): boolean {
   const now = Date.now();
-  const window = 60_000;
+  const ts = timestamps.get(key) ?? [];
+  // Timestamps are appended in order, so the expired ones are at the front.
+  let expired = 0;
+  while (expired < ts.length && now - ts[expired]! >= RATE_WINDOW_MS) expired++;
+  const live = expired > 0 ? ts.slice(expired) : ts;
+  if (live.length >= limit) {
+    if (expired > 0) timestamps.set(key, live);
+    return false;
+  }
+  live.push(now);
+  timestamps.set(key, live);
+  return true;
+}
 
+export function checkToolRateLimit(userId: string, tool: string, params: Record<string, unknown>): boolean {
   const expensive = classifyTool(tool, params) === "expensive";
   const limit = expensive ? config.rateLimits.expensiveToolsPerMin : config.rateLimits.toolCallsPerMin;
-  const timestamps = expensive ? expensiveToolTimestamps : toolCallTimestamps;
+  return allowInWindow(expensive ? expensiveToolTimestamps : toolCallTimestamps, userId, limit);
+}
 
-  const ts = (timestamps.get(userId) ?? []).filter((t) => now - t < window);
-  ts.push(now);
-  timestamps.set(userId, ts);
-  return ts.length <= limit;
+/** Coarse per-user ceiling on every authenticated /mcp request, tool call or not. */
+export function checkMcpRequestRateLimit(userId: string): boolean {
+  return allowInWindow(mcpRequestTimestamps, userId, config.rateLimits.mcpRequestsPerMin);
+}
+
+/** True at most once per user per window, so a flood of limited calls writes one activity event. */
+export function shouldLogRateLimited(userId: string): boolean {
+  const now = Date.now();
+  const last = rateLimitedLoggedAt.get(userId);
+  if (last !== undefined && now - last < RATE_WINDOW_MS) return false;
+  rateLimitedLoggedAt.set(userId, now);
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -123,11 +153,11 @@ export function checkToolRateLimit(userId: string, tool: string, params: Record<
  * Returns a RouterError if the share or host isn't found.
  */
 export async function resolveShare(
-  userId: string,
+  user: RequestUser,
   share: string,
-  host?: string,
-  userOidcSub?: string | null
+  host?: string
 ): Promise<RouteResult | RouterError> {
+  const userId = user.id;
   // Personal shares (user-scoped)
   const where = host
     ? { userId, share, executor: { host } }
@@ -148,20 +178,37 @@ export async function resolveShare(
   }
 
   // Hub shares — optimistic relay-side permission check using synced config
-  const hubResult = await resolveHubShare(share, host, userOidcSub);
+  const hubResult = await resolveHubShare(user, share, host);
   if (hubResult) return hubResult;
 
-  // Give a specific error if the host exists but the share doesn't.
-  // Check both personal nodes (userId-scoped) and hubs (userId: null).
-  if (host) {
-    const hostExists = await prisma.executor.findFirst({
-      where: { host, OR: [{ userId }, { userId: null }] },
-    });
-    if (!hostExists) {
-      return { code: "host_not_found", message: `No host '${host}' found` };
-    }
+  // A host the user can't see answers the same whether or not it exists, so hub names can't
+  // be enumerated. Only a host the user owns or can see a hub share on gets the specific error.
+  if (host && !(await userCanSeeHost(user, host))) {
+    return { code: "host_not_found", message: `No host '${host}' found` };
   }
   return { code: "share_not_found", message: `No share '${share}' found` };
+}
+
+/** Hub shares (optionally of one name and/or host) the user's permission blob lets them see. */
+async function accessibleHubShares(user: RequestUser, filter: { share?: string; host?: string }) {
+  const hubShares = await prisma.hubShare.findMany({
+    where: {
+      ...(filter.share !== undefined ? { share: filter.share } : {}),
+      ...(filter.host ? { executor: { host: filter.host } } : {}),
+    },
+    include: { executor: { select: { id: true, host: true, lastHeartbeatAt: true } } },
+  });
+  const subject = { sub: user.id, groups: user.groups };
+  return hubShares.filter(
+    (hs) => evaluatePermissionBlob(hs.permissionBlob as unknown as PermissionBlob, subject) !== "none"
+  );
+}
+
+/** True when the user owns an executor with this host, or can see a hub share on it. */
+async function userCanSeeHost(user: RequestUser, host: string): Promise<boolean> {
+  const own = await prisma.executor.findFirst({ where: { host, userId: user.id }, select: { id: true } });
+  if (own) return true;
+  return (await accessibleHubShares(user, { host })).length > 0;
 }
 
 /**
@@ -174,21 +221,11 @@ export async function resolveShare(
  * This is optimistic: actual enforcement happens at the hub.
  */
 async function resolveHubShare(
+  user: RequestUser,
   share: string,
-  host?: string,
-  userOidcSub?: string | null
+  host?: string
 ): Promise<RouteResult | RouterError | null> {
-  const hubShares = await prisma.hubShare.findMany({
-    where: {
-      share,
-      ...(host ? { executor: { host } } : {}),
-    },
-    include: { executor: { select: { id: true, host: true, lastHeartbeatAt: true } } },
-  });
-
-  const accessible = hubShares.filter(
-    (hs) => evaluatePermissionBlob(hs.permissionBlob as unknown as PermissionBlob, userOidcSub) !== "none"
-  );
+  const accessible = await accessibleHubShares(user, { share, host });
 
   if (accessible.length === 0) return null;
 
@@ -217,32 +254,32 @@ async function resolveHubShare(
 // Relay path filter evaluation
 // ---------------------------------------------------------------------------
 
+/** A source that blocks every path, stored in place of a pattern that no longer compiles. */
+const BLOCK_ALL_SOURCE = "(?s)^.*$";
+
+/** Longest absolute path the relay will check or forward. */
+export const MAX_CHECKED_PATH_LENGTH = 4096;
+
 /**
- * Returns true if the resolved path is blocked by any active relay filter
- * for this user/executor.
+ * The RE2 sources of the user's filters for this executor, built once per call: it feeds both
+ * the relay's early check and the envelope the executor enforces. A stored pattern that fails
+ * to compile blocks everything rather than being skipped.
  */
-async function isPathFiltered(
-  userId: string,
-  executorId: string,
-  resolvedPath: string
-): Promise<boolean> {
+async function loadPathFilterSources(userId: string, executorId: string): Promise<string[]> {
   const filters = await prisma.relayPathFilter.findMany({
     where: {
       scopeUserId: userId,
       OR: [{ scopeExecutorId: null }, { scopeExecutorId: executorId }],
     },
   });
-
-  for (const filter of filters) {
-    if (filter.patternType === "glob") {
-      if (picomatch.isMatch(resolvedPath, filter.pattern)) return true;
-    } else {
-      const re = new RE2(filter.pattern);
-      if (re.test(resolvedPath)) return true;
+  return filters.map((f) => {
+    try {
+      return filterSource(f.pattern, f.patternType as "glob" | "regex");
+    } catch (err) {
+      log.error({ userId, executorId, filterId: f.id, err }, "Stored path filter does not compile; blocking all paths");
+      return BLOCK_ALL_SOURCE;
     }
-  }
-
-  return false;
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -272,32 +309,30 @@ export interface DispatchResult {
 /** Removes expired sliding-window entries. Called periodically from index.ts. */
 export function pruneRateLimits(): void {
   const now = Date.now();
-  const window = 60_000;
-  for (const [k, ts] of toolCallTimestamps) {
-    const fresh = ts.filter((t) => now - t < window);
-    if (fresh.length === 0) toolCallTimestamps.delete(k);
-    else toolCallTimestamps.set(k, fresh);
+  for (const map of [toolCallTimestamps, expensiveToolTimestamps, mcpRequestTimestamps]) {
+    for (const [k, ts] of map) {
+      const fresh = ts.filter((t) => now - t < RATE_WINDOW_MS);
+      if (fresh.length === 0) map.delete(k);
+      else map.set(k, fresh);
+    }
   }
-  for (const [k, ts] of expensiveToolTimestamps) {
-    const fresh = ts.filter((t) => now - t < window);
-    if (fresh.length === 0) expensiveToolTimestamps.delete(k);
-    else expensiveToolTimestamps.set(k, fresh);
+  for (const [k, t] of rateLimitedLoggedAt) {
+    if (now - t >= RATE_WINDOW_MS) rateLimitedLoggedAt.delete(k);
   }
 }
 
 export async function routeToolCall(
-  userId: string,
+  user: RequestUser,
   tool: string,
   share: string,
   params: ToolParams,
-  host?: string,
-  userOidcSub?: string | null,
-  userClaims?: Record<string, unknown>
+  host?: string
 ): Promise<DispatchResult | RouterError> {
+  const userId = user.id;
   const startTime = Date.now();
   const requestId = randomBytes(16).toString("hex");
 
-  const resolved = await resolveShare(userId, share, host, userOidcSub);
+  const resolved = await resolveShare(user, share, host);
   if ("code" in resolved) return resolved;
 
   const { executorId, absoluteRoot, host: executorHost, lastHeartbeatAt } = resolved;
@@ -308,7 +343,7 @@ export async function routeToolCall(
   let effectiveParams = params;
   const dstShareParam = typeof params["dst_share"] === "string" ? params["dst_share"] : undefined;
   if ((tool === "copy" || tool === "move") && dstShareParam !== undefined) {
-    const dstResolved = await resolveShare(userId, dstShareParam, executorHost, userOidcSub);
+    const dstResolved = await resolveShare(user, dstShareParam, executorHost);
     if ("code" in dstResolved) return dstResolved;
     if (dstResolved.executorId !== executorId) {
       return {
@@ -338,8 +373,14 @@ export async function routeToolCall(
     pathsToFilter.push({ absolute: join(dstRoot, dstRelPath), label: `${dstShareLabel}/${dstRelPath}` });
   }
 
+  // The executor enforces these again on resolved real paths; this is the cheap pre-check.
+  const pathFilterSources = await loadPathFilterSources(userId, executorId);
+  const pathFilter = createPathFilter(pathFilterSources);
   for (const candidate of pathsToFilter) {
-    if (await isPathFiltered(userId, executorId, candidate.absolute)) {
+    if (candidate.absolute.length > MAX_CHECKED_PATH_LENGTH) {
+      return { code: "path_filtered", message: `Path is too long: ${candidate.label.slice(0, 64)}…` };
+    }
+    if (pathFilter.blocks(candidate.absolute)) {
       log.info({ userId, executorId, tool, candidatePath: candidate.absolute }, "Path blocked by relay filter");
       return { code: "path_filtered", message: `Path blocked by relay filter: ${candidate.label}` };
     }
@@ -357,7 +398,7 @@ export async function routeToolCall(
   const timeoutMs = config.rpcTimeoutMs;
 
   const { forwardedClaims } = config;
-  const allClaims = userClaims ?? {};
+  const allClaims = user.claims;
   const filteredClaims = forwardedClaims.length > 0
     ? Object.fromEntries(Object.entries(allClaims).filter(([k]) => forwardedClaims.includes(k)))
     : allClaims;
@@ -367,9 +408,13 @@ export async function routeToolCall(
     tool,
     share,
     absolute_root: absoluteRoot,
-    user_oidc_sub: userOidcSub ?? null,
+    user_sub: user.id,
+    // Always sent and never filtered by forwardedClaims: a group override can restrict
+    // access as well as grant it, so the hub needs the full list to evaluate correctly.
+    user_groups: [...user.groups],
     user_claims: filteredClaims,
     params: effectiveParams,
+    path_filters: pathFilterSources,
   };
 
   log.info({ userId, executorId, tool, share, requestId }, "Dispatching RPC");

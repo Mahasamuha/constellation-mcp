@@ -3,6 +3,10 @@
 **Status:** Accepted — supersedes [ADR 0001](0001-rpc-envelope-not-shared.md)
 **Date:** 2026-06-21
 
+> **Amendment (ADR 0023):** the relay's envelope fields are now `user_sub: string`,
+> `user_groups: string[]` and `user_claims`. `user_oidc_sub` no longer exists. The
+> inheritance decision is unchanged.
+
 ## Context
 
 A production-readiness audit flagged that `RpcEnvelope` was defined independently in

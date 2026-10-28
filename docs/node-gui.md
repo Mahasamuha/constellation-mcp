@@ -91,21 +91,21 @@ All windows are non-resizable panels that open centered on screen. A window that
 
 ### Auth Window (`480 × 280`)
 
-Triggered by **Connect to Relay…** in the tray menu, or from Settings when the token is missing.
+Triggered by **Connect to Relay…** in the tray menu, or from Settings when the token is missing. Registering uses the step-up scope `relay register`, which needs a fresh sign-in: the authorization server asks for the password even if you are already signed in. A repeat registration is pinned to the authorization server recorded in `node.yaml` (`issuer`); if the relay names another one, the GUI shows the error and the user must run `constellation node init --accept-new-issuer` in a terminal.
 
 **Step 1 — Relay URL**  
-Enter the relay base URL (e.g. `https://relay.example.com`) and click Continue. The GUI calls `start_device_flow`, which POSTs to `/oauth/device/code` with scope `agent:register`.
+Enter the relay base URL (e.g. `https://relay.example.com`) and click Continue. The GUI calls `start_device_flow`, which runs `constellation node auth device-code`: it finds the relay's authorization server (asterism) from the relay's metadata and requests a device code there with scope `relay` and the node client (`<relay>/clients/node.json`).
 
 **Step 2 — Device code**  
-The relay returns a 9-character user code and a verification URL. The GUI displays the code and a button to open the verification URL in the browser. It then calls `poll_device_flow`, which polls `/oauth/token` every `interval` seconds (as specified in the relay response).
+`node auth device-code` prints `{"ok":true,"data":{...device code fields, "issuer":"<url>","open_url":"<url>|null"}}`. `issuer` is the authorization server the code came from. `open_url` is the verification URL only if it is on the issuer's origin, else `null`. The GUI displays the code and, when `open_url` is set, a button that opens exactly that URL; when it is `null` the GUI opens nothing and shows a warning. It then calls `poll_device_flow`, which runs `constellation node auth complete --issuer <issuer> ...`: if the relay now names a different authorization server it refuses and nothing is sent to it. `--interval` and `--expires-in` must be positive whole numbers. It polls the authorization server's token endpoint every `interval` seconds, then registers the node with `POST /api/executors/register` (the host name is the one already in `node.yaml`, else the machine's hostname; 1-63 characters of letters, digits, `.`, `_`, `-`, checked before sign-in).
 
 Poll outcomes:
 - `authorization_pending` — continue polling, emit `Pending` event to frontend
 - `slow_down` — continue polling, increase interval by 5 seconds
-- `rate_limit_exceeded` — continue polling at the same interval
+- Transient network or server errors — keep polling until the code expires
 - Any other error — emit `Error` event with the error string
 - Timeout (device code `expires_in` elapsed) — emit `Timeout` event
-- Success — write `node.yaml` with `relay_url`, `node_token`, and `host`; create `paths.yaml` if absent; emit `Success { host }` event; tray refreshes to Connected
+- Success (sign-in approved and node registered) — write `node.yaml` with `relay_url`, `node_token`, and `host`; create `paths.yaml` if absent; emit `Success { host }` event; tray refreshes to Connected
 
 Auth results are delivered to the frontend via Tauri events on the `auth-result` channel.
 
@@ -148,7 +148,7 @@ Edits `node.yaml` fields. `node_token` is managed via the Auth window only.
 
 | Field | Notes |
 |---|---|
-| Relay URL | Changing this requires a node restart |
+| Relay URL | A different relay origin removes the node token (it belongs to the old relay): Save asks for confirmation first, then the window says the node is unregistered and to use **Connect to Relay…** again. The same origin keeps it |
 | Node name (host) | Calls `constellation node rename` if changed |
 | Max file size (KB) | Minimum 1 (enforced); the GUI caps input at 100 but higher values can be set directly in `node.yaml` |
 | Config directory | Read-only; shows the resolved path |
@@ -157,7 +157,7 @@ Edits `node.yaml` fields. `node_token` is managed via the Auth window only.
 
 **Danger zone** (collapsed by default):
 - Rotate token — calls `constellation node rotate`, fires an OS notification on success
-- Deregister node — confirmation dialog, deletes `node.yaml` directly, resets to Unconfigured
+- Deregister node — confirmation dialog, deletes `node.yaml` directly, resets to Unconfigured. If a `constellation relay login` session exists, the node's token is also revoked on the relay (best effort).
 
 ---
 
@@ -196,14 +196,14 @@ All commands are invoked from the frontend via `invoke('<name>', args)`.
 |---|---|---|---|
 | `get_config` | — | `NodeConfig` | Reads `node.yaml` |
 | `get_config_dir` | — | `string` | Resolved config directory path |
-| `save_settings` | `relay_url`, `host`, `max_file_size_kb` | `void` | Writes `node.yaml`; calls `node rename` if host changed |
+| `save_settings` | `relay_url`, `host`, `max_file_size_kb` | `{ credentials_dropped: bool }` | Writes `node.yaml` via `node config set --json`; calls `node rename` if host changed. `credentials_dropped` is true when the relay origin changed and the node token was removed |
 | `update_tray` | — | `void` | Force-refreshes tray state |
 
 ### Auth
 
 | Command | Args | Returns | Notes |
 |---|---|---|---|
-| `start_device_flow` | `relay_url` | `DeviceCodeInfo` | POSTs to `/oauth/device/code` |
+| `start_device_flow` | `relay_url` | `DeviceCodeInfo` | Requests a device code from the authorization server |
 | `poll_device_flow` | `relay_url`, `device_code`, `interval`, `expires_in` | `void` | Emits `auth-result` events until resolved |
 
 `DeviceCodeInfo`: `{ device_code, user_code, verification_uri, verification_uri_complete, expires_in, interval }`

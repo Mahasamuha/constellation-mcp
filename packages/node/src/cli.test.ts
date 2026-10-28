@@ -14,10 +14,6 @@ import {
 } from "./config.js";
 import { makeTempDir, cleanTempDir } from "./test/fixtures.js";
 
-vi.mock("@constellation/shared", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@constellation/shared")>();
-  return { ...actual, confirm: vi.fn() };
-});
 import { confirm as mockedConfirm, startControlServer } from "@constellation/shared";
 
 // ---------------------------------------------------------------------------
@@ -116,6 +112,72 @@ describe("node --help", () => {
 });
 
 // ---------------------------------------------------------------------------
+// asterism / relay fakes for the sign-in and registration tests
+// ---------------------------------------------------------------------------
+
+const RELAY = "https://relay.example.com";
+const ISSUER = "https://auth.example.com";
+const NEW_NODE_TOKEN = "ab".repeat(32);
+
+function jsonRes(status: number, body: unknown): Response {
+  return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+}
+
+const DEVICE_CODE_RESPONSE = {
+  device_code: "dc-1", user_code: "ABCD-2345",
+  verification_uri: `${ISSUER}/oauth/device`,
+  verification_uri_complete: `${ISSUER}/oauth/device?user_code=ABCD-2345`,
+  expires_in: 900, interval: 5,
+};
+
+interface FakeOpts {
+  token?: () => Response;
+  register?: () => Response;
+  deviceCode?: () => Response;
+}
+
+/** Stubs fetch with a relay (metadata + /api/executors/register) and an asterism (metadata,
+ * device authorization, token endpoint). Returns the recorded requests. */
+function stubBackends(opts: FakeOpts = {}) {
+  const calls: Array<{ url: string; body: string; auth: string | null }> = [];
+  vi.stubGlobal("fetch", vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+    const u = String(url);
+    const headers = (init?.headers ?? {}) as Record<string, string>;
+    calls.push({ url: u, body: String(init?.body ?? ""), auth: headers["Authorization"] ?? null });
+    switch (u) {
+      case `${RELAY}/.well-known/oauth-protected-resource/mcp`:
+        return jsonRes(200, { resource: `${RELAY}/mcp`, authorization_servers: [ISSUER] });
+      case `${ISSUER}/.well-known/oauth-authorization-server`:
+        return jsonRes(200, { issuer: ISSUER, device_authorization_endpoint: `${ISSUER}/oauth/device/code`, token_endpoint: `${ISSUER}/oauth/token` });
+      case `${ISSUER}/oauth/device/code`:
+        return opts.deviceCode?.() ?? jsonRes(200, DEVICE_CODE_RESPONSE);
+      case `${ISSUER}/oauth/token`:
+        return opts.token?.() ?? jsonRes(200, { access_token: "at-node", token_type: "Bearer", expires_in: 3600, scope: "relay" });
+      case `${RELAY}/api/executors/register`:
+        return opts.register?.() ?? jsonRes(200, { access_token: NEW_NODE_TOKEN, token_type: "agent", host: JSON.parse(String(init?.body))["host"] });
+      default:
+        throw new Error(`unexpected fetch: ${u}`);
+    }
+  }));
+  return calls;
+}
+
+// Instant polling: the device flow sleeps `interval` seconds before every poll. The mock targets
+// cli-util itself because asterism-client imports sleep from there, not through the package index.
+vi.mock("../../shared/src/cli-util.js", async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return { ...actual, sleep: async () => {} };
+});
+vi.mock("open", () => ({ default: vi.fn(async () => undefined) }));
+import open from "open";
+vi.mock("@constellation/shared", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@constellation/shared")>();
+  return { ...actual, confirm: vi.fn() };
+});
+
+afterEach(() => { vi.unstubAllGlobals(); vi.mocked(open).mockClear(); });
+
+// ---------------------------------------------------------------------------
 // node init — relay URL scheme validation
 // ---------------------------------------------------------------------------
 
@@ -123,27 +185,108 @@ describe("node init — relay URL scheme validation", () => {
   it("rejects a plaintext http:// relay URL for a non-localhost host before doing anything else", async () => {
     const { exitCode, err } = await runCli(["node", "init", "--relay", "http://relay.example.com"], dir);
     expect(exitCode).toBe(1);
-    expect(err).toContain("ws://");
+    expect(err).toContain("http://");
     expect(() => loadNodeConfig(dir)).toThrow();
   });
 
   it("allows a plaintext http:// relay URL for localhost", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, text: () => Promise.resolve("boom") }));
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonRes(404, {})));
     const { exitCode, err } = await runCli(["node", "init", "--relay", "http://localhost:3000"], dir);
-    vi.unstubAllGlobals();
-    // Scheme validation passes; the command fails later on the (mocked) device-code request instead.
+    // Scheme validation passes; the command fails later on the (mocked) metadata request instead.
     expect(exitCode).toBe(1);
-    expect(err).not.toContain("ws://");
-    expect(err).toContain("Failed to start device flow");
+    expect(err).not.toContain("Refusing to connect");
+    expect(err).toContain("Failed to start sign-in");
   });
 
   it("allows a https:// relay URL", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, text: () => Promise.resolve("boom") }));
-    const { exitCode, err } = await runCli(["node", "init", "--relay", "https://relay.example.com"], dir);
-    vi.unstubAllGlobals();
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonRes(404, {})));
+    const { exitCode, err } = await runCli(["node", "init", "--relay", RELAY], dir);
     expect(exitCode).toBe(1);
-    expect(err).not.toContain("ws://");
-    expect(err).toContain("Failed to start device flow");
+    expect(err).not.toContain("Refusing to connect");
+    expect(err).toContain("Failed to start sign-in");
+  });
+});
+
+describe("node init — registration", () => {
+  it("signs in with the node client and scope relay register, registers with the chosen host, and writes node.yaml", async () => {
+    const calls = stubBackends();
+    const { exitCode, out } = await runCli(["node", "init", "--relay", RELAY, "--host-name", "my-laptop"], dir);
+
+    expect(exitCode).toBe(0);
+    expect(out).toContain("Node registered as 'my-laptop'");
+    expect(open).toHaveBeenCalledWith(DEVICE_CODE_RESPONSE.verification_uri_complete);
+
+    const deviceReq = new URLSearchParams(calls.find((c) => c.url === `${ISSUER}/oauth/device/code`)!.body);
+    expect(Object.fromEntries(deviceReq)).toEqual({
+      client_id: `${RELAY}/clients/node.json`, scope: "relay register", resource: `${RELAY}/mcp`,
+    });
+    const tokenReq = new URLSearchParams(calls.find((c) => c.url === `${ISSUER}/oauth/token`)!.body);
+    expect(tokenReq.get("client_id")).toBe(`${RELAY}/clients/node.json`);
+    expect(tokenReq.get("resource")).toBe(`${RELAY}/mcp`);
+
+    const reg = calls.find((c) => c.url === `${RELAY}/api/executors/register`)!;
+    expect(reg.auth).toBe("Bearer at-node");
+    expect(JSON.parse(reg.body)).toEqual({ type: "node", host: "my-laptop" });
+
+    const cfg = loadNodeConfig(dir);
+    expect(cfg).toMatchObject({ relay_url: RELAY, node_token: NEW_NODE_TOKEN, issuer: ISSUER, host: "my-laptop" });
+  });
+
+  it("pins a repeat registration to the issuer it used before and honours --accept-new-issuer", async () => {
+    writeNodeConfig(dir, { relay_url: RELAY, node_token: "old", host: "h", max_file_size_kb: 100, issuer: "https://previous-auth.example.com" });
+    const calls = stubBackends();
+    const refused = await runCli(["node", "init", "--relay", RELAY, "--host-name", "h"], dir);
+    expect(refused.exitCode).toBe(1);
+    expect(refused.err).toContain("different authorization server");
+    expect(refused.err).toContain("--accept-new-issuer");
+    expect(calls.some((c) => c.url.startsWith(ISSUER) && !c.url.includes(".well-known"))).toBe(false);
+    expect(loadNodeConfig(dir).node_token).toBe("old");
+
+    stubBackends();
+    const accepted = await runCli(["node", "init", "--relay", RELAY, "--host-name", "h", "--accept-new-issuer"], dir);
+    expect(accepted.exitCode).toBe(0);
+    expect(loadNodeConfig(dir).issuer).toBe(ISSUER);
+  });
+
+  it("defaults the host to the previous registration's, then to the machine hostname", async () => {
+    writeNodeConfig(dir, { relay_url: RELAY, node_token: "old", host: "kept-name", max_file_size_kb: 100 });
+    let calls = stubBackends();
+    await runCli(["node", "init", "--relay", RELAY], dir);
+    expect(JSON.parse(calls.find((c) => c.url.endsWith("/register"))!.body).host).toBe("kept-name");
+
+    const fresh = await makeTempDir();
+    try {
+      calls = stubBackends();
+      await runCli(["node", "init", "--relay", RELAY], fresh);
+      expect(JSON.parse(calls.find((c) => c.url.endsWith("/register"))!.body).host).toBe((await import("node:os")).hostname());
+    } finally {
+      await cleanTempDir(fresh);
+    }
+  });
+
+  it("rejects a host name over 63 characters before starting sign-in", async () => {
+    const calls = stubBackends();
+    const { exitCode, err } = await runCli(["node", "init", "--relay", RELAY, "--host-name", "x".repeat(64)], dir);
+    expect(exitCode).toBe(1);
+    expect(err).toContain("1-63 characters");
+    expect(calls).toHaveLength(0);
+  });
+
+  it("does not open a browser URL that is off the authorization server's origin", async () => {
+    stubBackends({ deviceCode: () => jsonRes(200, { ...DEVICE_CODE_RESPONSE, verification_uri_complete: `${RELAY}/phish` }) });
+    const { exitCode, out } = await runCli(["node", "init", "--relay", RELAY, "--host-name", "h"], dir);
+    // The URL is still printed for the person to read, but never opened.
+    expect(exitCode).toBe(0);
+    expect(out).toContain(`${RELAY}/phish`);
+    expect(open).not.toHaveBeenCalled();
+  });
+
+  it("reports a refused registration without writing node.yaml", async () => {
+    stubBackends({ register: () => jsonRes(403, { error: "insufficient_scope" }) });
+    const { exitCode, err } = await runCli(["node", "init", "--relay", RELAY, "--host-name", "h"], dir);
+    expect(exitCode).toBe(1);
+    expect(err).toContain("insufficient_scope");
+    expect(() => loadNodeConfig(dir)).toThrow();
   });
 });
 
@@ -156,89 +299,128 @@ describe("node auth device-code", () => {
   it("prints a JSON error (exit 0) for a non-localhost http:// relay, never reaching fetch", async () => {
     const { exitCode, out } = await runCli(["node", "auth", "device-code", "--relay", "http://relay.example.com"], dir);
     expect(exitCode).toBe(0);
-    expect(JSON.parse(out)).toMatchObject({ ok: false, error: expect.stringContaining("ws://") });
+    expect(JSON.parse(out)).toMatchObject({ ok: false, error: expect.stringContaining("http://") });
   });
 
-  it("prints the relay's device-code response as JSON on success", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
-      ok: true,
-      json: () => Promise.resolve({
-        device_code: "dc-1", user_code: "ABCD-1234",
-        verification_uri: "https://relay.example.com/activate",
-        verification_uri_complete: "https://relay.example.com/activate?code=ABCD-1234",
-        expires_in: 900, interval: 5,
-      }),
-    }));
-    const { exitCode, out } = await runCli(["node", "auth", "device-code", "--relay", "https://relay.example.com"], dir);
-    vi.unstubAllGlobals();
+  it("prints asterism's device-code response as JSON on success", async () => {
+    stubBackends();
+    const { exitCode, out } = await runCli(["node", "auth", "device-code", "--relay", RELAY], dir);
     expect(exitCode).toBe(0);
+    // Plus the issuer to pin and the only URL a caller may open.
     expect(JSON.parse(out)).toEqual({
       ok: true,
-      data: {
-        device_code: "dc-1", user_code: "ABCD-1234",
-        verification_uri: "https://relay.example.com/activate",
-        verification_uri_complete: "https://relay.example.com/activate?code=ABCD-1234",
-        expires_in: 900, interval: 5,
-      },
+      data: { ...DEVICE_CODE_RESPONSE, issuer: ISSUER, open_url: DEVICE_CODE_RESPONSE.verification_uri_complete },
     });
   });
 
-  it("prints a JSON error when the relay rejects the request", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, text: () => Promise.resolve("relay says no") }));
-    const { exitCode, out } = await runCli(["node", "auth", "device-code", "--relay", "https://relay.example.com"], dir);
-    vi.unstubAllGlobals();
+  it("emits open_url null when the verification URL is off the issuer's origin", async () => {
+    stubBackends({ deviceCode: () => jsonRes(200, { ...DEVICE_CODE_RESPONSE, verification_uri_complete: "https://evil.example/x" }) });
+    const { out } = await runCli(["node", "auth", "device-code", "--relay", RELAY], dir);
+    expect(JSON.parse(out)).toMatchObject({ ok: true, data: { open_url: null, issuer: ISSUER } });
+  });
+
+  it.each(["HTTP://relay.example.com", "ftp://relay.example.com", "file:///etc/passwd"])("refuses %s", async (relay) => {
+    const { out } = await runCli(["node", "auth", "device-code", "--relay", relay], dir);
+    expect(JSON.parse(out)).toMatchObject({ ok: false });
+  });
+
+  it("prints a JSON error when asterism rejects the request", async () => {
+    stubBackends({ deviceCode: () => jsonRes(400, { error: "invalid_client" }) });
+    const { exitCode, out } = await runCli(["node", "auth", "device-code", "--relay", RELAY], dir);
     expect(exitCode).toBe(0);
-    expect(JSON.parse(out)).toEqual({ ok: false, error: "relay says no" });
+    expect(JSON.parse(out)).toMatchObject({ ok: false, error: expect.stringContaining("invalid_client") });
+  });
+
+  it.each(["my laptop", "caf\u00e9", "a/b"])("rejects host name %j before any request", async (name) => {
+    const calls = stubBackends();
+    const { out } = await runCli(["node", "auth", "device-code", "--relay", RELAY, "--host-name", name], dir);
+    expect(JSON.parse(out)).toMatchObject({ ok: false, error: expect.stringContaining("--host-name") });
+    expect(calls).toHaveLength(0);
+  });
+
+  it("prints a JSON error for an invalid host name", async () => {
+    const { exitCode, out } = await runCli(["node", "auth", "device-code", "--relay", RELAY, "--host-name", "x".repeat(64)], dir);
+    expect(exitCode).toBe(0);
+    expect(JSON.parse(out)).toMatchObject({ ok: false, error: expect.stringContaining("1-63") });
   });
 });
 
 describe("node auth complete", () => {
-  const completeArgs = ["node", "auth", "complete", "--relay", "https://relay.example.com", "--device-code", "dc-1"];
+  const completeArgs = ["node", "auth", "complete", "--relay", RELAY, "--device-code", "dc-1", "--issuer", ISSUER, "--interval", "1", "--expires-in", "30"];
 
   it("prints a JSON error (exit 0) for a non-localhost http:// relay, never reaching fetch", async () => {
     const { exitCode, out } = await runCli(
-      ["node", "auth", "complete", "--relay", "http://relay.example.com", "--device-code", "dc-1", "--interval", "1", "--expires-in", "30"],
+      ["node", "auth", "complete", "--relay", "http://relay.example.com", "--device-code", "dc-1", "--issuer", ISSUER, "--interval", "1", "--expires-in", "30"],
       dir
     );
     expect(exitCode).toBe(0);
-    expect(JSON.parse(out)).toMatchObject({ status: "error", message: expect.stringContaining("ws://") });
+    expect(JSON.parse(out)).toMatchObject({ status: "error", message: expect.stringContaining("http://") });
   });
 
-  it("polls, persists node.yaml/paths.yaml, and prints success", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
-      ok: true,
-      json: () => Promise.resolve({ access_token: "tok-new", host: "new-host" }),
-    }));
-    const { exitCode, out } = await runCli([...completeArgs, "--interval", "1", "--expires-in", "30"], dir);
-    vi.unstubAllGlobals();
+  it("polls, registers, persists node.yaml/paths.yaml, and prints success", async () => {
+    stubBackends();
+    const { exitCode, out } = await runCli([...completeArgs, "--host-name", "new-host"], dir);
     expect(exitCode).toBe(0);
     expect(JSON.parse(out)).toEqual({ status: "success", host: "new-host" });
     const cfg = loadNodeConfig(dir);
-    expect(cfg.node_token).toBe("tok-new");
+    expect(cfg.node_token).toBe(NEW_NODE_TOKEN);
+    expect(cfg.issuer).toBe(ISSUER);
     expect(cfg.host).toBe("new-host");
-    expect(cfg.relay_url).toBe("https://relay.example.com");
+    expect(cfg.relay_url).toBe(RELAY);
   });
 
-  it("prints a JSON error when the relay denies the request", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
-      status: 400,
-      ok: false,
-      json: () => Promise.resolve({ error: "access_denied" }),
+  it("refuses to poll when the relay now names a different issuer than the one the code came from", async () => {
+    const calls = stubBackends();
+    const args = completeArgs.map((a) => (a === ISSUER ? "https://old-auth.example.com" : a));
+    const { exitCode, out } = await runCli(args, dir);
+    expect(exitCode).toBe(0);
+    expect(JSON.parse(out)).toMatchObject({ status: "error", message: expect.stringContaining("different authorization server") });
+    expect(calls.some((c) => c.url.startsWith(ISSUER) )).toBe(false);
+    expect(() => loadNodeConfig(dir)).toThrow();
+  });
+
+  it("requires --issuer", async () => {
+    stubBackends();
+    const args = completeArgs.filter((a, i) => a !== "--issuer" && completeArgs[i - 1] !== "--issuer");
+    const { exitCode, err } = await runCli(args, dir);
+    expect(exitCode).not.toBe(0);
+    expect(err).toContain("--issuer");
+  });
+
+  it.each([["NaN", "30"], ["0", "30"], ["-1", "30"], ["1", "0"], ["1", "abc"], ["1.5", "30"]])(
+    "refuses --interval %s --expires-in %s without polling",
+    async (interval, expiresIn) => {
+      const calls = stubBackends();
+      const args = completeArgs.map((a) => (a === "1" ? interval : a === "30" ? expiresIn : a));
+      const { out } = await runCli(args, dir);
+      expect(JSON.parse(out)).toMatchObject({ status: "error", message: expect.stringContaining("positive whole numbers") });
+      expect(calls).toHaveLength(0);
+    }
+  );
+
+  it("does not follow a redirect from the register endpoint", async () => {
+    const calls = stubBackends();
+    const inner = globalThis.fetch;
+    let init2: RequestInit | undefined;
+    vi.stubGlobal("fetch", vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      if (String(url).endsWith("/api/executors/register")) init2 = init;
+      return inner(url, init);
     }));
-    const { exitCode, out } = await runCli([...completeArgs, "--interval", "1", "--expires-in", "30"], dir);
-    vi.unstubAllGlobals();
+    await runCli(completeArgs, dir);
+    expect(init2?.redirect).toBe("error");
+    expect(calls.length).toBeGreaterThan(0);
+  });
+
+  it("prints a JSON error when the user denies the request", async () => {
+    stubBackends({ token: () => jsonRes(400, { error: "access_denied" }) });
+    const { exitCode, out } = await runCli(completeArgs, dir);
     expect(exitCode).toBe(0);
     expect(JSON.parse(out)).toEqual({ status: "error", message: "Access denied." });
   });
 
-  it("prints a timeout result when the deadline elapses with no terminal response", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
-      status: 400,
-      ok: false,
-      json: () => Promise.resolve({ error: "authorization_pending" }),
-    }));
-    const { exitCode, out } = await runCli([...completeArgs, "--interval", "1", "--expires-in", "0"], dir);
-    vi.unstubAllGlobals();
+  it("prints a timeout result when the code expires", async () => {
+    stubBackends({ token: () => jsonRes(400, { error: "expired_token" }) });
+    const { exitCode, out } = await runCli(completeArgs, dir);
     expect(exitCode).toBe(0);
     expect(JSON.parse(out)).toEqual({ status: "timeout" });
   });
@@ -253,17 +435,35 @@ describe("node config set", () => {
     writeNodeConfig(dir, { relay_url: "https://relay.example.com", node_token: "tok-original", host: "test-host", max_file_size_kb: 100 });
   });
 
-  it("updates relay_url and max_file_size_kb while preserving node_token/host", async () => {
+  it("updates max_file_size_kb and a same-origin relay_url while preserving node_token/host", async () => {
     const { exitCode } = await runCli(
-      ["node", "config", "set", "--relay-url", "https://new-relay.example.com", "--max-file-size-kb", "250"],
+      ["node", "config", "set", "--relay-url", "https://relay.example.com/", "--max-file-size-kb", "250"],
       dir
     );
     expect(exitCode).toBe(0);
     const cfg = loadNodeConfig(dir);
-    expect(cfg.relay_url).toBe("https://new-relay.example.com");
     expect(cfg.max_file_size_kb).toBe(250);
     expect(cfg.node_token).toBe("tok-original");
     expect(cfg.host).toBe("test-host");
+  });
+
+  it("drops node_token and previous_node_token when the relay origin changes, and says to run node init", async () => {
+    writeNodeConfig(dir, { previous_node_token: "tok-older", issuer: ISSUER });
+    const { exitCode, out } = await runCli(
+      ["node", "config", "set", "--relay-url", "https://new-relay.example.com", "--max-file-size-kb", "250"],
+      dir
+    );
+    expect(exitCode).toBe(0);
+    expect(out).toContain("node init --relay https://new-relay.example.com");
+    const raw = await fs.readFile(join(dir, "node.yaml"), "utf8");
+    expect(raw).toContain("relay_url: https://new-relay.example.com");
+    expect(raw).toContain("max_file_size_kb: 250");
+    expect(raw).not.toMatch(/node_token|previous_node_token|issuer/);
+  });
+
+  it("reports credentials_dropped with --json", async () => {
+    const changed = await runCli(["node", "config", "set", "--relay-url", "https://new-relay.example.com", "--json"], dir);
+    expect(JSON.parse(changed.out)).toEqual({ ok: true, credentials_dropped: true });
   });
 
   it("rejects a non-localhost http:// relay URL and leaves node.yaml untouched", async () => {
@@ -272,7 +472,7 @@ describe("node config set", () => {
       dir
     );
     expect(exitCode).toBe(1);
-    expect(err).toContain("ws://");
+    expect(err).toContain("http://");
     expect(loadNodeConfig(dir).relay_url).toBe("https://relay.example.com");
   });
 
@@ -285,6 +485,29 @@ describe("node config set", () => {
     } finally {
       await cleanTempDir(freshDir);
     }
+  });
+});
+
+describe("terminal safety of stored values", () => {
+  const evil = "ho\u001b[2Jst\u202ex";
+  beforeEach(() => {
+    writeNodeConfig(dir, { relay_url: RELAY, node_token: "abcdefgh12345678", host: evil, max_file_size_kb: 100 });
+  });
+
+  it("node status strips control and bidi characters from the host, in text and --json", async () => {
+    const text = await runCli(["node", "status"], dir);
+    expect(text.out).toContain("Host:       ho[2Jstx");
+    // eslint-disable-next-line no-control-regex -- asserting escapes were stripped
+    expect(text.out).not.toMatch(/[\u001b\u202e]/);
+    const json = await runCli(["node", "status", "--json"], dir);
+    expect(JSON.parse(json.out).host).not.toMatch(/\u202e/);
+  });
+
+  it("node config show strips them too", async () => {
+    const { out } = await runCli(["node", "config", "show"], dir);
+    expect(out).toContain("host: ho[2Jstx");
+    // eslint-disable-next-line no-control-regex -- asserting escapes were stripped
+    expect(out).not.toMatch(/[\u001b\u202e]/);
   });
 });
 
@@ -609,17 +832,59 @@ describe("node rotate — no daemon running", () => {
     await new Promise<void>((resolve) => wss.close(() => resolve()));
   });
 
-  it("falls back to a direct relay connection when no control file is present", async () => {
+  it("falls back to a direct relay connection, and clears previous_node_token only after the new token connects", async () => {
     writeNodeConfig(dir, { relay_url: `http://localhost:${port}`, node_token: "tok-original", host: "test-host" });
-    wss.once("connection", (ws: WSClient) => {
-      ws.once("message", () => ws.send(JSON.stringify({ type: "token_rotated", token: "tok-rotated" })));
+    const auths: Array<string | undefined> = [];
+    wss.on("connection", (ws: WSClient, req) => {
+      auths.push(req.headers.authorization);
+      ws.once("message", (data) => {
+        const msg = JSON.parse(data.toString()) as { type: string };
+        ws.send(JSON.stringify(msg.type === "rotate_token"
+          ? { type: "token_rotated", token: NEW_NODE_TOKEN }
+          : { type: "config_update_ok" }));
+      });
     });
 
     const { exitCode, out } = await runCli(["node", "rotate"], dir);
 
     expect(exitCode).toBe(0);
     expect(out).toContain("Start the node service to connect with the new token");
-    expect(loadNodeConfig(dir).node_token).toBe("tok-rotated");
+    expect(auths).toEqual(["Bearer tok-original", `Bearer ${NEW_NODE_TOKEN}`]);
+    const cfg = loadNodeConfig(dir);
+    expect(cfg.node_token).toBe(NEW_NODE_TOKEN);
+    expect(cfg.previous_node_token).toBeUndefined();
+  });
+
+  it("keeps previous_node_token when the new token cannot be confirmed", async () => {
+    writeNodeConfig(dir, { relay_url: `http://localhost:${port}`, node_token: "tok-original", host: "test-host" });
+    wss.on("connection", (ws: WSClient) => {
+      ws.once("message", (data) => {
+        const msg = JSON.parse(data.toString()) as { type: string };
+        ws.send(JSON.stringify(msg.type === "rotate_token"
+          ? { type: "token_rotated", token: NEW_NODE_TOKEN }
+          : { type: "config_update_error", error: "Unauthorized" }));
+      });
+    });
+
+    const { exitCode } = await runCli(["node", "rotate"], dir);
+
+    expect(exitCode).toBe(1);
+    const cfg = loadNodeConfig(dir);
+    expect(cfg.node_token).toBe(NEW_NODE_TOKEN);
+    expect(cfg.previous_node_token).toBe("tok-original");
+  });
+
+  it("refuses a malformed token from the relay and leaves node.yaml alone", async () => {
+    writeNodeConfig(dir, { relay_url: `http://localhost:${port}`, node_token: "tok-original", host: "test-host" });
+    wss.once("connection", (ws: WSClient) => {
+      ws.once("message", () => ws.send(JSON.stringify({ type: "token_rotated", token: "bad\nX=1" })));
+    });
+
+    const { exitCode, err } = await runCli(["node", "rotate"], dir);
+
+    expect(exitCode).toBe(1);
+    expect(err).toContain("malformed");
+    expect(loadNodeConfig(dir).node_token).toBe("tok-original");
   });
 
   it("does not attempt rotation when the user declines the confirmation", async () => {

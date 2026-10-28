@@ -9,6 +9,12 @@ interface DeviceCodeInfo {
   device_code: string;
   user_code: string;
   verification_uri_complete: string;
+  /** The authorization server the code came from; handed back to `node auth complete`, which
+   * refuses to continue if the relay names a different one by then. */
+  issuer: string;
+  /** The only URL this window may open. Null when the CLI found the verification URL off the
+   * issuer's origin; nothing is opened then. */
+  open_url: string | null;
   expires_in: number;
   interval: number;
 }
@@ -38,6 +44,7 @@ export default function Auth() {
       invoke("poll_device_flow", {
         relayUrl: relayUrl.trim(),
         deviceCode: info.device_code,
+        issuer: info.issuer,
         interval: info.interval,
         expiresIn: info.expires_in,
       });
@@ -116,20 +123,19 @@ export default function Auth() {
               {copied ? "✓ Copied" : "Copy"}
             </button>
           </div>
-          <button
-            className="auth-btn"
-            onClick={() => {
-              try {
-                const { protocol, hostname } = new URL(codeInfo.verification_uri_complete);
-                const isLocalhost = hostname === "localhost" || hostname.startsWith("127.");
-                if (protocol === "https:" || (protocol === "http:" && isLocalhost)) {
-                  openUrl(codeInfo.verification_uri_complete);
-                }
-              } catch { /* invalid URL — don't open */ }
-            }}
-          >
-            Open Browser
-          </button>
+          {codeInfo.open_url ? (
+            <button
+              className="auth-btn"
+              onClick={() => { if (codeInfo.open_url) openUrl(codeInfo.open_url); }}
+            >
+              Open Browser
+            </button>
+          ) : (
+            <p className="auth-error">
+              The sign-in page the server named is not on its own origin, so it was not opened.
+              Do not enter this code anywhere you do not recognize.
+            </p>
+          )}
           <p className="auth-hint auth-waiting">
             Waiting for authentication…
           </p>

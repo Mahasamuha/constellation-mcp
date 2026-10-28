@@ -1,4 +1,4 @@
-import { RelaySocket, type PathEntry, type RpcEnvelope } from "@constellation/shared";
+import { RelaySocket, EXECUTOR_TOKEN_PATTERN, type PathEntry, type RpcEnvelope } from "@constellation/shared";
 import type { NodeConfig } from "./config.js";
 import { writeNodeToken, clearPreviousToken, buildConfigUpdatePaths } from "./config.js";
 import { handleRpc, ShareRegistryCache } from "./rpc.js";
@@ -178,10 +178,18 @@ export class NodeConnection extends RelaySocket {
     const type = msg["type"];
 
     if (type === "token_rotated") {
+      // Only the answer to our own rotate_token is acted on. An unsolicited push (a compromised or
+      // confused relay, a replayed message) must not replace the stored token, and a second push
+      // while the first is awaiting confirmation must not displace previous_node_token, the only
+      // credential known to work.
+      if (!this.rotationState || this.awaitingRotationConfirm) {
+        this.log.warn("Ignoring token_rotated: no rotation is pending");
+        return;
+      }
       const token = msg["token"];
-      if (typeof token !== "string") {
-        this.log.warn("Received token_rotated without a token string");
-        this.failRotation(new Error("Relay sent token_rotated without a token"));
+      if (typeof token !== "string" || !EXECUTOR_TOKEN_PATTERN.test(token)) {
+        this.log.warn("Received token_rotated without a well-formed token");
+        this.failRotation(new Error("Relay sent token_rotated without a well-formed token"));
         return;
       }
       try {

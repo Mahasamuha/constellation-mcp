@@ -19,7 +19,7 @@ function entry(overrides: Partial<AuditEntry> = {}): AuditEntry {
     ts: "2026-01-01T00:00:00.000Z",
     hub_name: "test-hub",
     request_id: "req-1",
-    user_oidc_sub: null,
+    user_sub: null,
     local_username: "alice",
     share: "docs",
     tool: "read_file",

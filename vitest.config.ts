@@ -23,6 +23,8 @@ export default defineConfig({
       "@constellation/node/cli": join(__dirname, "packages/node/src/cli.ts"),
       "@constellation/node/config": join(__dirname, "packages/node/src/config.ts"),
       "@constellation/hub/cli": join(__dirname, "packages/hub/src/cli.ts"),
+      // Device-flow tests reach code that opens the verification URL; never open a real browser.
+      open: join(__dirname, "test/open-stub.ts"),
     },
   },
   define: {

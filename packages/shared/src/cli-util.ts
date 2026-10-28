@@ -74,3 +74,22 @@ export async function confirm(
     });
   });
 }
+
+/** The relay's host-name rule (relay/src/host-name.ts): 1-63 of letters, digits, dot, underscore, hyphen. */
+export const HOST_NAME_PATTERN = /^[A-Za-z0-9._-]{1,63}$/;
+
+/** Share names come from nodes and hubs and reach the LLM through list_shares. */
+export const SHARE_NAME_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
+
+/**
+ * Trims `raw` and checks it against the relay's host-name rule, so a bad name fails before the
+ * user approves a sign-in rather than after.
+ */
+export function checkHostName(raw: string): { ok: true; host: string } | { ok: false; error: string } {
+  const host = raw.trim();
+  if (HOST_NAME_PATTERN.test(host)) return { ok: true, host };
+  return {
+    ok: false,
+    error: "host name must be 1-63 characters from letters, digits, '.', '_' and '-' (pass --host-name)",
+  };
+}

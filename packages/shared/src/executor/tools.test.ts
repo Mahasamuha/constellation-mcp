@@ -742,3 +742,65 @@ describe("deletePath", () => {
     await expect(fs.access(join(root, "mydir"))).rejects.toThrow();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Pattern engine (RE2, linear time)
+// ---------------------------------------------------------------------------
+
+describe("tool patterns run on RE2", () => {
+  const evil = "*a".repeat(8) + "b";
+  const longName = "a".repeat(200);
+
+  async function timed<T>(fn: () => Promise<T>): Promise<T> {
+    const t0 = Date.now();
+    const out = await fn();
+    expect(Date.now() - t0).toBeLessThan(500);
+    return out;
+  }
+
+  it("find_files glob with a pathological pattern returns quickly", async () => {
+    await fs.writeFile(join(root, longName), "");
+    const r = await timed(() => findFiles(root, root, { pattern: evil }));
+    expect(r.matches).toEqual([]);
+  });
+
+  it("grep_files file_glob with a pathological pattern returns quickly", async () => {
+    await fs.writeFile(join(root, longName), "x");
+    const r = await timed(() => grepFiles(root, root, { pattern: "x", file_glob: evil }));
+    expect(r.results).toEqual([]);
+  });
+
+  it("list_directory exclude with a pathological pattern returns quickly", async () => {
+    await fs.writeFile(join(root, longName), "");
+    const r = await timed(() => listDirectory(root, root, { exclude: [evil] }));
+    expect(r.nodes).toHaveLength(1);
+  });
+
+  it("refuses a lookahead regex with INVALID_PATTERN", async () => {
+    await expect(findFiles(root, root, { pattern: "a(?=b)", type: "regex" })).rejects.toMatchObject({
+      code: "INVALID_PATTERN",
+      message: expect.stringContaining("RE2"),
+    });
+    await expect(grepFiles(root, root, { pattern: "(a)\\1", type: "regex" })).rejects.toMatchObject({
+      code: "INVALID_PATTERN",
+    });
+  });
+
+  it("refuses an unclosed glob bracket", async () => {
+    await expect(findFiles(root, root, { pattern: "[abc" })).rejects.toMatchObject({ code: "INVALID_PATTERN" });
+  });
+
+  it("grep_files regex \\d+ still works", async () => {
+    await fs.writeFile(join(root, "n.txt"), "abc\nport 8080\nxyz");
+    const r = await grepFiles(root, root, { pattern: "\\d+", type: "regex" });
+    expect(r.results[0]!.matches).toEqual([{ line: 2, text: "port 8080" }]);
+  });
+
+  it("supports braces and character classes in globs", async () => {
+    await fs.writeFile(join(root, "a.ts"), "");
+    await fs.writeFile(join(root, "b.js"), "");
+    await fs.writeFile(join(root, "c.md"), "");
+    const r = await findFiles(root, root, { pattern: "[ab].{ts,js}" });
+    expect(r.matches.sort()).toEqual(["a.ts", "b.js"]);
+  });
+});

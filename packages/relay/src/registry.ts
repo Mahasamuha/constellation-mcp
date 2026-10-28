@@ -21,6 +21,8 @@ export interface ConnectedExecutor {
   tokenId: string;
   lastPongAt: number;
   missedPings: number;
+  /** Set when the heartbeat loop pings; cleared by the pong that answers it. */
+  awaitingPong?: boolean;
   disconnectReason?: "clean" | "timeout" | "error";
 }
 

@@ -1,14 +1,13 @@
 import { Command } from "commander";
-import open from "open";
 import {
   configDir,
   loadNodeConfig,
   loadRelaySession,
-  writeRelaySession,
   deleteRelaySession,
   type RelaySession,
 } from "@constellation/node/config";
-import { poll, confirm, type ExecutorEntry, assertSecureHttpUrl, isSameOrigin } from "@constellation/shared";
+import { confirm, type ExecutorEntry, assertSecureHttpUrl, isSameOrigin, sanitizeForTerminal as t, sanitizeJsonStrings } from "@constellation/shared";
+import { adminStepUp, getValidSession, login, revokeStoredSession } from "./session.js";
 
 // ---------------------------------------------------------------------------
 // API response types
@@ -28,22 +27,6 @@ interface FilterEntry {
   created_at: string;
 }
 
-interface SessionEntry {
-  id: string;
-  mcp_client_id: string;
-  issued_at: string;
-  expires_at: string;
-  has_refresh_token: boolean;
-}
-
-interface LocalUserEntry {
-  id: string;
-  username: string;
-  is_active: boolean;
-  created_at: string;
-  last_login_at: string | null;
-}
-
 interface HubShareEntry {
   executor_id: string;
   executor_host: string;
@@ -51,7 +34,7 @@ interface HubShareEntry {
   reported_path: string;
   permission_blob: {
     default: string;
-    overrides?: Array<{ oidc_sub: string; access: string }>;
+    overrides?: Array<{ sub: string; access: string } | { group: string; access: string }>;
   };
   updated_at: string;
 }
@@ -86,7 +69,7 @@ function resolveRelayUrl(flagUrl: string | undefined, getConfigDir: () => string
   try {
     assertSecureHttpUrl(url);
   } catch (err) {
-    console.error("Error:", (err as Error).message);
+    console.error("Error:", t((err as Error).message));
     process.exit(1);
   }
   return url;
@@ -98,74 +81,31 @@ async function safeFetch(url: string, options?: RequestInit): Promise<Response> 
   try {
     return await fetch(url, options);
   } catch (err) {
-    console.error(`Could not reach ${new URL(url).host}: ${(err as Error).message}`);
+    console.error(`Could not reach ${t(new URL(url).host)}: ${t((err as Error).message)}`);
     return process.exit(1);
   }
 }
 
 // ---------------------------------------------------------------------------
-// Session management with silent refresh
+// Session management: see session.ts for refresh, locking and the admin step-up
 // ---------------------------------------------------------------------------
 
-async function getValidSession(getConfigDir: () => string): Promise<RelaySession> {
-  const dir = getConfigDir();
-  let session: RelaySession;
-
-  try {
-    session = loadRelaySession(dir);
-  } catch {
-    console.error("Not logged in. Run 'constellation relay login' first.");
-    process.exit(1);
-  }
-
-  const expiresAt = new Date(session.access_token_expires_at);
-  if (expiresAt > new Date()) return session;
-
-  // Try silent refresh.
-  if (session.refresh_token) {
-    const refreshed = await tryRefresh(session);
-    if (refreshed) {
-      writeRelaySession(dir, refreshed);
-      return refreshed;
-    }
-  }
-
-  console.error("Session expired. Run 'constellation relay login' to re-authenticate.");
-  process.exit(1);
-}
-
-async function tryRefresh(session: RelaySession): Promise<RelaySession | null> {
-  if (!session.refresh_token) return null;
-
-  const res = await safeFetch(`${session.relay_url}/oauth/token`, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      grant_type: "refresh_token",
-      refresh_token: session.refresh_token,
-      client_id: "constellation-cli",
-    }),
-  });
-
-  if (!res.ok) return null;
-
-  const body = await parseJson<{
-    access_token: string;
-    expires_in: number;
-    refresh_token?: string;
-  }>(res);
-
-  const now = new Date();
-  const refreshTtlDays = 30;
-  return {
-    relay_url: session.relay_url,
-    access_token: body.access_token,
-    access_token_expires_at: new Date(now.getTime() + body.expires_in * 1000).toISOString(),
-    refresh_token: body.refresh_token ?? session.refresh_token,
-    refresh_token_expires_at: body.refresh_token
-      ? new Date(now.getTime() + refreshTtlDays * 86400 * 1000).toISOString()
-      : session.refresh_token_expires_at,
-  };
+/** A session carrying a one-command admin token, for the few commands the relay gates on the
+ * `admin` scope. Nothing is written to disk; the token is gone when the command ends. */
+async function getAdminSession(
+  getConfigDir: () => string,
+  relayUrlFlag: string | undefined
+): Promise<RelaySession> {
+  // Prefer the relay the user is signed in to over the node config's.
+  const stored = (() => {
+    try { return loadRelaySession(getConfigDir()); } catch { return undefined; }
+  })();
+  const relayUrl = resolveRelayUrl(relayUrlFlag ?? stored?.relay_url, getConfigDir);
+  // Pinned to the authorization server of the stored sign-in (for the same relay): a relay that now
+  // names another is refused, not asked for an admin token.
+  const issuer = stored?.issuer && isSameOrigin(stored.relay_url, relayUrl) ? stored.issuer : undefined;
+  const accessToken = await adminStepUp(relayUrl, issuer);
+  return { relay_url: relayUrl, access_token: accessToken, access_token_expires_at: new Date(Date.now() + 300_000).toISOString() };
 }
 
 // ---------------------------------------------------------------------------
@@ -207,7 +147,12 @@ function buildListQuery(opts: ListOpts, extra: Record<string, string | undefined
 /** Warns when the server paginated and more rows exist beyond what's shown — to
  * stderr, so --json output stays valid, pipeable JSON either way. */
 function warnIfMore(res: PaginatedResponse<unknown>): void {
+  // The counts come from the server and are printed in a command line the user may copy: anything
+  // but a plain non-negative integer drops the footer rather than printing it.
+  const counts = [res.offset, res.total, res.data.length];
+  if (!counts.every((n) => Number.isSafeInteger(n) && n >= 0)) return;
   const shown = res.offset + res.data.length;
+  if (!Number.isSafeInteger(shown)) return;
   if (shown < res.total) {
     console.error(`Showing ${res.data.length} of ${res.total} total (offset ${res.offset}) — use --offset ${shown} to see more.`);
   }
@@ -247,14 +192,14 @@ async function parseJson<T>(res: Response): Promise<T> {
 export async function die(res: Response): Promise<never> {
   try {
     const body: unknown = await res.json();
-    if (
-      typeof body === "object" && body !== null &&
-      (body as Record<string, unknown>)["error"] === "ESCALATION_REQUIRED"
-    ) {
-      console.error("This operation requires admin privileges.");
-      console.error("Run 'constellation relay elevate' to request temporary admin access, then retry.");
+    const error = typeof body === "object" && body !== null ? (body as Record<string, unknown>)["error"] : undefined;
+    if (error === "insufficient_scope") {
+      console.error("This operation requires admin privileges, and your account or this command's token lacks them.");
+    } else if (res.status === 401) {
+      console.error(`API error 401: ${t(JSON.stringify(body))}`);
+      console.error("The relay did not accept the stored sign-in. Run 'constellation relay login' to sign in again.");
     } else {
-      console.error(`API error ${res.status}: ${JSON.stringify(body)}`);
+      console.error(`API error ${res.status}: ${t(JSON.stringify(body))}`);
     }
   } catch {
     console.error(`API error ${res.status}`);
@@ -292,80 +237,11 @@ export function registerRelayCommands(program: Command): void {
 
   relay
     .command("login")
-    .description("Authenticate with the relay (OAuth device flow)")
-    .action(async () => {
+    .description("Sign in to the relay's authorization server (OAuth device flow)")
+    .option("--accept-new-issuer", "Without a terminal, accept that the relay now names a different authorization server than your current sign-in")
+    .action(async (opts: { acceptNewIssuer?: boolean }) => {
       const relayUrl = resolveRelayUrl(getRelayFlag(), getConfigDir);
-
-      const dcRes = await safeFetch(`${relayUrl}/oauth/device/code`, {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({ scope: "relay:manage" }),
-      });
-      if (!dcRes.ok) {
-        console.error("Failed to start device flow:", await dcRes.text());
-        process.exit(1);
-      }
-      const dc = await parseJson<{
-        device_code: string;
-        user_code: string;
-        verification_uri_complete: string;
-        expires_in: number;
-        interval: number;
-      }>(dcRes);
-
-      console.log(`\nOpen the following URL to authenticate (opening browser automatically):`);
-      console.log(`  ${dc.verification_uri_complete}\n`);
-      console.log(`If the browser did not open, enter this code: ${dc.user_code}\n`);
-      if (isSameOrigin(relayUrl, dc.verification_uri_complete)) {
-        try { await open(dc.verification_uri_complete); } catch { /* ignore */ }
-      }
-
-      const result = await poll(
-        async ({ intervalMs, setIntervalMs }) => {
-          const r = await safeFetch(`${relayUrl}/oauth/token`, {
-            method: "POST",
-            headers: { "Content-Type": "application/x-www-form-urlencoded" },
-            body: new URLSearchParams({
-              grant_type: "urn:ietf:params:oauth:grant-type:device_code",
-              device_code: dc.device_code,
-            }),
-          });
-          if (r.status === 400) {
-            const body = await r.json() as { error: string };
-            if (body.error === "authorization_pending") return null;
-            if (body.error === "slow_down") { setIntervalMs(intervalMs + 5000); return null; }
-            console.error("\nDevice flow error:", body.error);
-            process.exit(1);
-          }
-          if (!r.ok) return null;
-          return parseJson<{
-            access_token: string;
-            expires_in: number;
-            refresh_token?: string;
-          }>(r);
-        },
-        dc.interval * 1000,
-        dc.expires_in * 1000
-      );
-
-      if (!result) {
-        console.error("Timed out waiting for authentication.");
-        process.exit(1);
-      }
-
-      const now = new Date();
-      const refreshTtlDays = 30;
-      const session: RelaySession = {
-        relay_url: relayUrl,
-        access_token: result.access_token,
-        access_token_expires_at: new Date(now.getTime() + result.expires_in * 1000).toISOString(),
-        refresh_token: result.refresh_token,
-        refresh_token_expires_at: result.refresh_token
-          ? new Date(now.getTime() + refreshTtlDays * 86400 * 1000).toISOString()
-          : undefined,
-      };
-
-      writeRelaySession(cfgDir(), session);
+      await login(relayUrl, cfgDir(), opts.acceptNewIssuer);
       console.log(`\nLogged in to ${relayUrl}`);
     });
 
@@ -375,8 +251,9 @@ export function registerRelayCommands(program: Command): void {
 
   relay
     .command("logout")
-    .description("Remove stored relay session")
-    .action(() => {
+    .description("Revoke the stored sign-in at the authorization server, then remove the relay session")
+    .action(async () => {
+      await revokeStoredSession(cfgDir());
       deleteRelaySession(cfgDir());
       console.log("Logged out.");
     });
@@ -389,13 +266,13 @@ export function registerRelayCommands(program: Command): void {
     .command("status")
     .description("Show relay health and uptime")
     .action(async () => {
-      const session = await getValidSession(cfgDir);
+      const session = await getValidSession(cfgDir());
       const data = await apiGet<{ status: string; uptime_seconds: number; version: string }>(
         session, "/api/status"
       );
-      console.log(`Status:  ${data.status}`);
+      console.log(`Status:  ${t(data.status)}`);
       console.log(`Uptime:  ${formatUptime(data.uptime_seconds)}`);
-      console.log(`Version: ${data.version}`);
+      console.log(`Version: ${t(data.version)}`);
     });
 
   // -------------------------------------------------------------------------
@@ -411,14 +288,14 @@ export function registerRelayCommands(program: Command): void {
     .option("--offset <n>", "Rows to skip", "0")
     .option("--json", "Output as JSON")
     .action(async (opts: ListOpts & { json?: boolean }) => {
-      const session = await getValidSession(cfgDir);
+      const session = await getValidSession(cfgDir());
       const qs = buildListQuery(opts);
       const res = await apiGet<PaginatedResponse<ExecutorEntry>>(session, `/api/executors${qs}`);
-      if (opts.json) { console.log(JSON.stringify(res.data, null, 2)); warnIfMore(res); return; }
+      if (opts.json) { console.log(JSON.stringify(sanitizeJsonStrings(res.data), null, 2)); warnIfMore(res); return; }
       for (const a of res.data) {
-        console.log(`${a.host} (${a.id})`);
-        console.log(`  Status: ${a.online ? "online" : "offline"}${a.last_heartbeat_at ? `  last seen ${a.last_heartbeat_at}` : ""}`);
-        for (const s of a.shares) console.log(`  ${s.share} → ${s.reported_path}`);
+        console.log(`${t(a.host)} (${t(a.id)})`);
+        console.log(`  Status: ${a.online ? "online" : "offline"}${a.last_heartbeat_at ? `  last seen ${t(a.last_heartbeat_at)}` : ""}`);
+        for (const s of a.shares) console.log(`  ${t(s.share)} → ${t(s.reported_path)}`);
       }
       warnIfMore(res);
     });
@@ -430,7 +307,7 @@ export function registerRelayCommands(program: Command): void {
     .action(async (executorId: string) => {
       const ok = await confirm(`Revoke token for executor ${executorId}? The executor will go offline.`);
       if (!ok) { console.log("Cancelled."); return; }
-      const session = await getValidSession(cfgDir);
+      const session = await getValidSession(cfgDir());
       await apiDelete(session, `/api/executors/${encodeURIComponent(executorId)}/token`);
       console.log("Token revoked.");
     });
@@ -449,12 +326,12 @@ export function registerRelayCommands(program: Command): void {
     .option("--offset <n>", "Rows to skip", "0")
     .option("--json", "Output as JSON")
     .action(async (opts: ListOpts & { executor?: string; json?: boolean }) => {
-      const session = await getValidSession(cfgDir);
+      const session = await getValidSession(cfgDir());
       const qs = buildListQuery(opts, { executor_id: opts.executor });
       const res = await apiGet<PaginatedResponse<ShareEntry>>(session, `/api/shares${qs}`);
-      if (opts.json) { console.log(JSON.stringify(res.data, null, 2)); warnIfMore(res); return; }
+      if (opts.json) { console.log(JSON.stringify(sanitizeJsonStrings(res.data), null, 2)); warnIfMore(res); return; }
       for (const s of res.data) {
-        console.log(`${s.share}  (${s.host})  →  ${s.reported_path}`);
+        console.log(`${t(s.share)}  (${t(s.host)})  →  ${t(s.reported_path)}`);
       }
       warnIfMore(res);
     });
@@ -472,13 +349,13 @@ export function registerRelayCommands(program: Command): void {
     .option("--offset <n>", "Rows to skip", "0")
     .option("--json", "Output as JSON")
     .action(async (opts: ListOpts & { json?: boolean }) => {
-      const session = await getValidSession(cfgDir);
+      const session = await getValidSession(cfgDir());
       const qs = buildListQuery(opts);
       const res = await apiGet<PaginatedResponse<FilterEntry>>(session, `/api/filters${qs}`);
-      if (opts.json) { console.log(JSON.stringify(res.data, null, 2)); warnIfMore(res); return; }
+      if (opts.json) { console.log(JSON.stringify(sanitizeJsonStrings(res.data), null, 2)); warnIfMore(res); return; }
       for (const f of res.data) {
-        const scope = f.scope_executor_id ? ` [executor: ${f.scope_executor_id}]` : "";
-        console.log(`${f.id}  ${f.pattern_type}:${f.pattern}${scope}  (${f.created_at})`);
+        const scope = f.scope_executor_id ? ` [executor: ${t(f.scope_executor_id)}]` : "";
+        console.log(`${t(f.id)}  ${t(f.pattern_type)}:${t(f.pattern)}${scope}  (${t(f.created_at)})`);
       }
       warnIfMore(res);
     });
@@ -494,11 +371,11 @@ export function registerRelayCommands(program: Command): void {
         console.error("--type must be glob or regex");
         process.exit(1);
       }
-      const session = await getValidSession(cfgDir);
+      const session = await getValidSession(cfgDir());
       const body: Record<string, string> = { pattern, pattern_type: opts.type };
       if (opts.executor) body["executor_id"] = opts.executor;
       const data = await apiPost<{ id: string }>(session, "/api/filters", body);
-      console.log(`Filter created: ${data.id}`);
+      console.log(`Filter created: ${t(data.id)}`);
     });
 
   filters
@@ -508,263 +385,16 @@ export function registerRelayCommands(program: Command): void {
     .action(async (filterId: string) => {
       const ok = await confirm(`Remove deny filter ${filterId}? This widens access — anything it was blocking becomes reachable again.`);
       if (!ok) { console.log("Cancelled."); return; }
-      const session = await getValidSession(cfgDir);
+      const session = await getValidSession(cfgDir());
       await apiDelete(session, `/api/filters/${encodeURIComponent(filterId)}`);
       console.log("Filter removed.");
-    });
-
-  // -------------------------------------------------------------------------
-  // sessions
-  // -------------------------------------------------------------------------
-
-  const sessions = relay.command("sessions").description("Manage MCP client sessions");
-
-  sessions
-    .command("list")
-    .description("List active MCP client sessions")
-    .option("--limit <n>", "Max rows to return (server caps at 1000)", "100")
-    .option("--offset <n>", "Rows to skip", "0")
-    .option("--json", "Output as JSON")
-    .action(async (opts: ListOpts & { json?: boolean }) => {
-      const session = await getValidSession(cfgDir);
-      const qs = buildListQuery(opts);
-      const res = await apiGet<PaginatedResponse<SessionEntry>>(session, `/api/sessions${qs}`);
-      if (opts.json) { console.log(JSON.stringify(res.data, null, 2)); warnIfMore(res); return; }
-      for (const s of res.data) {
-        console.log(`${s.id}  client:${s.mcp_client_id}  issued:${s.issued_at}  expires:${s.expires_at}${s.has_refresh_token ? "  [refresh]" : ""}`);
-      }
-      warnIfMore(res);
-    });
-
-  sessions
-    .command("revoke")
-    .argument("<session-id>", "Session ID to revoke")
-    .description("Invalidate an MCP client session")
-    .action(async (sessionId: string) => {
-      const ok = await confirm(`Revoke session ${sessionId}? The MCP client will need to re-authenticate.`);
-      if (!ok) { console.log("Cancelled."); return; }
-      const session = await getValidSession(cfgDir);
-      await apiDelete(session, `/api/sessions/${encodeURIComponent(sessionId)}`);
-      console.log("Session revoked.");
-    });
-
-  // -------------------------------------------------------------------------
-  // users (AUTH_MODE=local only)
-  // -------------------------------------------------------------------------
-
-  const users = relay.command("users").description("Manage local relay users (requires AUTH_MODE=local on relay)");
-
-  users
-    .command("list")
-    .description("List all local users")
-    .option("--limit <n>", "Max rows to return (server caps at 1000)", "100")
-    .option("--offset <n>", "Rows to skip", "0")
-    .option("--json", "Output as JSON")
-    .action(async (opts: ListOpts & { json?: boolean }) => {
-      const session = await getValidSession(cfgDir);
-      const qs = buildListQuery(opts);
-      const res = await apiGet<PaginatedResponse<LocalUserEntry>>(session, `/api/users${qs}`);
-      if (opts.json) { console.log(JSON.stringify(res.data, null, 2)); warnIfMore(res); return; }
-      for (const u of res.data) {
-        const status = u.is_active ? "active" : "deactivated";
-        const last = u.last_login_at ? `  last login: ${u.last_login_at}` : "";
-        console.log(`${u.username}  [${status}]${last}`);
-      }
-      warnIfMore(res);
-    });
-
-  users
-    .command("add")
-    .argument("<username>", "Username for the new user")
-    .description("Create a new local user (prompts for password)")
-    .action(async (username: string) => {
-      const password = await promptPassword("Password (min 12 chars): ");
-      const confirm = await promptPassword("Confirm password: ");
-      if (password !== confirm) { console.error("Passwords do not match."); process.exit(1); }
-      if (password.length < 12) { console.error("Password must be at least 12 characters."); process.exit(1); }
-      const session = await getValidSession(cfgDir);
-      await apiPost(session, "/api/users", { username, password });
-      console.log(`User '${username}' created.`);
-    });
-
-  users
-    .command("remove")
-    .argument("<username>", "Username to deactivate")
-    .description("Deactivate a local user (soft delete)")
-    .action(async (username: string) => {
-      const ok = await confirm(`Deactivate user '${username}'? Their sessions will become invalid.`);
-      if (!ok) { console.log("Cancelled."); return; }
-      const session = await getValidSession(cfgDir);
-      await apiPost(session, `/api/users/${encodeURIComponent(username)}/deactivate`, {});
-      console.log(`User '${username}' deactivated.`);
-    });
-
-  users
-    .command("reset-password")
-    .argument("<username>", "Username to update")
-    .description("Reset a local user's password and invalidate their sessions")
-    .action(async (username: string) => {
-      const password = await promptPassword("New password (min 12 chars): ");
-      const confirm = await promptPassword("Confirm new password: ");
-      if (password !== confirm) { console.error("Passwords do not match."); process.exit(1); }
-      if (password.length < 12) { console.error("Password must be at least 12 characters."); process.exit(1); }
-      const session = await getValidSession(cfgDir);
-      await apiPost(session, `/api/users/${encodeURIComponent(username)}/reset-password`, { password });
-      console.log(`Password reset for '${username}'. All existing sessions have been invalidated.`);
-    });
-
-  // -------------------------------------------------------------------------
-  // account
-  // -------------------------------------------------------------------------
-
-  const account = relay.command("account").description("Manage your relay account");
-
-  account
-    .command("deactivate")
-    .description("Deactivate your account — blocks all access immediately")
-    .action(async () => {
-      console.log("WARNING: This will immediately block all executor connections and MCP client access.");
-      console.log("Your configuration is preserved but all tokens become invalid.\n");
-      const ok = await confirm("Are you sure you want to deactivate your account?");
-      if (!ok) { console.log("Cancelled."); return; }
-      const session = await getValidSession(cfgDir);
-      await apiPost(session, "/api/account/deactivate", { confirm: "deactivate my account" });
-      deleteRelaySession(cfgDir());
-      console.log("Account deactivated.");
-    });
-
-  // -------------------------------------------------------------------------
-  // elevate — request temporary admin session elevation
-  // -------------------------------------------------------------------------
-
-  relay
-    .command("elevate")
-    .description("Request temporary admin access via browser approval (step-up authentication)")
-    .action(async () => {
-      const session = await getValidSession(cfgDir);
-      const relayUrl = resolveRelayUrl(getRelayFlag(), getConfigDir);
-
-      // Fetch the current session ID from the relay (not stored locally).
-      const meRes = await apiFetch(session, "/api/me");
-      if (!meRes.ok) { console.error("Failed to fetch session info."); process.exit(1); }
-      const me = await parseJson<{ session_id: string }>(meRes);
-
-      const dcRes = await safeFetch(`${relayUrl}/oauth/device/code`, {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({
-          scope: "agent:escalate",
-          elevate_session_id: me.session_id,
-        }),
-      });
-
-      if (!dcRes.ok) {
-        console.error("Failed to start escalation flow:", await dcRes.text());
-        process.exit(1);
-      }
-      const dc = await parseJson<{
-        device_code: string;
-        user_code: string;
-        verification_uri_complete: string;
-        expires_in: number;
-        interval: number;
-      }>(dcRes);
-
-      console.log(`\nOpen the following URL to approve admin access (opening browser automatically):`);
-      console.log(`  ${dc.verification_uri_complete}\n`);
-      console.log(`If the browser did not open, enter this code: ${dc.user_code}\n`);
-      if (isSameOrigin(relayUrl, dc.verification_uri_complete)) {
-        try { await open(dc.verification_uri_complete); } catch { /* ignore */ }
-      }
-
-      const result = await poll(
-        async ({ intervalMs, setIntervalMs }) => {
-          const r = await safeFetch(`${relayUrl}/oauth/token`, {
-            method: "POST",
-            headers: { "Content-Type": "application/x-www-form-urlencoded" },
-            body: new URLSearchParams({
-              grant_type: "urn:ietf:params:oauth:grant-type:device_code",
-              device_code: dc.device_code,
-            }),
-          });
-          if (r.status === 400) {
-            const body = await r.json() as { error: string };
-            if (body.error === "authorization_pending") return null;
-            if (body.error === "slow_down") { setIntervalMs(intervalMs + 5000); return null; }
-            if (body.error === "access_denied") {
-              console.error("\nEscalation denied. Ensure your account has admin privileges.");
-              process.exit(1);
-            }
-            console.error("\nEscalation flow error:", body.error);
-            process.exit(1);
-          }
-          if (r.status === 204) return {};
-          if (!r.ok) return null;
-          return {};
-        },
-        dc.interval * 1000,
-        dc.expires_in * 1000
-      );
-
-      if (!result) {
-        console.error("Timed out waiting for approval.");
-        process.exit(1);
-      }
-
-      console.log("Admin access granted. Retry your command.");
-    });
-
-  // -------------------------------------------------------------------------
-  // user promote/demote — bootstrap role management (requires RELAY_ADMIN_TOKEN)
-  // -------------------------------------------------------------------------
-
-  const userAdmin = relay.command("user").description("Manage user roles (requires RELAY_ADMIN_TOKEN)");
-
-  userAdmin
-    .command("promote")
-    .argument("<identifier>", "OIDC sub or (local mode) username to promote to admin")
-    .description("Grant admin role — requires RELAY_ADMIN_TOKEN env var")
-    .action(async (identifier: string) => {
-      const adminToken = process.env["RELAY_ADMIN_TOKEN"];
-      if (!adminToken) {
-        console.error("RELAY_ADMIN_TOKEN is not set.");
-        process.exit(1);
-      }
-      const relayUrl = resolveRelayUrl(getRelayFlag(), getConfigDir);
-      const res = await safeFetch(`${relayUrl}/api/admin/users/${encodeURIComponent(identifier)}/promote`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${adminToken}` },
-      });
-      if (res.status === 404) { console.error("User not found."); process.exit(1); }
-      if (!res.ok) { console.error(`Error ${res.status}:`, await res.text()); process.exit(1); }
-      console.log(`User '${identifier}' promoted to admin.`);
-    });
-
-  userAdmin
-    .command("demote")
-    .argument("<identifier>", "OIDC sub or (local mode) username to demote")
-    .description("Revoke admin role — requires RELAY_ADMIN_TOKEN env var")
-    .action(async (identifier: string) => {
-      const adminToken = process.env["RELAY_ADMIN_TOKEN"];
-      if (!adminToken) {
-        console.error("RELAY_ADMIN_TOKEN is not set.");
-        process.exit(1);
-      }
-      const relayUrl = resolveRelayUrl(getRelayFlag(), getConfigDir);
-      const res = await safeFetch(`${relayUrl}/api/admin/users/${encodeURIComponent(identifier)}/demote`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${adminToken}` },
-      });
-      if (res.status === 404) { console.error("User not found."); process.exit(1); }
-      if (!res.ok) { console.error(`Error ${res.status}:`, await res.text()); process.exit(1); }
-      console.log(`User '${identifier}' demoted to regular user.`);
     });
 
   // -------------------------------------------------------------------------
   // hub-shares — admin view of the hub share registry
   // -------------------------------------------------------------------------
 
-  const hubShares = relay.command("hub-shares").description("View hub shares (requires admin session)");
+  const hubShares = relay.command("hub-shares").description("View hub shares (needs admin: asks you to approve an admin sign-in)");
 
   hubShares
     .command("list")
@@ -774,10 +404,10 @@ export function registerRelayCommands(program: Command): void {
     .option("--offset <n>", "Rows to skip", "0")
     .option("--json", "Output as JSON")
     .action(async (opts: ListOpts & { executor?: string; json?: boolean }) => {
-      const session = await getValidSession(cfgDir);
+      const session = await getAdminSession(cfgDir, getRelayFlag());
       const qs = buildListQuery(opts, { executor_id: opts.executor });
       const data = await apiGet<PaginatedResponse<HubShareEntry>>(session, `/api/admin/hub-shares${qs}`);
-      if (opts.json) { console.log(JSON.stringify(data.data, null, 2)); warnIfMore(data); return; }
+      if (opts.json) { console.log(JSON.stringify(sanitizeJsonStrings(data.data), null, 2)); warnIfMore(data); return; }
 
       if (data.data.length === 0) {
         console.log(data.total > 0 ? `No hub shares at this offset (${data.total} total — try --offset 0).` : "No hub shares found.");
@@ -787,96 +417,22 @@ export function registerRelayCommands(program: Command): void {
       let lastExecutorId = "";
       for (const s of data.data) {
         if (s.executor_id !== lastExecutorId) {
-          console.log(`\nExecutor: ${s.executor_host} (${s.executor_id})`);
+          console.log(`\nExecutor: ${t(s.executor_host)} (${t(s.executor_id)})`);
           lastExecutorId = s.executor_id;
         }
         const overrides = s.permission_blob.overrides ?? [];
         const overrideStr = overrides.length > 0
-          ? `  overrides: ${overrides.map((o) => `${o.oidc_sub}=${o.access}`).join(", ")}`
+          ? `  overrides: ${overrides.map((o) => `${"sub" in o ? o.sub : `group:${o.group}`}=${o.access}`).join(", ")}`
           : "";
-        console.log(`  ${s.share}  →  ${s.reported_path}  [default: ${s.permission_blob.default}]${overrideStr}`);
+        console.log(`  ${t(s.share)}  →  ${t(s.reported_path)}  [default: ${t(s.permission_blob.default)}]${t(overrideStr)}`);
       }
       warnIfMore(data);
-    });
-
-  // -------------------------------------------------------------------------
-  // token — break-glass token management
-  // -------------------------------------------------------------------------
-
-  const tokenCmd = relay.command("token").description("Manage executor tokens (break-glass operations)");
-
-  tokenCmd
-    .command("create")
-    .description("Create a new executor token")
-    .requiredOption("--shared", "Create a HUB service token (break-glass — prefer: constellation hub register)")
-    .action(async () => {
-      console.error("╔══════════════════════════════════════════════════════════════════════════╗");
-      console.error("║  BREAK-GLASS OPERATION                                                   ║");
-      console.error("║                                                                          ║");
-      console.error("║  The preferred registration path is:                                     ║");
-      console.error("║    constellation hub register --relay <url>                              ║");
-      console.error("║  That flow requires no manual token handling and is safer.               ║");
-      console.error("║                                                                          ║");
-      console.error("║  Use this command only when the device code flow is unavailable          ║");
-      console.error("║  (e.g. scripted provisioning or break-glass recovery).                  ║");
-      console.error("║                                                                          ║");
-      console.error("║  The token is shown ONCE. Store it immediately in a secure location.    ║");
-      console.error("║  Treat it as a root-level credential — it is not user-scoped.           ║");
-      console.error("╚══════════════════════════════════════════════════════════════════════════╝");
-      console.error("");
-
-      const ok = await confirm("Proceed with break-glass shared token creation?");
-      if (!ok) { console.log("Cancelled."); return; }
-
-      const session = await getValidSession(cfgDir);
-      const data = await apiPost<{ token: string; token_id: string; created_at: string }>(
-        session, "/api/tokens/shared", {}
-      );
-
-      console.log("");
-      console.log("=== HUB TOKEN (shown once) ===");
-      console.log("");
-      console.log(data.token);
-      console.log("");
-      console.log(`Token ID:   ${data.token_id}`);
-      console.log(`Created at: ${data.created_at}`);
-      console.log("");
-      console.log("Store this token as CONSTELLATION_HUB_TOKEN in the hub's environment.");
-      console.log("It will not be shown again. Revoke via: constellation relay executors revoke <executor-id>");
     });
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function promptPassword(prompt: string): Promise<string> {
-  return new Promise((resolve) => {
-    process.stdout.write(prompt);
-    process.stdin.setRawMode?.(true);
-    process.stdin.resume();
-    process.stdin.setEncoding("utf8");
-
-    let input = "";
-    const onData = (char: string) => {
-      if (char === "\r" || char === "\n") {
-        process.stdout.write("\n");
-        process.stdin.setRawMode?.(false);
-        process.stdin.pause();
-        process.stdin.off("data", onData);
-        resolve(input);
-      } else if (char === "") {
-        process.stdout.write("\n");
-        process.exit(1);
-      } else if (char === "") {
-        if (input.length > 0) input = input.slice(0, -1);
-      } else {
-        input += char;
-      }
-    };
-    process.stdin.on("data", onData);
-  });
-}
 
 function formatUptime(seconds: number): string {
   const d = Math.floor(seconds / 86400);

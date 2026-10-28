@@ -15,7 +15,7 @@ use whatever mechanism already fits your infrastructure. This page is about
 ## Backing up the relay database
 
 Postgres is the relay's only durable store — users, executor tokens, path
-shares, deny filters, OAuth clients/sessions, and the activity log all live
+shares, deny filters, and the activity log all live
 there. There's no Redis, no second datastore, nothing else to back up on the
 relay side.
 
@@ -69,18 +69,15 @@ which before you decide how aggressively to back it up:
   `relay_path_filters` rows. If lost, they're gone; there's no node- or
   hub-side copy to fall back on. If you rely on filters for anything
   important, make sure your backup cadence reflects that.
-- **Local user accounts** (`AUTH_MODE=local`) and **admin role
-  assignments** — without a backup, local accounts need to be recreated
-  (`constellation relay users add`) and admins re-promoted
-  (`constellation relay user promote`).
+- **Accounts, groups and admin membership** — these live in asterism, not
+  the relay. Back up asterism's own database. The relay's `users` table holds
+  only ids; a lost row is recreated the next time that user's token is seen,
+  but their executors, shares and filters are gone with the backup gap.
 - **Activity log** — historical audit data only; losing it has no functional
   effect on the running system, but it does mean losing whatever audit trail
   you had before the backup.
-- **OAuth sessions and dynamically-registered MCP clients** — lost, but this
-  self-heals automatically: clients re-discover and re-register
-  (`POST /oauth/register`) and users re-authenticate on their next request.
-  Clients that identify themselves with a Client ID Metadata Document URL
-  just have their document re-fetched. No manual recovery step.
+- **Sessions and grants** — these live in asterism and are part of its
+  backup. The relay stores no tokens or sessions.
 
 ## Backing up node and hub configuration
 
@@ -139,24 +136,50 @@ is cheap insurance, particularly across a large version jump; check the
 relay's changelog/migration history for that range if you're skipping
 several releases at once.
 
-Upgrade notes for the OAuth discovery and Client ID Metadata Document release
-([ADR 0020](adr/0020-rfc9728-discovery-public-only-dcr.md),
-[ADR 0021](adr/0021-client-id-metadata-documents.md)):
+Upgrade notes for the move to asterism as the authorization server
+([ADR 0022](adr/0022-asterism-authorization-server.md)):
 
-- `RELAY_URL` must be a bare origin or the relay fails at startup: no path,
-  trailing slash, uppercase host, or explicit default port.
-  `OAUTH_DYNAMIC_CLIENT_TTL_HOURS` must be at least `1`.
-- The relay fetches client metadata documents over HTTPS on port 443 directly
-  (`HTTPS_PROXY` is ignored), so it needs outbound egress to arbitrary hosts. It
-  refuses private and other special-use addresses; consider also restricting
-  egress at the network layer.
-- Rolling back to an image from before this release: first delete the
-  metadata-document clients, or the older code will trust their cached redirect
-  URIs forever. Delete their sessions first (the foreign key is
-  `ON DELETE RESTRICT`):
-  `DELETE FROM oauth_sessions WHERE mcp_client_id IN (SELECT id FROM oauth_clients WHERE is_metadata_document = true);`
-  then `DELETE FROM oauth_clients WHERE is_metadata_document = true;`.
-  Affected users re-authorize.
+- Set `ASTERISM_ISSUER` (an `https:` URL) and make sure `RELAY_URL` is a bare
+  origin, or the relay fails at startup. Remove `AUTH_MODE`, `OIDC_*`,
+  `COOKIE_SECRET`, `ADMIN_GROUPS`, `ADMIN_SESSION_DURATION`,
+  `RELAY_ADMIN_TOKEN` and the `OAUTH_*` and OAuth/device rate-limit settings;
+  they are ignored.
+- Register the relay in asterism as a resource server, and put administrators
+  in asterism's `constellation-admins` group. Constellation also enforces the
+  group itself (`ADMIN_GROUP`, default `constellation-admins`): an admin needs
+  the `admin` scope and that group.
+- Configure asterism before users connect (full commands and warnings in
+  [Configuration](configuration.md#operator-runbook-configure-asterism-before-users-connect)):
+  `asterism-cli resource-server approve <relay-url>/mcp --release-claims groups,email,constellation_username`,
+  then `asterism-cli resource-server policy <relay-url>/mcp admin --short-lived --require-groups constellation-admins`.
+  Grants made before the claims were released carry no `groups` or
+  `constellation_username` until the user re-consents; revoke them in asterism
+  (`/grants`).
+- **Trust the claim sources.** `groups` and `constellation_username` are only
+  as trustworthy as their upstream source. asterism's `OIDC_CLAIM_MAP` must
+  never map them onto a user-editable claim (`preferred_username`, `name`,
+  `nickname`, `email`, ...), and the identity provider attribute behind
+  `constellation_username` must be admin-only and unique per user. asterism
+  does not enforce this; a misconfiguration lets users choose their OS account
+  on a hub or join groups.
+- Group overrides on a share use the most permissive matching group, so a group
+  set to `none` is not a denylist; deny by `sub`, or use `default: none` plus
+  grants. A `groups` claim over 4096 characters is dropped by asterism, so keep
+  group lists small.
+- `RELAY_URL` must be `https:` (`http:` only on loopback). Migration
+  `0007_hub_host_unique` adds a unique index on user-less (hub) executors by
+  host and fails if two hub executors already share a host; delete the stale
+  row first. Host names are now limited to 1-63 characters of letters, digits,
+  `.`, `_` and `-`; existing names outside that set keep working until renamed.
+- Take a database backup first. Migration `0006_asterism_resource_server`
+  drops the OAuth server tables (`auth_codes`, `device_codes`, `oauth_clients`,
+  `oauth_sessions`, `local_users`, `login_failures`) and the email, role and
+  OIDC identity columns of `users`. Existing `users.id` values are kept, so
+  executors, shares and filters stay attached. Rolling back to an older image
+  needs that backup.
+- Every user, node and hub must sign in again. For the user rows to line up
+  with the new tokens, a user's asterism `sub` must equal their existing
+  `users.id`.
 
 ## Log rotation
 

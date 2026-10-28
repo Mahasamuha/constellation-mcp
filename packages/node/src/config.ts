@@ -1,8 +1,8 @@
-import { readFileSync, writeFileSync, renameSync, mkdirSync, unlinkSync, statSync } from "node:fs";
+import { readFileSync, mkdirSync, unlinkSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { homedir, platform } from "node:os";
 import * as yaml from "js-yaml";
-import { createLogger, MAX_SHARE_INSTRUCTIONS_LENGTH, str, type PathEntry } from "@constellation/shared";
+import { createLogger, atomicWriteFileSync, MAX_SHARE_INSTRUCTIONS_LENGTH, str, type PathEntry } from "@constellation/shared";
 
 const log = createLogger("node:config");
 
@@ -22,19 +22,6 @@ export function configDir(override?: string): string {
 
 export function nodeYamlPath(dir: string): string { return join(dir, "node.yaml"); }
 export function pathsYamlPath(dir: string): string { return join(dir, "paths.yaml"); }
-
-/**
- * Writes via a temp file + rename so a crash mid-write can never leave `path` holding
- * a torn/partial file. rename(2) is a single atomic syscall — readers only ever see
- * the old or the new complete content, never something in between. This protects
- * against file corruption from an interrupted write; it's not a durability guarantee
- * against power loss (no fsync), which isn't a concern worth solving for local config.
- */
-function atomicWriteFileSync(path: string, data: string, options: { mode: number }): void {
-  const tmpPath = `${path}.tmp-${process.pid}-${Date.now()}`;
-  writeFileSync(tmpPath, data, options);
-  renameSync(tmpPath, path);
-}
 
 /**
  * Wraps a synchronous loader with an mtime-gated cache: the (comparatively
@@ -85,6 +72,12 @@ export interface NodeConfig {
    * holding the only credential on disk, and that credential would already be dead.
    */
   previous_node_token?: string;
+  /**
+   * The authorization server this node registered with, recorded by `node init`. Later sign-ins
+   * that rediscover the authorization server through the relay are pinned to it. Absent in a
+   * config written before this field existed (nothing to pin to until the next `node init`).
+   */
+  issuer?: string;
 }
 
 export function loadNodeConfig(dir: string): NodeConfig {
@@ -103,8 +96,13 @@ export function loadNodeConfig(dir: string): NodeConfig {
   if (!host) throw new Error("node.yaml: host is required");
 
   const previous_node_token = str(parsed, "previous_node_token");
+  const issuer = str(parsed, "issuer");
 
-  return { relay_url, node_token, host, max_file_size_kb, ...(previous_node_token ? { previous_node_token } : {}) };
+  return {
+    relay_url, node_token, host, max_file_size_kb,
+    ...(previous_node_token ? { previous_node_token } : {}),
+    ...(issuer ? { issuer } : {}),
+  };
 }
 
 /**
@@ -128,6 +126,31 @@ export function clearPreviousToken(dir: string): void {
   if (parsed.previous_node_token === undefined) return;
   delete parsed.previous_node_token;
   atomicWriteFileSync(path, yaml.dump(parsed), { mode: 0o600 });
+}
+
+/** The origin (scheme, host, port) of a relay URL, for comparing two of them; the input if it does not parse. */
+function relayOrigin(url: string): string {
+  try { return new URL(url).origin; } catch { return url; }
+}
+
+/**
+ * Points node.yaml at another relay. When the origin changes, the node token (and the displaced
+ * previous one) belonged to the old relay and must not be sent to the new one, so both are dropped
+ * along with the recorded issuer, and the node has to register again with `node init`.
+ * Returns whether the credentials were dropped.
+ */
+export function changeRelayUrl(dir: string, relayUrl: string): { credentialsDropped: boolean } {
+  const path = nodeYamlPath(dir);
+  const parsed = yaml.load(readFileSync(path, "utf8")) as Partial<NodeConfig>;
+  const credentialsDropped = relayOrigin(parsed.relay_url ?? "") !== relayOrigin(relayUrl);
+  parsed.relay_url = relayUrl;
+  if (credentialsDropped) {
+    delete parsed.node_token;
+    delete parsed.previous_node_token;
+    delete parsed.issuer;
+  }
+  atomicWriteFileSync(path, yaml.dump(parsed), { mode: 0o600 });
+  return { credentialsDropped };
 }
 
 export function writeNodeConfig(dir: string, config: Partial<NodeConfig>): void {
@@ -221,8 +244,21 @@ export function buildConfigUpdatePaths(
 // relay-session.yaml
 // ---------------------------------------------------------------------------
 
+/**
+ * The user CLI's sign-in: an asterism access token (scope `relay`) and its rotating refresh
+ * token (`offline_access`), both issued to the `cli` client. `refresh_token_expires_at` is
+ * asterism's absolute 30-day limit, set at sign-in and not extended by rotation. An `admin`
+ * step-up token is never stored here.
+ */
 export interface RelaySession {
   relay_url: string;
+  /**
+   * The authorization server this session was issued by, recorded at sign-in. A refresh goes only
+   * to this issuer: if the relay later names a different one, the refresh is refused instead of
+   * handing the refresh token to it. Absent in a session written before this field existed;
+   * such a session cannot be refreshed and needs a new sign-in.
+   */
+  issuer?: string;
   access_token: string;
   access_token_expires_at: string; // ISO 8601
   refresh_token?: string;
@@ -231,6 +267,11 @@ export interface RelaySession {
 
 export function relaySessionPath(dir: string): string {
   return join(dir, "relay-session.yaml");
+}
+
+/** Held while a process refreshes the session, so two never spend the same rotating refresh token. */
+export function relaySessionLockPath(dir: string): string {
+  return join(dir, "relay-session.yaml.lock");
 }
 
 export function loadRelaySession(dir: string): RelaySession {
@@ -246,6 +287,7 @@ export function loadRelaySession(dir: string): RelaySession {
     relay_url,
     access_token,
     access_token_expires_at,
+    issuer: parsed.issuer || undefined,
     refresh_token: parsed.refresh_token || undefined,
     refresh_token_expires_at: parsed.refresh_token_expires_at || undefined,
   };

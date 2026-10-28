@@ -6,19 +6,21 @@ import { createInterface } from "node:readline";
 import { join, relative, dirname, sep } from "node:path";
 import { openNoFollow } from "./safe-open.js";
 import { assertPathStable } from "./safe-path.js";
+import { entryHidden, type PathFilter } from "./path-guard.js";
 
 // ---------------------------------------------------------------------------
 // list_directory
 // ---------------------------------------------------------------------------
 
-import picomatch from "picomatch";
-import safeRegex from "safe-regex2";
+import { compileToolPattern } from "./pattern.js";
 
 export interface ListDirectoryParams {
   recursive?: boolean;
   max_depth?: number;
   limit?: number;
   exclude?: string[];
+  /** Entries blocked by the filter are skipped entirely (see entryHidden). */
+  filter?: PathFilter;
 }
 
 export interface DirNode {
@@ -42,12 +44,7 @@ export async function listDirectory(
   const maxDepth = params.max_depth;
   const hardCap = 10_000;
   const limit = params.limit === 0 ? hardCap : Math.min(params.limit ?? 2_000, hardCap);
-  const exclude = params.exclude ?? [];
-  for (const pattern of exclude) {
-    if (!safeRegex(picomatch.makeRe(pattern).source)) {
-      throw new Error(`Exclude pattern rejected: potential ReDoS vulnerability`);
-    }
-  }
+  const exclude = (params.exclude ?? []).map((p) => compileToolPattern(p, "glob", "exclude pattern"));
 
   const nodes: DirNode[] = [];
   let truncated = false;
@@ -61,9 +58,10 @@ export async function listDirectory(
     for (const entry of entries) {
       if (limitReached) break;
 
-      if (exclude.length > 0 && picomatch.isMatch(entry.name, exclude)) continue;
+      if (exclude.length > 0 && exclude.some((re) => re.matcher(entry.name).matches())) continue;
 
       const fullPath = join(dir, entry.name);
+      if (await entryHidden(params.filter, fullPath, entry.isSymbolicLink())) continue;
       const relPath = relative(root, fullPath);
       const type = entry.isSymbolicLink() ? "symlink" : entry.isDirectory() ? "directory" : "file";
 

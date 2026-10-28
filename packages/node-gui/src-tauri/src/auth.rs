@@ -7,6 +7,11 @@ pub struct DeviceCodeInfo {
     pub user_code: String,
     pub verification_uri: String,
     pub verification_uri_complete: String,
+    /// The authorization server the code came from; passed back to `node auth complete`.
+    pub issuer: String,
+    /// The only URL the window may open; `None` when the CLI found the verification URL off the
+    /// issuer's origin.
+    pub open_url: Option<String>,
     pub expires_in: u64,
     pub interval: u64,
 }
@@ -61,6 +66,7 @@ pub async fn poll_device_flow(
     app: AppHandle,
     relay_url: String,
     device_code: String,
+    issuer: String,
     interval: u64,
     expires_in: u64,
 ) {
@@ -73,6 +79,7 @@ pub async fn poll_device_flow(
             "node", "auth", "complete",
             "--relay", &relay_url,
             "--device-code", &device_code,
+            "--issuer", &issuer,
             "--interval", &interval,
             "--expires-in", &expires_in,
         ])
@@ -98,10 +105,13 @@ mod tests {
 
     #[test]
     fn parses_device_code_success() {
-        let line = r#"{"ok":true,"data":{"device_code":"dc-123","user_code":"ABCD-1234","verification_uri":"http://localhost:4321/activate","verification_uri_complete":"http://localhost:4321/activate?code=ABCD-1234","expires_in":30,"interval":1}}"#;
+        let line = r#"{"ok":true,"data":{"device_code":"dc-123","user_code":"ABCD-2345","verification_uri":"http://localhost:4321/activate","verification_uri_complete":"http://localhost:4321/activate?code=ABCD-2345","issuer":"http://localhost:4321","open_url":"http://localhost:4321/activate?code=ABCD-2345","expires_in":30,"interval":1}}"#;
         let parsed: DeviceCodeResponse = serde_json::from_str(line).unwrap();
         assert!(parsed.ok);
-        assert_eq!(parsed.data.unwrap().user_code, "ABCD-1234");
+        let data = parsed.data.unwrap();
+        assert_eq!(data.user_code, "ABCD-2345");
+        assert_eq!(data.issuer, "http://localhost:4321");
+        assert!(data.open_url.is_some());
         assert!(parsed.error.is_none());
     }
 

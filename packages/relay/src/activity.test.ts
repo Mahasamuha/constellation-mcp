@@ -86,6 +86,17 @@ describe("sink registry", () => {
     expect(() => logEvent(event)).not.toThrow();
   });
 
+  it("truncates caller-controlled text fields so a flood can't bloat the log", () => {
+    const sink = vi.fn();
+    registerActivitySink(sink);
+    const long = "x".repeat(5000);
+    logEvent({ ...event, share: long, host: long, tool: long, errorCode: long, errorMessage: long });
+    const logged = sink.mock.calls[0]![0] as Record<string, string>;
+    for (const k of ["share", "host", "tool", "errorCode", "errorMessage"]) {
+      expect(logged[k]!.length).toBeLessThanOrEqual(129);
+    }
+  });
+
   it("delivers the event to a registered sink", () => {
     const sink = vi.fn();
     registerActivitySink(sink);

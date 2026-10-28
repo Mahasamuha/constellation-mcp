@@ -16,40 +16,48 @@
 | Variable | Description |
 |---|---|
 | `DATABASE_URL` | PostgreSQL connection string (e.g. `postgresql://user:pass@localhost:5432/constellation`) |
-| `RELAY_URL` | Public origin of the relay — scheme and host (and port, if non-default) only; no path or trailing slash (e.g. `https://relay.example.com`). The relay refuses to start otherwise: a trailing slash, uppercase host, or explicit default port (e.g. `:443`) all fail the check. Used to construct OAuth callback URLs and the discovery documents — must be the URL MCP clients and browsers can reach. Sub-path deployments are not supported. |
+| `RELAY_URL` | Public origin of the relay — scheme and host (and port, if non-default) only; no path or trailing slash (e.g. `https://relay.example.com`). Must be `https:`; `http:` is accepted only on a loopback host (`localhost`, `127.0.0.1`, `[::1]`). The relay refuses to start otherwise: a trailing slash, uppercase host, or explicit default port (e.g. `:443`) all fail the check. Used to construct the discovery and client metadata documents, and it sets the token audience (`${RELAY_URL}/mcp`) — must be the URL MCP clients can reach. Sub-path deployments are not supported. |
+| `ASTERISM_ISSUER` | Issuer URL of the [asterism](adr/0022-asterism-authorization-server.md) authorization server, exactly as asterism publishes it. Must be `https:` (`http:` is accepted on a loopback host for development). Access tokens must carry this `iss`. The relay refuses to start if it is unset or invalid. |
 | `TRUST_PROXY` | Comma-separated list of trusted reverse proxy IP addresses or CIDR ranges. Required unless `TRUST_PROXY_PRESET` is set. Must not be a number or boolean — use explicit IPs/CIDRs. Example: `127.0.0.1` |
 | `TRUST_PROXY_PRESET` | Shorthand alternative to `TRUST_PROXY`. Accepted values: `railway`, `fly`, `cloudflare-tunnel`. Overrides `TRUST_PROXY` if both are set. |
 
 Exactly one of `TRUST_PROXY` or `TRUST_PROXY_PRESET` must be set. The relay refuses to start if both are absent.
 
-### Auth mode
+### Authorization (asterism)
 
-`AUTH_MODE` controls how users authenticate. Defaults to `oidc`.
+The relay is an OAuth resource server. [asterism](adr/0022-asterism-authorization-server.md) is the authorization server: it owns sign-in, local accounts, groups, consent, grants and revocation, and it issues the JWT access tokens the relay verifies. There is no `AUTH_MODE`, no OIDC client configuration and no setup wizard in the relay.
 
-| Value | Behaviour |
-|---|---|
-| `oidc` (default) | Delegates authentication to an upstream OIDC provider. Requires `OIDC_ISSUER`, `OIDC_CLIENT_ID`, and `OIDC_CLIENT_SECRET`. User management endpoints return `404`. |
-| `local` | Built-in username/password auth. No OIDC provider required. First-run setup wizard creates the admin account. User management available via `constellation relay users` and `GET/POST /api/users`. |
+To connect a relay to asterism:
 
-**OIDC variables** (required when `AUTH_MODE=oidc`):
+1. Set `ASTERISM_ISSUER` and `RELAY_URL` on the relay.
+2. Register the relay in asterism as a resource server. asterism fetches the relay's RFC 9728 metadata at `${RELAY_URL}/.well-known/oauth-protected-resource/mcp`, which declares the `relay` scope and the fresh-sign-in-only `admin` and `register` scopes. The token audience is `${RELAY_URL}/mcp`.
+3. Create the `constellation-admins` group in asterism and add the people who should administer the relay.
+4. Set the released claims and the `admin` scope policy (below), before any user connects.
 
-| Variable | Description |
-|---|---|
-| `OIDC_ISSUER` | OIDC provider issuer URL (e.g. `https://accounts.google.com`, `https://login.microsoftonline.com/<tenant>/v2.0`) |
-| `OIDC_CLIENT_ID` | Client ID from your OIDC provider |
-| `OIDC_CLIENT_SECRET` | Client secret from your OIDC provider |
+**Admin** means the access token holds the `admin` scope **and** its `groups` claim contains `ADMIN_GROUP` (default `constellation-admins`). asterism issues the scope only after a fresh sign-in (a `403 insufficient_scope` from the relay), good for 5 minutes. The relay checks the group itself, so admin never depends on the asterism scope policy having been set. A stale `groups` claim can only deny admin, never grant it, because the scope is required too. An account with the scope but not the group gets a plain `403` (no step-up challenge, since stepping up cannot help). It gates `GET /api/admin/hub-shares`, `GET /api/admin/activity` and hub registration. There is no stored role and no admin bootstrap token.
 
-Register an OAuth application with your provider and add these redirect URIs:
-- `https://your-relay.example.com/oauth/callback` — MCP clients (Claude, Cursor)
-- `https://your-relay.example.com/activate/callback` — node and relay CLI device flows
+#### Operator runbook: configure asterism before users connect
 
-The relay constructs both callback URLs from `RELAY_URL` automatically — there is no separate callback URL variable.
+Run these in asterism (`<relay-url>` is `RELAY_URL`; the resource server identifier is `<relay-url>/mcp`):
 
-**Google** — set `OIDC_ISSUER=https://accounts.google.com`. Create a Web application credential in [Google Cloud Console](https://console.cloud.google.com/apis/credentials) and add both redirect URIs above.
+```sh
+docker compose exec asterism-proxy asterism-cli resource-server approve <relay-url>/mcp \
+  --name Constellation --release-claims groups,email,constellation_username
+docker compose exec asterism-proxy asterism-cli resource-server policy <relay-url>/mcp admin \
+  --short-lived --require-groups constellation-admins
+```
 
-**Azure AD** — set `OIDC_ISSUER=https://login.microsoftonline.com/<tenant-id>/v2.0`. Register an application in [Azure Portal](https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps) and add both redirect URIs under **Authentication**.
+`--short-lived` makes the `admin` scope a 5-minute step-up; `--require-groups` makes asterism issue it only to that group (Constellation checks the group as well).
 
-**Authentik** — set `OIDC_ISSUER=https://your-authentik.example.com/application/o/<slug>/`. Create an OAuth2/OpenID Provider in Authentik and add both redirect URIs.
+- **Set the released claims before users connect (I2).** asterism records the released claims on a grant when the user consents. A grant made before `groups` and `constellation_username` were released carries neither until the user re-consents, so such users get no group-based share access and no hub identity. Revoke those grants (the user's `/grants` page in asterism, or `asterism-cli deny-client add <client_id>` to revoke every grant of one client) so the next sign-in asks for consent again.
+- **Trust the claim sources (I3).**
+
+  > **Warning.** `groups` and `constellation_username` are only as trustworthy as the upstream source asterism copies them from. asterism's `OIDC_CLAIM_MAP` must never map either onto a claim a user can edit (`preferred_username`, `name`, `nickname`, `email`, ...). The identity provider attribute behind `constellation_username` must be admin-only (not user-editable) and unique per user. asterism does not enforce this. If it is misconfigured, users can pick another user's OS account on a hub or put themselves in any group.
+
+- **Group overrides are not a denylist.** When several of a user's groups match a share's overrides, the most permissive wins, so a group set to `none` does not deny a user who is also in a more permissive group. To deny someone, override by `sub`, or set the share's `default` to `none` and grant access explicitly.
+- **Keep group lists small.** asterism drops a claim whose JSON is longer than 4096 characters. A user with an oversize `groups` claim gets no `groups` at all in the token, which also means no admin. A `groups` claim with more than 256 entries, or an entry longer than 256 characters, is refused by the relay with `403 invalid_token_claims`.
+
+Sign-in, local accounts, user management, password resets and session revocation are done in asterism (its `/grants` page lists and revokes what each client may do). The relay creates a `users` row the first time it sees a token's `sub`.
 
 ### Optional
 
@@ -57,29 +65,11 @@ The relay constructs both callback URLs from `RELAY_URL` automatically — there
 
 | Variable | Default | Description |
 |---|---|---|
+| `ADMIN_GROUP` | `constellation-admins` | Group (in the token's `groups` claim) an account must belong to, in addition to holding the `admin` scope, to use admin endpoints and register a hub |
 | `PORT` | `3000` | TCP port the HTTP server binds to |
-| `NODE_ENV` | — | Passed to Express and Node.js internals (e.g. disables verbose error details in production). Not used by the relay for the `Secure` cookie flag — that is controlled by the protocol of `RELAY_URL` (https → Secure, http → not Secure). |
+| `NODE_ENV` | — | Passed to Express and Node.js internals (e.g. disables verbose error details in production). The `Strict-Transport-Security` header is sent unless `RELAY_URL` is `http://`. |
 | `ALLOWED_ORIGINS` | — | Comma-separated list of origins allowed to make cross-origin requests to the relay (e.g. the URL of a reverse proxy or browser-based tool in front of the relay). Defaults to no cross-origin access if unset. |
-| `COOKIE_SECRET` | *(random per start)* | Secret that signs the short-lived sign-in flow cookies (`authz_pending`, `login_pending`, `oidc_pending`, `activate_pending`). If unset, the relay generates a random secret at each start and logs a warning, so any sign-in in progress during a restart fails and must be retried. Set a long random value (e.g. `openssl rand -hex 32`) to avoid that. |
 | `LOG_LEVEL` | `warn` | Pino log level: `trace`, `debug`, `info`, `warn`, `error`, `fatal` |
-
-**OAuth token lifetimes**
-
-| Variable | Default | Description |
-|---|---|---|
-| `OAUTH_ACCESS_TOKEN_TTL_HOURS` | `24` | Lifetime of MCP client access tokens, in hours |
-| `OAUTH_REFRESH_TOKEN_TTL_DAYS` | `30` | Lifetime of MCP client refresh tokens, in days |
-| `OAUTH_DYNAMIC_CLIENT_TTL_HOURS` | `24` | Minimum `1` (the relay refuses to start otherwise). How long a dynamically registered OAuth client may sit unactivated (no completed auth flow) before it's pruned. Also applies to Client ID Metadata Document clients, measured from when their cached document expired |
-
-**OAuth client registration**
-
-The relay supports RFC 7591 dynamic client registration at `POST /oauth/register`, which MCP clients use to register themselves automatically. To prevent an unauthenticated attacker from registering a client with an attacker-controlled redirect URI (and using it to phish authorization codes), registration is restricted to a per-operator allowlist of permitted HTTPS origins.
-
-| Variable | Default | Description |
-|---|---|---|
-| `OAUTH_ALLOWED_REDIRECT_ORIGINS` | *(none)* | Comma-separated HTTPS origins whose redirect URIs are permitted during dynamic client registration and in Client ID Metadata Documents. Entries are compared as full origins (scheme, host, and port), so `https://example.com` does not permit `https://example.com:8443`. Redirect URIs with a fragment are rejected. `http://localhost`, `http://127.0.0.1`, and `http://[::1]` redirect URIs are always allowed regardless of this setting — no entry needed for local dev servers or native apps — and at `/oauth/authorize` they match any port (RFC 8252 §7.3). If this variable is unset or empty, no HTTPS redirect URIs are accepted. |
-
-The `.env.example` files ship with `claude.ai`, `chatgpt.com`, and `cursor.com` as the starting value — the three clients documented in [mcp-clients.md](mcp-clients.md). Add or replace entries to match the clients you actually use.
 
 **Timeouts and heartbeat**
 
@@ -100,15 +90,16 @@ All numeric variables are validated at startup. A non-integer value causes the r
 |---|---|---|---|---|
 | `RATE_LIMIT_TOOL_CALLS_PER_MIN` | `60` | 60 s | Per user | Standard MCP tool call limit |
 | `RATE_LIMIT_EXPENSIVE_TOOLS_PER_MIN` | `20` | 60 s | Per user | Limit for `grep_files`, `find_files`, recursive `list_directory`, **and any MCP tool not explicitly classified as "standard" in `router.ts`'s `classifyTool`** |
-| `RATE_LIMIT_OAUTH_PER_15MIN` | `10` | 15 min | Per IP | Requests to `/oauth/token` (non-device-code grants), `/oauth/register`, `/oauth/authorize/consent`, `/oauth/device/code`, `/setup`, `/auth/login`. An OIDC-mode authorization uses two of these (consent and token) |
-| `RATE_LIMIT_DEVICE_POLL_PER_15MIN` | `200` | 15 min | Per IP | Requests to `/oauth/token` with `grant_type=device_code`. Device clients poll every 5 s for up to 15 min (≈180 requests); this must exceed that. |
-| `RATE_LIMIT_DEVICE_AUTH_PER_15MIN` | `20` | 15 min | Per IP | Requests to `/activate`, `/activate/login`, `/activate/callback`, `/activate/confirm` — the device-authorization consent flow |
-| `RATE_LIMIT_DEFAULT_PER_15MIN` | `10` | 15 min | Per IP | Catch-all for any HTTP route not explicitly classified in `app.ts`'s `classifyHttpRoute` (e.g. `/api/*`, `/oauth/authorize`, the `/.well-known/*` documents). Deliberately the strictest HTTP bucket — see [architecture.md](architecture.md#rate-limiting). `/healthz` and `/mcp` are explicitly exempt instead of falling here; see that doc for why. |
+| `RATE_LIMIT_STATIC_PER_15MIN` | `300` | 15 min | Per IP | The unauthenticated, cheap GETs: `/.well-known/oauth-protected-resource/*` and `/clients/*.json` |
+| `RATE_LIMIT_DEFAULT_PER_15MIN` | `10` | 15 min | Per IP | Catch-all for any HTTP route not explicitly classified in `app.ts`'s `classifyHttpRoute` (e.g. `/api/executors/register`, `/`), and the failed or unauthenticated requests to `/api/*`. Deliberately the strictest HTTP bucket — see [architecture.md](architecture.md#rate-limiting). `/healthz` has its own limiter. |
+| `RATE_LIMIT_API_PER_USER_PER_15MIN` | `600` | 15 min | Per user | Authenticated `/api/*` requests (except registration). Failed or unauthenticated ones count against `RATE_LIMIT_DEFAULT_PER_15MIN` per IP |
+| `RATE_LIMIT_MCP_FAILED_PER_15MIN` | `300` | 15 min | Per IP | Unauthenticated or failed `/mcp` requests |
+| `RATE_LIMIT_MCP_REQUESTS_PER_MIN` | `300` | 60 s | Per user | Every authenticated `/mcp` request, tool call or not (tool calls have tighter limits of their own) |
 | `RATE_LIMIT_WS_RECONNECT_PER_MIN` | `10` | 60 s | Per executor token | Executor WebSocket reconnect attempts |
 
 Rate limit state is in-memory. It is lost on relay restart, which is acceptable for single-instance deployments.
 
-> **Multi-user deployments:** the built-in limiter is meant for single-user deployments, prototyping and pilots. Put a multi-user production deployment behind a WAF or an equivalent dedicated rate-limiting and abuse-protection tool. The defaults are sized for one user. One MCP client authorization costs about 4 default-bucket and 2–3 oauth-bucket requests, so one IP gets roughly two authorizations per 15 minutes. Users behind a shared NAT or VPN, and hosted MCP clients whose servers make requests on behalf of many users, will exhaust that quickly. See [architecture.md](architecture.md#rate-limiting) for the per-request breakdown to size WAF rules or pilot limits from.
+> **Multi-user deployments:** the built-in limiter is meant for single-user deployments, prototyping and pilots. Put a multi-user production deployment behind a WAF or an equivalent dedicated rate-limiting and abuse-protection tool. The defaults are sized for one user. Users behind a shared NAT or VPN, and hosted MCP clients whose servers make requests on behalf of many users, can exhaust the per-IP buckets quickly. See [architecture.md](architecture.md#rate-limiting) for the per-request breakdown to size WAF rules or pilot limits from.
 
 **Activity log**
 
@@ -121,14 +112,11 @@ Rate limit state is in-memory. It is lost on relay restart, which is acceptable 
 
 Multiple sinks can be active simultaneously. Set `ACTIVITY_SINK_POSTGRES=false` and configure a webhook or stdout sink to route events exclusively to an external system.
 
-**Admin & identity**
+**Identity**
 
 | Variable | Default | Description |
 |---|---|---|
-| `ADMIN_GROUPS` | — | Comma-separated OIDC group names that grant the `ADMIN` role on login. Empty = no group→role mapping; bootstrap the first admin via `RELAY_ADMIN_TOKEN` instead (or directly in `AUTH_MODE=local`, where the setup wizard creates the admin account). |
-| `RELAY_ADMIN_TOKEN` | — | Bearer token that unlocks a separate, OAuth-independent route for `constellation relay user promote/demote`. Unset by default, in which case those routes return `404`. Intended for bootstrapping the first admin before `ADMIN_GROUPS` is configured. |
-| `ADMIN_SESSION_DURATION` | `3600` (seconds) | Lifetime of the elevated-admin window granted by `constellation relay elevate` (the `agent:escalate` scope). |
-| `FORWARDED_CLAIMS` | — | Comma-separated list of OIDC claim names to forward to executors in the RPC envelope's `user_claims` field. Empty = forward every claim captured at login (`lastKnownClaims`, the full ID token minus JWT-internal fields like `iat`/`exp`/`nonce`). Set this to restrict forwarding to specific claims only — useful for data minimization when [hub Tier-1 identity resolution](hub.md) only needs one custom claim. |
+| `FORWARDED_CLAIMS` | — | Comma-separated list of token claim names to forward to executors in the RPC envelope's `user_claims` field. Empty = forward every non-registered claim on the caller's access token (registered claims such as `iss`, `aud`, `exp` and `iat` are never forwarded). The envelope also carries `user_sub` (the asterism `sub`) and `user_groups`. Set this to restrict forwarding to specific claims only — useful for data minimization when [hub Tier-1 identity resolution](hub.md) only needs one custom claim. |
 
 ---
 
@@ -196,7 +184,7 @@ max_file_size_kb: 100
 |---|---|---|
 | `relay_url` | yes | Full HTTPS URL of the relay, no trailing slash |
 | `node_token` | yes | Bearer token used to authenticate the WebSocket connection. Managed by `constellation node init` and `constellation node rotate`. |
-| `host` | yes | Display name for this machine. Must be unique across all nodes on your account. |
+| `host` | yes | Display name for this machine. Must be unique across all nodes on your account. 1 to 63 characters: letters, digits, `.`, `_` and `-` only (no spaces). |
 | `max_file_size_kb` | no | Maximum KB the node will return in a single `read_file` call. Default: `100`. Range reads (`start_line`/`end_line`) are subject to the same cap per call. |
 
 ### `paths.yaml`
@@ -224,17 +212,17 @@ Shares must be unique per account — two nodes on the same account cannot use t
 
 ### `relay-session.yaml`
 
-Written by `constellation relay login`. Stores the management API session used by `constellation relay *` commands. Not used by the node daemon.
+Written by `constellation relay login`. Stores the sign-in used by `constellation relay *` commands. Not used by the node daemon.
 
 ```yaml
 relay_url: https://your-relay.example.com
-access_token: <secret>
+access_token: <secret>               # asterism access token (JWT)
 access_token_expires_at: "2026-06-25T10:00:00.000Z"
-refresh_token: <secret>
+refresh_token: <secret>              # rotates on every refresh
 refresh_token_expires_at: "2026-07-25T10:00:00.000Z"
 ```
 
-The CLI silently refreshes the access token on expiry if a refresh token is present. If the refresh token also expires, re-run `constellation relay login`. `refresh_token` and `refresh_token_expires_at` are omitted if the relay did not issue a refresh token.
+The CLI refreshes the access token silently once it is within 30 seconds of expiring. asterism rotates the refresh token on every use, and the new one is written to the file before the new access token is used. `refresh_token_expires_at` is an absolute 30 days from `relay login`; rotation does not extend it. Refreshes are serialized across processes with a `relay-session.yaml.lock` file next to the session file, because asterism treats a second use of an old refresh token as theft and ends the whole grant. If the refresh token is spent, revoked (for example in asterism's `/grants` page) or past its 30 days, the CLI reports "Session expired": in an interactive terminal it starts a new sign-in, otherwise run `constellation relay login` again. `refresh_token` and `refresh_token_expires_at` are omitted if asterism did not issue a refresh token. Admin commands do not use this file: their `relay admin` token is held in memory for one command.
 
 ---
 
@@ -267,8 +255,7 @@ There is no truly global flag set on `constellation` itself — `--config-dir` a
 | Flag | Commands | Description |
 |---|---|---|
 | `--config-dir <dir>` | any `relay` subcommand | Override config directory. Also respected as `CONSTELLATION_CONFIG_DIR`. Position right after `relay`. |
-| `--relay <url>` | `login`, `elevate`, `user promote`, `user demote` | Relay URL. Defaults to `relay_url` from `node.yaml` if not given. Position right after `relay`, e.g. `constellation relay --relay <url> login`. All other `relay` subcommands use the relay URL already stored in `relay-session.yaml` from a prior `login` and don't accept this flag. |
-| `--admin-token <token>` | `user promote`, `user demote` | Relay admin token. Defaults to the `RELAY_ADMIN_TOKEN` env var. |
-| `--json` | `executors list`, `shares list`, `filters list`, `sessions list`, `users list`, `hub-shares list` | Emit machine-readable JSON output. |
+| `--relay <url>` | `login`, and the admin commands (`hub-shares list`, `token create --shared`) | Relay URL. Defaults to `relay_url` from `node.yaml` if not given. Position right after `relay`, e.g. `constellation relay --relay <url> login`. Other `relay` subcommands use the relay URL already stored in `relay-session.yaml` from a prior `login` and don't accept this flag. |
+| `--json` | `executors list`, `shares list`, `filters list`, `hub-shares list` | Emit machine-readable JSON output. |
 | `--executor <id>` | `shares list`, `filters add`, `hub-shares list` | Filter results or scope a filter to a specific executor ID. |
 | `--type glob\|regex` | `filters add` | Pattern type for a new deny filter. Default: `glob`. |

@@ -1,6 +1,6 @@
 # ADR 0021: Client ID Metadata Documents; Relay Consent Interstitial in OIDC Mode
 
-**Status:** Accepted
+**Status:** Superseded by [ADR 0022](0022-asterism-authorization-server.md)
 **Date:** 2026-10-19
 
 ## Context

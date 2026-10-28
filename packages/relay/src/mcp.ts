@@ -6,11 +6,12 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { Router, Request, Response, IRouter } from "express";
 import { z } from "zod/v4";
 import { prisma } from "./db.js";
-import { routeToolCall, checkToolRateLimit, RouterError } from "./router.js";
+import { routeToolCall, checkToolRateLimit, checkMcpRequestRateLimit, shouldLogRateLimited, RouterError } from "./router.js";
 import { isOnline } from "./api.js";
 import { logEvent } from "./activity.js";
-import { evaluatePermissionBlob, requireEnv } from "@constellation/shared";
-import { lookupOAuthSession } from "./middleware.js";
+import { evaluatePermissionBlob, type PermissionBlob } from "@constellation/shared";
+import { authenticateRequest } from "./middleware.js";
+import type { RequestUser } from "./request-user.js";
 
 const { version } = createRequire(import.meta.url)("../package.json") as { version: string };
 
@@ -103,41 +104,24 @@ export const mcpRouter: IRouter = Router();
 // Route: POST /mcp  (and GET for SSE)
 // ---------------------------------------------------------------------------
 
-/** WWW-Authenticate challenge pointing at the /mcp-specific protected-resource metadata
- * (RFC 9728 §3.3: the metadata's `resource` must equal the URL the client requested). */
-function bearerChallenge(error?: string): string {
-  const relayUrl = requireEnv("RELAY_URL");
-  const errorParam = error ? `, error="${error}"` : "";
-  return `Bearer realm="${relayUrl}"${errorParam}, resource_metadata="${relayUrl}/.well-known/oauth-protected-resource/mcp"`;
-}
-
 mcpRouter.all("/mcp", async (req: Request, res: Response) => {
-  const authHeader = req.headers["authorization"];
-  const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
+  // Answers the request itself (401/403/503) when the token is missing, invalid or lacks the relay scope.
+  const user = await authenticateRequest(req, res);
+  if (!user) return;
 
-  if (!token) {
-    res.set("WWW-Authenticate", bearerChallenge());
-    res.status(401).json({ error: "unauthorized" });
+  // Coarse per-user ceiling on all /mcp traffic (initialize, tools/list, pings, ...).
+  if (!checkMcpRequestRateLimit(user.id)) {
+    res.set("Retry-After", "60");
+    res.status(429).json({ error: "rate_limit_exceeded" });
     return;
   }
 
-  const session = await lookupOAuthSession(token);
-  if (!session) {
-    res.set("WWW-Authenticate", bearerChallenge("invalid_token"));
-    res.status(401).json({ error: "invalid_token" });
-    return;
-  }
-
+  const token = req.headers["authorization"]?.slice("Bearer ".length) ?? "";
   (req as Request & { auth: object }).auth = {
     token,
-    clientId: session.mcpClientId,
-    scopes: [],
-    expiresAt: Math.floor(session.expiresAt.getTime() / 1000),
-    extra: {
-      userId: session.userId,
-      userOidcSub: session.oidcSub,
-      userClaims: session.lastKnownClaims ?? {},
-    },
+    clientId: user.clientId,
+    scopes: [...user.scopes],
+    extra: { user },
   };
 
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
@@ -182,12 +166,6 @@ export function buildMcpServer(): McpServer {
 // Helpers
 // ---------------------------------------------------------------------------
 
-interface UserIdentity {
-  userId: string;
-  userOidcSub: string | null;
-  userClaims: Record<string, unknown>;
-}
-
 // registerTool() below is generic over each handler's exact signature, which means
 // the SDK's contextual typing for an unannotated trailing `extra` parameter is lost —
 // it would otherwise be inferred from server.registerTool()'s own overloads. Every
@@ -195,15 +173,10 @@ interface UserIdentity {
 // (the only thing any handler does with it) requires.
 type ToolExtra = { authInfo?: { extra?: Record<string, unknown> } };
 
-function identity(extra: ToolExtra): UserIdentity {
-  const e = extra.authInfo?.extra ?? {};
-  const uid = e["userId"];
-  if (typeof uid !== "string") throw new Error("Missing userId in auth context");
-  return {
-    userId: uid,
-    userOidcSub: typeof e["userOidcSub"] === "string" ? e["userOidcSub"] : null,
-    userClaims: (e["userClaims"] as Record<string, unknown>) ?? {},
-  };
+function identity(extra: ToolExtra): RequestUser {
+  const user = extra.authInfo?.extra?.["user"] as RequestUser | undefined;
+  if (typeof user?.id !== "string") throw new Error("Missing user in auth context");
+  return user;
 }
 
 function isRouterError(v: unknown): v is RouterError {
@@ -242,11 +215,13 @@ function registerTool<Args extends unknown[]>(
 ): void {
   const wrapped = (...args: Args): unknown => {
     const extra = args[args.length - 1] as { authInfo?: { extra?: Record<string, unknown> } };
-    const { userId } = identity(extra);
+    const { id: userId } = identity(extra);
     const params = (args.length > 1 ? args[0] : {}) as Record<string, unknown>;
     if (!checkToolRateLimit(userId, name, params)) {
       const share = typeof params["share"] === "string" ? params["share"] : undefined;
-      logEvent({ userId, eventType: "rate_limited", tool: name, share, requestId: randomUUID() });
+      if (shouldLogRateLimited(userId)) {
+        logEvent({ userId, eventType: "rate_limited", tool: name, share, requestId: randomUUID() });
+      }
       toolError("Rate limit exceeded. Please slow down.");
     }
     return handler(...args);
@@ -260,13 +235,13 @@ function registerTool<Args extends unknown[]>(
 }
 
 async function dispatch(
-  id: UserIdentity,
+  user: RequestUser,
   tool: string,
   share: string,
   params: Record<string, unknown>,
   host?: string
 ): Promise<ToolResult<Record<string, unknown>>> {
-  const result = await routeToolCall(id.userId, tool, share, params, host, id.userOidcSub, id.userClaims);
+  const result = await routeToolCall(user, tool, share, params, host);
   if (isRouterError(result)) toolError(result.message);
   if (result.error) toolError(result.error.message);
   return ok(result.result as Record<string, unknown>);
@@ -288,7 +263,8 @@ function registerListHosts(server: McpServer): void {
       _meta: VISIBLE_TO_MODEL_ONLY,
     },
     async (extra: ToolExtra) => {
-      const { userId, userOidcSub } = identity(extra);
+      const user = identity(extra);
+      const userId = user.id;
 
       const [nodeExecutors, hubShares] = await Promise.all([
         prisma.executor.findMany({
@@ -303,8 +279,8 @@ function registerListHosts(server: McpServer): void {
       // Group accessible hub shares by executor
       const hubExecutorMap = new Map<string, { host: string; lastHeartbeatAt: Date | null; shares: string[] }>();
       for (const hs of hubShares) {
-        const blob = hs.permissionBlob as { default: string; overrides?: Array<{ oidc_sub: string; access: string }> };
-        if (evaluatePermissionBlob(blob, userOidcSub) === "none") continue;
+        const blob = hs.permissionBlob as unknown as PermissionBlob;
+        if (evaluatePermissionBlob(blob, { sub: user.id, groups: user.groups }) === "none") continue;
         const entry = hubExecutorMap.get(hs.executorId);
         if (entry) {
           entry.shares.push(hs.share);
@@ -354,7 +330,8 @@ function registerListShares(server: McpServer): void {
       _meta: VISIBLE_TO_MODEL_AND_APP,
     },
     async ({ host }, extra: ToolExtra) => {
-      const { userId, userOidcSub } = identity(extra);
+      const user = identity(extra);
+      const userId = user.id;
 
       const [personalShares, hubShares] = await Promise.all([
         prisma.pathShare.findMany({
@@ -382,8 +359,8 @@ function registerListShares(server: McpServer): void {
       }));
 
       for (const s of hubShares) {
-        const blob = s.permissionBlob as { default: string; overrides?: Array<{ oidc_sub: string; access: string }> };
-        const access = evaluatePermissionBlob(blob, userOidcSub);
+        const blob = s.permissionBlob as unknown as PermissionBlob;
+        const access = evaluatePermissionBlob(blob, { sub: user.id, groups: user.groups });
         if (access === "none") continue;
         shares.push({
           share: s.share,
@@ -491,7 +468,7 @@ function registerListDirectory(server: McpServer): void {
     "list_directory",
     {
       title: "List Directory",
-      description: "Enumerate directory contents — names, types, and sizes. Use to understand folder structure or browse what files exist in a directory. Returns entries for all items in the directory, not a single path's metadata. Use recursive:true with exclude:[\"node_modules\",\".git\"] for repo trees.",
+      description: "Enumerate directory contents — names, types, and sizes. Use to understand folder structure or browse what files exist in a directory. Returns entries for all items in the directory, not a single path's metadata. Use recursive:true with exclude:[\"node_modules\",\".git\"] for repo trees. exclude entries are globs matched against entry names: * and ? stay within a name, [abc] is a character class, {a,b} is alternation.",
       inputSchema: {
         share: z.string(),
         relative_path: z.string().optional(),
@@ -543,7 +520,7 @@ function registerFindFiles(server: McpServer): void {
     "find_files",
     {
       title: "Find Files",
-      description: "Find files by name using glob or regex. Use when you know part of a filename or extension. Matches filenames and paths only — does not read or search file contents. type:\"glob\" (default, micromatch syntax) or \"regex\". Capped at 200 results.",
+      description: "Find files by name using glob or regex. Use when you know part of a filename or extension. Matches filenames and paths only — does not read or search file contents. type:\"glob\" (default) or \"regex\". Globs match the entry name (not the path): * and ? stay within a name, ** matches anything, [abc] / [!abc] are character classes, {a,b} is alternation. Regex is RE2 syntax (no lookarounds or backreferences), matched anywhere in the text, case-sensitive. Capped at 200 results.",
       inputSchema: {
         share: z.string(),
         pattern: z.string(),
@@ -595,7 +572,7 @@ function registerGrepFiles(server: McpServer): void {
     "grep_files",
     {
       title: "Search File Contents",
-      description: "Search file contents for a literal string or regex pattern. Use to find which files contain specific text. Does not match on filenames or paths — only file contents. relative_path can be a file or directory; file_glob (e.g. \"*.ts\") scopes recursive search. Results grouped by file, capped at 50 matches and 100KB.",
+      description: "Search file contents for a literal string or regex pattern. Use to find which files contain specific text. Does not match on filenames or paths — only file contents. relative_path can be a file or directory; file_glob (e.g. \"*.ts\", same glob rules as find_files, matched against file names) scopes recursive search. type:\"regex\" is RE2 syntax (no lookarounds or backreferences), matched anywhere in each line, case-sensitive. Results grouped by file, capped at 50 matches and 100KB.",
       inputSchema: {
         share: z.string(),
         pattern: z.string(),

@@ -62,10 +62,14 @@ type ProcessWithPrivileges = typeof process & {
 };
 const proc = process as ProcessWithPrivileges;
 
+// Without initgroups the worker would keep the hub's supplementary groups, so it must not run.
+if (typeof proc.initgroups !== "function") {
+  process.stderr.write("subnode-worker: process.initgroups is not available — refusing to run without dropping supplementary groups\n");
+  process.exit(1);
+}
+
 try {
-  if (typeof proc.initgroups === "function") {
-    proc.initgroups(targetUser, targetGid);
-  }
+  proc.initgroups(targetUser, targetGid);
   process.setgid!(targetGid);
   process.setuid!(targetUid);
 } catch (err) {
