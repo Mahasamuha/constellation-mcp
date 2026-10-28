@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { promises as fs } from "node:fs";
 import { join } from "node:path";
 import { makeTempDir, cleanTempDir } from "../test/fixtures.js";
-import { FileExecutor } from "./index.js";
+import { FileExecutor, parsePathFilters } from "./index.js";
 
 let root: string;
 
@@ -26,7 +26,7 @@ describe("FileExecutor path-traversal/symlink-escape boundary check", () => {
   it("rejects an unregistered share name outright", async () => {
     const executor = new FileExecutor({ docs: root }, 1024);
 
-    const result = await executor.execute("read_file", "nonexistent", { relative_path: "x.txt" });
+    const result = await executor.execute("read_file", "nonexistent", { relative_path: "x.txt" }, []);
 
     expect(rejected(result)).toBe(true);
   });
@@ -34,7 +34,7 @@ describe("FileExecutor path-traversal/symlink-escape boundary check", () => {
   it("rejects a relative_path that traverses outside the share root via ../", async () => {
     const executor = new FileExecutor({ docs: root }, 1024);
 
-    const result = await executor.execute("read_file", "docs", { relative_path: "../../etc/passwd" });
+    const result = await executor.execute("read_file", "docs", { relative_path: "../../etc/passwd" }, []);
 
     expect(rejected(result)).toBe(true);
   });
@@ -46,7 +46,7 @@ describe("FileExecutor path-traversal/symlink-escape boundary check", () => {
       await fs.writeFile(join(outside, "secret.txt"), "sensitive", "utf8");
       await fs.symlink(join(outside, "secret.txt"), join(root, "link.txt"));
 
-      const result = await executor.execute("read_file", "docs", { relative_path: "link.txt" });
+      const result = await executor.execute("read_file", "docs", { relative_path: "link.txt" }, []);
 
       expect(rejected(result)).toBe(true);
     } finally {
@@ -57,7 +57,7 @@ describe("FileExecutor path-traversal/symlink-escape boundary check", () => {
   it("rejects a write targeting the share root itself", async () => {
     const executor = new FileExecutor({ docs: root }, 1024);
 
-    const result = await executor.execute("write_file", "docs", { relative_path: "", content: "x" });
+    const result = await executor.execute("write_file", "docs", { relative_path: "", content: "x" }, []);
 
     expect(rejected(result)).toBe(true);
   });
@@ -72,7 +72,7 @@ describe("FileExecutor path-traversal/symlink-escape boundary check", () => {
         src_relative_path: "src.txt",
         dst_share: "other",
         dst_relative_path: "",
-      });
+      }, []);
 
       expect(rejected(result)).toBe(true);
     } finally {
@@ -90,7 +90,7 @@ describe("FileExecutor path-traversal/symlink-escape boundary check", () => {
         src_relative_path: "src.txt",
         dst_share: "other",
         dst_relative_path: "copied.txt",
-      });
+      }, []);
 
       expect(result.isError).toBeUndefined();
       await expect(fs.readFile(join(otherRoot, "copied.txt"), "utf8")).resolves.toBe("hello");
@@ -107,7 +107,7 @@ describe("FileExecutor path-traversal/symlink-escape boundary check", () => {
       src_relative_path: "src.txt",
       dst_share: "nonexistent",
       dst_relative_path: "copied.txt",
-    });
+    }, []);
 
     expect(rejected(result)).toBe(true);
   });
@@ -122,7 +122,7 @@ describe("FileExecutor path-traversal/symlink-escape boundary check", () => {
         src_relative_path: "src.txt",
         dst_root: otherRoot,
         dst_relative_path: "copied.txt",
-      });
+      }, []);
 
       expect(result.isError).toBeUndefined();
       await expect(fs.readFile(join(otherRoot, "copied.txt"), "utf8")).resolves.toBe("hello");
@@ -141,7 +141,7 @@ describe("FileExecutor path-traversal/symlink-escape boundary check", () => {
         src_relative_path: "src.txt",
         dst_root: unregistered,
         dst_relative_path: "copied.txt",
-      });
+      }, []);
 
       expect(rejected(result)).toBe(true);
     } finally {
@@ -157,7 +157,7 @@ describe("FileExecutor error sanitization", () => {
     // read_file on a relative_path that resolves under root but doesn't exist
     // on disk hits a raw, uncaught fs.stat ENOENT inside readFile() — not one
     // of the deliberately-constructed KNOWN_CODES errors.
-    const result = await executor.execute("read_file", "docs", { relative_path: "missing.txt" });
+    const result = await executor.execute("read_file", "docs", { relative_path: "missing.txt" }, []);
 
     expect(result.isError).toBe(true);
     const content = result.content as { message: string; code?: string; path?: string };
@@ -180,7 +180,7 @@ describe("FileExecutor error sanitization", () => {
     const result = await executor.execute("copy", "docs", {
       src_relative_path: "src.txt",
       dst_relative_path: "existing.txt",
-    });
+    }, []);
 
     expect(result.isError).toBe(true);
     const content = result.content as { message: string; code?: string; path?: string };
@@ -195,7 +195,7 @@ describe("FileExecutor error sanitization", () => {
 
     // file_info on a relative path with no entry resolves to a raw fs.lstat
     // ENOENT (uncaught, not KNOWN_CODES) inside fileInfo().
-    const result = await executor.execute("file_info", "docs", { relative_path: "nope.txt" });
+    const result = await executor.execute("file_info", "docs", { relative_path: "nope.txt" }, []);
 
     expect(result.isError).toBe(true);
     const content = result.content as Record<string, unknown>;
@@ -219,7 +219,7 @@ describe("FileExecutor error sanitization", () => {
     const result = await executor.execute("move", "docs", {
       src_relative_path: "src.txt",
       dst_relative_path: "dst.txt",
-    });
+    }, []);
     vi.restoreAllMocks();
 
     expect(result.isError).toBe(true);
@@ -231,5 +231,110 @@ describe("FileExecutor error sanitization", () => {
     expect(content.path).toBe("dst.txt");
     expect(content.message).toContain("partial copy");
     expect(content.message).not.toContain(root);
+  });
+});
+
+describe("FileExecutor relay path filters", () => {
+  // Matches the secrets directory and any .env file, at any depth.
+  const filters = ["^(?:.*/)?secrets$", "^(?:.*/)?\\.env$"];
+  let executor: FileExecutor;
+
+  beforeEach(async () => {
+    executor = new FileExecutor({ docs: root }, 1024);
+    await fs.mkdir(join(root, "secrets", "deep"), { recursive: true });
+    await fs.mkdir(join(root, "pub"), { recursive: true });
+    await fs.writeFile(join(root, "secrets", "a.txt"), "needle", "utf8");
+    await fs.writeFile(join(root, "secrets", "deep", "b.txt"), "needle", "utf8");
+    await fs.writeFile(join(root, ".env"), "needle", "utf8");
+    await fs.writeFile(join(root, "pub", "ok.txt"), "needle", "utf8");
+    await fs.symlink(join(root, "secrets", "a.txt"), join(root, "pub", "link.txt"));
+  });
+
+  function filtered(r: { isError?: boolean; content: unknown }): boolean {
+    return r.isError === true && (r.content as { code?: string }).code === "PATH_FILTERED";
+  }
+
+  it("refuses read, write, edit, delete, file_info and create_directory on a blocked path or beneath one", async () => {
+    const cases: Array<[string, Record<string, unknown>]> = [
+      ["read_file", { relative_path: "secrets/a.txt" }],
+      ["read_file", { relative_path: ".env" }],
+      ["write_file", { relative_path: "secrets/new.txt", content: "x" }],
+      ["edit_file", { relative_path: "secrets/a.txt", edits: [{ old_text: "needle", new_text: "x" }] }],
+      ["delete", { relative_path: "secrets/a.txt" }],
+      ["file_info", { relative_path: "secrets" }],
+      ["create_directory", { relative_path: "secrets/sub" }],
+      ["read_file", { relative_path: "pub/link.txt" }], // symlink resolving into the blocked dir
+    ];
+    for (const [tool, params] of cases) {
+      const r = await executor.execute(tool, "docs", params, filters);
+      expect(filtered(r), `${tool} ${JSON.stringify(params)}`).toBe(true);
+      expect((r.content as { message: string }).message).not.toContain(root);
+    }
+    expect(await fs.readFile(join(root, "secrets", "a.txt"), "utf8")).toBe("needle");
+    // Without the filter the same read succeeds.
+    expect((await executor.execute("read_file", "docs", { relative_path: ".env" }, [])).isError).toBeUndefined();
+  });
+
+  it("refuses copy and move when either side is blocked", async () => {
+    const toBlocked = await executor.execute("copy", "docs", { src_relative_path: "pub/ok.txt", dst_relative_path: "secrets/c.txt" }, filters);
+    const fromBlocked = await executor.execute("move", "docs", { src_relative_path: ".env", dst_relative_path: "pub/env.txt" }, filters);
+    expect(filtered(toBlocked)).toBe(true);
+    expect(filtered(fromBlocked)).toBe(true);
+    await expect(fs.access(join(root, ".env"))).resolves.toBeUndefined();
+  });
+
+  it("list_directory omits blocked entries, does not descend into them, and does not count them", async () => {
+    const r = await executor.execute("list_directory", "docs", { recursive: true }, filters);
+    const nodes = (r.content as { nodes: Array<{ path: string }>; total_nodes: number });
+    expect(nodes.nodes.map((n) => n.path).sort()).toEqual(["pub", "pub/ok.txt"]);
+    expect(nodes.total_nodes).toBe(2);
+  });
+
+  it("list_directory of a blocked directory is refused", async () => {
+    expect(filtered(await executor.execute("list_directory", "docs", { relative_path: "secrets" }, filters))).toBe(true);
+  });
+
+  it("find_files and grep_files skip blocked entries", async () => {
+    const found = await executor.execute("find_files", "docs", { pattern: "*.txt" }, filters);
+    expect((found.content as { matches: string[] }).matches).toEqual(["pub/ok.txt"]);
+    const grep = await executor.execute("grep_files", "docs", { pattern: "needle" }, filters);
+    expect((grep.content as { results: Array<{ file: string }> }).results.map((x) => x.file)).toEqual(["pub/ok.txt"]);
+    expect(filtered(await executor.execute("grep_files", "docs", { pattern: "needle", relative_path: "secrets" }, filters))).toBe(true);
+  });
+
+  it("refuses copy and move of a directory, and delete of a directory, only when a filter is active", async () => {
+    for (const [tool, params] of [
+      ["copy", { src_relative_path: "pub", dst_relative_path: "pub2" }],
+      ["move", { src_relative_path: "pub", dst_relative_path: "pub2" }],
+      ["delete", { relative_path: "pub", recursive: true }],
+      ["delete", { relative_path: "pub" }],
+    ] as const) {
+      const r = await executor.execute(tool, "docs", params, filters);
+      expect(r.isError, tool).toBe(true);
+      expect((r.content as { code?: string }).code, tool).toBe("FILTERED_DIRECTORY_OP");
+    }
+    await expect(fs.access(join(root, "pub", "ok.txt"))).resolves.toBeUndefined();
+    const ok = await executor.execute("copy", "docs", { src_relative_path: "pub", dst_relative_path: "pub2" }, []);
+    expect(ok.isError).toBeUndefined();
+    // A file copy is still allowed under a filter.
+    const file = await executor.execute("copy", "docs", { src_relative_path: "pub/ok.txt", dst_relative_path: "pub/ok2.txt" }, filters);
+    expect(file.isError).toBeUndefined();
+  });
+
+  it("an uncompilable filter blocks every path", async () => {
+    const r = await executor.execute("read_file", "docs", { relative_path: "pub/ok.txt" }, ["(unclosed"]);
+    expect(filtered(r)).toBe(true);
+  });
+});
+
+describe("parsePathFilters", () => {
+  it("accepts an array of strings up to the cap and rejects everything else", () => {
+    expect(parsePathFilters([])).toEqual([]);
+    expect(parsePathFilters(["a"])).toEqual(["a"]);
+    expect(parsePathFilters(Array(100).fill("a"))).toHaveLength(100);
+    expect(parsePathFilters(Array(101).fill("a"))).toBeNull();
+    expect(parsePathFilters(undefined)).toBeNull();
+    expect(parsePathFilters("a")).toBeNull();
+    expect(parsePathFilters(["a", 1])).toBeNull();
   });
 });

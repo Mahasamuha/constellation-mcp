@@ -40,7 +40,12 @@ describe("discoveryRouter", () => {
     expect(body["scopes_supported"]).toEqual(["relay", "offline_access"]);
     expect(body["asterism_scopes"]).toEqual([
       expect.objectContaining({ name: "relay" }),
-      expect.objectContaining({ name: "admin", step_up: true }),
+      expect.objectContaining({ name: "admin", fresh_sign_in: true }),
+      expect.objectContaining({
+        name: "register",
+        fresh_sign_in: true,
+        description: expect.stringContaining("Permanently connect a computer"),
+      }),
     ]);
   });
 

@@ -73,9 +73,9 @@ This maps onto how humans and agents tend to work with files differently: a huma
 
 ## Management API
 
-All `/api/*` endpoints (except `POST /api/executors/register`, which applies the same check itself) require a valid Bearer token: a JWT access token issued by asterism for this relay, carrying the `relay` scope. See [Authorization](#authorization).
+All `/api/*` endpoints require a valid Bearer token: a JWT access token issued by asterism for this relay, carrying the `relay` scope. Every endpoint except `POST /api/executors/register` also requires the token to have been issued to the Constellation CLI client (`<RELAY_URL>/clients/cli.json`); a token issued to any other client, such as an MCP client like Claude.ai, gets `403 invalid_client`. MCP clients can use `/mcp` only and cannot change filters, revoke tokens or call `/api`. Registration checks its own client and scopes (see below). See [Authorization](#authorization).
 
-**Admin-gated endpoints** additionally require the `admin` scope on the token. asterism issues it only on step-up: the relay answers `403 insufficient_scope` with a `WWW-Authenticate` challenge naming the scope, and the client asks asterism for a token with it. The token's `groups` must also contain `ADMIN_GROUP` (default `constellation-admins`); otherwise the relay answers a plain `403` with no challenge. A token whose `groups` claim is malformed (not an array of at most 256 non-empty strings of at most 256 characters) is refused on every endpoint with `403 invalid_token_claims`.
+**Admin-gated endpoints** (hub registration, `GET /api/admin/hub-shares`, `GET /api/admin/activity`) additionally require the `admin` scope on the token. asterism issues it only on a fresh sign-in: the relay answers `403 insufficient_scope` with a `WWW-Authenticate` challenge naming the scope, and the client asks asterism for a token with it. The token's `groups` must also contain `ADMIN_GROUP` (default `constellation-admins`); otherwise the relay answers a plain `403` with no challenge. A token whose `groups` claim is malformed (not an array of at most 256 non-empty strings of at most 256 characters) is refused on every endpoint with `403 invalid_token_claims`.
 
 **Error responses** follow:
 ```json
@@ -88,7 +88,9 @@ Common auth errors:
 |---|---|---|
 | `401` | `unauthorized` | Bearer token missing |
 | `401` | `invalid_token` | Token expired, wrong issuer or audience, or bad signature |
-| `403` | `insufficient_scope` | Admin endpoint — the token needs the `admin` scope (step-up in asterism) |
+| `403` | `insufficient_scope` | Admin endpoint or registration — the token needs the `admin` or `register` scope (fresh sign-in in asterism) |
+| `403` | `invalid_client` | `/api` called with a token issued to a client other than the CLI |
+| `429` | `rate_limit_exceeded` | Authenticated `/api` calls are limited per user; failed or unauthenticated ones per IP |
 
 ### Pagination
 
@@ -216,7 +218,7 @@ Add a relay path filter.
 | `pattern_type` | yes | `"glob"` or `"regex"` |
 | `executor_id` | no | Scope to a specific executor; omit for all executors |
 
-Regex patterns are validated server-side before storage. Invalid patterns return `400`. Patterns are limited to 1000 characters.
+Patterns are validated server-side before storage, with the same compile the executor uses (RE2: no lookarounds or backreferences). Invalid patterns return `400`. Patterns are limited to 1000 characters, and a user may have at most 100 filters.
 
 **Response `201`** — the created filter object (same shape as `GET /api/filters` entries).
 
@@ -225,7 +227,7 @@ Regex patterns are validated server-side before storage. Invalid patterns return
 | Status | Meaning |
 |---|---|
 | `201` | Filter created |
-| `400` | Missing/invalid fields, invalid regex, or pattern exceeds 1000 characters |
+| `400` | Missing/invalid fields, invalid glob or regex, pattern exceeds 1000 characters, or the user already has 100 filters |
 | `404` | `executor_id` specified but not found for this user |
 
 ---
@@ -240,23 +242,6 @@ Remove a path filter.
 |---|---|
 | `204` | Deleted |
 | `404` | Not found or belongs to another user |
-
----
-
-### `POST /api/tokens/shared` · Admin
-
-Break-glass: create a hub token without going through registration. Prefer `constellation hub register` — it handles token delivery automatically without exposing the raw token.
-
-The token is returned once in the response and cannot be retrieved again.
-
-**Response `201`**
-```json
-{
-  "token": "<raw-token>",
-  "token_id": "<id>",
-  "created_at": "<ISO 8601>"
-}
-```
 
 ---
 
@@ -301,7 +286,7 @@ Activity log for the authenticated user. Returns tool calls, errors, rate limit 
 |---|---|---|
 | `tool_call` | `host`, `tool`, `share`, `request_id`, `duration_ms`; `error_code` + `error_message` when the executor returned an error | RPC reached the executor and a response was received |
 | `tool_error` | `host`, `tool`, `share`, `request_id`, `error_code` | RPC could not be delivered: `executor_offline`, `executor_disconnected`, or `timeout` |
-| `rate_limited` | `tool`, `share`, `request_id` | Call rejected before dispatch — per-user rate limit exceeded |
+| `rate_limited` | `tool`, `share`, `request_id` | Call rejected before dispatch — per-user rate limit exceeded. Written at most once per user per minute |
 | `executor_connect` | `host` | Executor opened a WebSocket connection |
 | `executor_disconnect` | `host`; `error_code` (`timeout` or `error`) for non-clean disconnects | Executor connection closed |
 
@@ -347,7 +332,7 @@ CLI wrapper: `constellation relay hub-shares list [--executor <id>] [--json]` (r
 
 ### `POST /api/executors/register`
 
-Register a node or hub and mint its long-lived executor token. Requires a bearer access token (the `relay` scope) issued to the matching Constellation client: `<RELAY_URL>/clients/node.json` for `type: "node"`, `<RELAY_URL>/clients/hub.json` for `type: "hub"`; any other client gets `403 invalid_client`. `type: "hub"` also requires `admin` (scope and group). Body: `{ "type": "node" | "hub", "host": "<name>" }` (`host` is 1 to 63 characters of letters, digits, `.`, `_` and `-`, after trimming). Registering a host that already exists revokes and replaces its token and closes that executor's live connection. Concurrent registrations of the same host are serialized; a lost race answers `409`. Response `201`: `{ "access_token": "<executor token>", "token_type": "agent", "host": "<host>" }`. Replaces the old device-code registration.
+Register a node or hub and mint its long-lived executor token. Requires a bearer access token (the `relay` scope) issued to the matching Constellation client: `<RELAY_URL>/clients/node.json` for `type: "node"`, `<RELAY_URL>/clients/hub.json` for `type: "hub"`; any other client gets `403 invalid_client`. The token must also carry the `register` scope, which asterism grants only after a fresh sign-in and a consent screen ("Permanently connect a computer to your files (until you remove it)"); without it the relay answers `403 insufficient_scope` asking for `relay register`. `type: "hub"` also requires `admin` (scope and group) and asks for `relay admin register`. Replacing a token also cancels any pending token rotation for that executor. Body: `{ "type": "node" | "hub", "host": "<name>" }` (`host` is 1 to 63 characters of letters, digits, `.`, `_` and `-`, after trimming). Registering a host that already exists revokes and replaces its token and closes that executor's live connection. Concurrent registrations of the same host are serialized; a lost race answers `409`. Response `201`: `{ "access_token": "<executor token>", "token_type": "agent", "host": "<host>" }`. Replaces the old device-code registration.
 
 ---
 
@@ -362,10 +347,11 @@ The relay is an OAuth resource server only. [asterism](adr/0022-asterism-authori
 
 Scopes:
 
-- `relay` — use the MCP tools and the caller's own `/api/*` resources.
-- `admin` — step-up only; not listed in `scopes_supported`. Required for the admin-gated endpoints and for registering a hub. asterism grants it only to the `constellation-admins` group.
+- `relay` — use the MCP tools; with the CLI client, the caller's own `/api/*` resources.
+- `admin` — fresh sign-in (implies step-up); not listed in `scopes_supported`. Covers hub registration, viewing hub-share configuration and the admin activity log. The relay no longer manages users. asterism grants it only to the `constellation-admins` group.
+- `register` — fresh sign-in; not listed in `scopes_supported`. Required to register a node or hub, so that permanently connecting a computer is always a deliberate, freshly approved act.
 
-Every `401` from `/mcp` (missing or invalid token) includes `resource_metadata` in its `WWW-Authenticate` header pointing at `/.well-known/oauth-protected-resource/mcp` (RFC 9728 §3.3 requires `resource` to equal the requested URL, `<RELAY_URL>/mcp`), which is how MCP clients begin discovery. An admin endpoint called without the `admin` scope returns `403 insufficient_scope`. `WWW-Authenticate` is exposed via CORS for browser-based clients.
+Every `401` from `/mcp` (missing or invalid token) includes `resource_metadata` in its `WWW-Authenticate` header pointing at `/.well-known/oauth-protected-resource/mcp` (RFC 9728 §3.3 requires `resource` to equal the requested URL, `<RELAY_URL>/mcp`), which is how MCP clients begin discovery. An admin endpoint called without the `admin` scope (or registration without `register`) returns `403 insufficient_scope`. `WWW-Authenticate` is exposed via CORS for browser-based clients.
 
 The documents are built from `RELAY_URL`, which must be a bare origin (no path, trailing slash, uppercase host, or explicit default port); the relay refuses to start otherwise. The relay does not serve `/.well-known/oauth-authorization-server`, `/oauth/*` or `/activate*`; clients get those from asterism.
 
@@ -539,21 +525,25 @@ Filters are evaluated against every path field in the tool call:
 - `src_relative_path` — evaluated against the source share root for `copy` and `move`.
 - `dst_relative_path` — evaluated against the destination share root for `copy` and `move` (uses `dst_root` for cross-share operations).
 
-A call is blocked if **any** of its candidate paths matches a filter.
+A call is blocked if **any** of its candidate paths matches a filter. The relay compiles the user's filters for the target executor once per call and sends them in the RPC envelope (`path_filters`, as RE2 sources); its own check is an early pre-check, and paths longer than 4096 characters are refused. The **executor enforces the filters again on resolved real paths**, so symlinks and `..` can't route around them. Listing and search tools (`list_directory`, `find_files`, `grep_files`) skip filtered entries. On a share with any active filter, `copy`, `move` and recursive `delete` of a directory are refused, because they can't be checked entry by entry.
 
 ### Pattern types
 
-**Glob** — uses [micromatch](https://github.com/micromatch/micromatch) syntax.
+**Glob** — matched against the absolute path. `*` and `?` stay within one path segment, `**` crosses `/`, `[...]` is a character class and `{a,b}` an alternation. A glob that doesn't start with `/` matches at any depth (`*.env` behaves like `**/*.env`), and dotfiles match like any other name.
 ```
 /home/user/projects/secret/**
 *.env
 **/.git/**
 ```
 
-**Regex** — a JavaScript `RegExp`. Validated at creation time; invalid patterns are rejected with `400`.
+**Regex** — RE2 syntax (no lookarounds or backreferences), matched anywhere in the absolute path (anchor with `^` and `$` yourself, e.g. `\.key$`). Validated at creation time; invalid patterns are rejected with `400`. Matching runs in linear time, so a pattern can't stall the relay or an executor.
 ```
-/home/user/secrets/.*\.key$
+/home/user/secrets/.*\.key
 ```
+
+The file tools use the same engine for their own patterns, but match globs against entry names; see [Pattern syntax](reference.md#pattern-syntax).
+
+A path is also blocked when any of its parent directories matches, so a filter on a directory covers everything in it. A stored pattern that no longer compiles blocks every path on that user's shares.
 
 ### Scope
 

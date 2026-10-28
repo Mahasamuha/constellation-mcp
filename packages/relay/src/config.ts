@@ -85,6 +85,12 @@ export const config = {
     // dispatcher. Deliberately strict — a route added later without updating that dispatcher is
     // rate-limited too aggressively rather than not at all.
     defaultPer15Min: parseEnvInt("RATE_LIMIT_DEFAULT_PER_15MIN", 10),
+    // Authenticated /api requests, counted per user (sub) after authentication.
+    apiPerUserPer15Min: parseEnvInt("RATE_LIMIT_API_PER_USER_PER_15MIN", 600),
+    // Unauthenticated or failed /mcp requests per IP. Generous: Claude.ai's egress IPs are shared.
+    mcpFailedPer15Min: parseEnvInt("RATE_LIMIT_MCP_FAILED_PER_15MIN", 300),
+    // Every authenticated /mcp request per user, tool calls or not (they have tighter limits of their own).
+    mcpRequestsPerMin: parseEnvInt("RATE_LIMIT_MCP_REQUESTS_PER_MIN", 300),
   },
   heartbeat: {
     intervalMs: parseEnvInt("HEARTBEAT_INTERVAL_SECONDS", 60) * 1000,

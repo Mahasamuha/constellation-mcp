@@ -28,6 +28,9 @@ export interface RpcEnvelope {
    * metadata above so a tool argument can never collide with (and silently
    * overwrite) a field like `absolute_root` or `share`. */
   params: Record<string, unknown>;
+  /** The caller's relay path filters for this executor, as RE2 sources (path-filter.ts).
+   * The executor enforces them on resolved real paths; an empty list means none. */
+  path_filters: string[];
 }
 
 export interface PathEntry {

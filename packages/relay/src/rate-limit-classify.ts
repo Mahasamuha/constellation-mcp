@@ -1,4 +1,4 @@
-export type RateLimitBucket = "exempt" | "static" | "default";
+export type RateLimitBucket = "mcp" | "api" | "static" | "default";
 
 /**
  * Pure HTTP route → rate-limit-bucket classification, kept dependency-free (no env
@@ -12,10 +12,12 @@ export type RateLimitBucket = "exempt" | "static" | "default";
  * "unclassified = strict" rule checkToolRateLimit (router.ts) applies to MCP tool
  * calls.
  *
- * "exempt" is for /mcp specifically, and is deliberate, not an oversight: every MCP
- * tool call already goes through checkToolRateLimit, a per-user limiter suited to
- * that traffic shape — a normal session legitimately makes far more requests to
- * this one endpoint than the default bucket allows for an arbitrary route.
+ * "mcp" is /mcp: only unauthenticated or failed requests count against the per-IP bucket
+ * (a shared egress IP such as Claude.ai's must not be locked out). Authenticated requests
+ * are limited per user in mcp.ts, and tool calls additionally by checkToolRateLimit.
+ *
+ * "api" is every /api route except registration: same idea — only failures count per IP,
+ * authenticated requests are counted per user (sub) in api.ts.
  * (/healthz has its own dedicated limiter mounted after this dispatcher — it gets
  * a generous per-minute cap rather than the strict default bucket.)
  *
@@ -26,7 +28,8 @@ export type RateLimitBucket = "exempt" | "static" | "default";
  * the strict default: it is called once per executor setup, never in a loop.
  */
 export function classifyHttpRoute(path: string): RateLimitBucket {
-  if (path === "/mcp") return "exempt";
+  if (path === "/mcp") return "mcp";
+  if (path.startsWith("/api/") && path !== "/api/executors/register") return "api";
 
   if (path.startsWith("/.well-known/oauth-protected-resource")) return "static";
   if (/^\/clients\/[a-z0-9-]+\.json$/.test(path)) return "static";

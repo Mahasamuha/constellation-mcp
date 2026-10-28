@@ -28,6 +28,7 @@ function envelope(params: Record<string, unknown> = {}, tool = "copy"): RpcEnvel
     share: "docs",
     absolute_root: "/srv/docs",
     params,
+    path_filters: [],
   };
 }
 
@@ -142,6 +143,8 @@ describe("HubSocket.rotateToken", () => {
     return socket;
   }
 
+  const NEW_TOKEN = "ab".repeat(32);
+
   it("resolves only once the reconnect with the new token actually succeeds, and persists it to env_file", async () => {
     const s = startHub("tok-original", true);
 
@@ -157,7 +160,7 @@ describe("HubSocket.rotateToken", () => {
     expect(rotateMsg).toEqual({ type: "rotate_token" });
 
     const secondConnPromise = nextConnection(wss);
-    firstConn.send(JSON.stringify({ type: "token_rotated", token: "tok-rotated" }));
+    firstConn.send(JSON.stringify({ type: "token_rotated", token: NEW_TOKEN }));
 
     // Must not resolve just because the relay replied — only once the resulting
     // reconnect (closing firstConn, opening a new one) actually succeeds.
@@ -165,10 +168,56 @@ describe("HubSocket.rotateToken", () => {
     expect(resolved).toBe(false);
 
     const [, secondReq] = await secondConnPromise;
-    expect(secondReq.headers.authorization).toBe("Bearer tok-rotated");
+    expect(secondReq.headers.authorization).toBe(`Bearer ${NEW_TOKEN}`);
 
     await pollUntil(() => resolved);
-    expect(readFileSync(envFilePath(), "utf8")).toContain("CONSTELLATION_HUB_TOKEN=tok-rotated");
+    const env = readFileSync(envFilePath(), "utf8");
+    expect(env).toContain(`CONSTELLATION_HUB_TOKEN=${NEW_TOKEN}`);
+    // Confirmed by the successful reconnect, so the displaced token is cleared.
+    expect(env).not.toContain("tok-original");
+  });
+
+  it("keeps the previous token in env_file until the new one has connected", async () => {
+    const s = startHub("tok-original", true);
+    const [firstConn] = await nextConnection(wss);
+    await waitForMessage(firstConn);
+    const rotatePromise = s.rotateToken();
+    rotatePromise.catch(() => { /* torn down in afterEach if it never settles */ });
+    await waitForMessage(firstConn);
+
+    // Hold the reconnect: the server only learns of the new connection after we look at the file.
+    firstConn.send(JSON.stringify({ type: "token_rotated", token: NEW_TOKEN }));
+    await pollUntil(() => existsSync(envFilePath()));
+    const during = readFileSync(envFilePath(), "utf8");
+    expect(during).toContain("CONSTELLATION_HUB_PREVIOUS_TOKEN=tok-original");
+    expect(during).toContain(`CONSTELLATION_HUB_TOKEN=${NEW_TOKEN}`);
+  });
+
+  it.each([
+    ["too short", "tok-rotated"],
+    ["uppercase hex", "AB".repeat(32)],
+    ["contains a newline", `${"ab".repeat(31)}\nX=1`],
+    ["not a string", 7],
+  ])("refuses a rotated token that is %s, leaving env_file untouched and the old token in use", async (_n, bad) => {
+    const s = startHub("tok-original", true);
+    const [firstConn] = await nextConnection(wss);
+    await waitForMessage(firstConn);
+    const rotatePromise = s.rotateToken();
+    await waitForMessage(firstConn);
+    firstConn.send(JSON.stringify({ type: "token_rotated", token: bad }));
+    await expect(rotatePromise).rejects.toThrow();
+    expect(existsSync(envFilePath())).toBe(false);
+  });
+
+  it("ignores token_rotated when no rotation is pending", async () => {
+    startHub("tok-original", true);
+    const [firstConn] = await nextConnection(wss);
+    await waitForMessage(firstConn);
+    firstConn.send(JSON.stringify({ type: "token_rotated", token: NEW_TOKEN }));
+    await flush(); await flush();
+    expect(existsSync(envFilePath())).toBe(false);
+    // Still connected: no reconnect was triggered.
+    expect(firstConn.readyState).toBe(firstConn.OPEN);
   });
 
   it("rejects when the relay reports rotate_token_error, leaving env_file untouched", async () => {
@@ -314,7 +363,7 @@ describe("HubSocket — dispatch-error kind in the audit log", () => {
     const [conn] = await nextConnection(wss);
     await waitForMessage(conn); // the initial hub_share_sync sent from onOpen()
 
-    conn.send(JSON.stringify({ request_id: "req-1", tool: "read_file", share: "docs", absolute_root: "/srv/docs", params: {}, user_sub: "sub-1", user_groups: [], user_claims: {} }));
+    conn.send(JSON.stringify({ request_id: "req-1", tool: "read_file", share: "docs", absolute_root: "/srv/docs", params: {}, user_sub: "sub-1", user_groups: [], user_claims: {}, path_filters: [] }));
     const response = await waitForMessage(conn);
 
     expect(response).toEqual({ request_id: "req-1", error: { message: `synthetic ${kind} failure` } });
@@ -375,7 +424,7 @@ describe("HubSocket — user_sub / user_groups handling", () => {
   }
 
   async function call(conn: ServerSideSocket, extra: Record<string, unknown>) {
-    conn.send(JSON.stringify({ request_id: "req-1", tool: "read_file", share: "docs", absolute_root: "/srv/docs", params: {}, user_claims: {}, ...extra }));
+    conn.send(JSON.stringify({ request_id: "req-1", tool: "read_file", share: "docs", absolute_root: "/srv/docs", params: {}, user_claims: {}, path_filters: [], ...extra }));
     return waitForMessage(conn);
   }
 
@@ -433,6 +482,26 @@ describe("HubSocket — user_sub / user_groups handling", () => {
     const [entry] = await auditLines();
     expect(entry).toMatchObject({ outcome: "exec_error", user_sub: "sub-1" });
     expect(JSON.stringify(entry)).not.toContain("xxxx");
+  });
+
+  it.each([
+    ["missing", undefined],
+    ["a string", "x"],
+    ["not all strings", ["a", 1]],
+    ["more than 100 entries", Array(101).fill("a")],
+  ])("refuses and audits an RPC whose path_filters is %s", async (_label, path_filters) => {
+    const conn = await connect(docs([], "read-write"));
+    const response = await call(conn, { user_sub: "sub-1", user_groups: [], path_filters });
+    expect(response).toMatchObject({ error: { message: expect.stringContaining("path_filters") } });
+    expect(resolveIdentity).not.toHaveBeenCalled();
+    expect(pool.dispatch).not.toHaveBeenCalled();
+    expect((await auditLines())[0]).toMatchObject({ outcome: "exec_error", user_sub: "sub-1" });
+  });
+
+  it("passes the envelope's path_filters to the subnode dispatch", async () => {
+    const conn = await connect(docs([], "read-write"));
+    await call(conn, { user_sub: "sub-1", user_groups: [], path_filters: ["^/x$"] });
+    expect(pool.dispatch).toHaveBeenCalledWith(expect.anything(), "read_file", "docs", {}, "req-1", ["^/x$"]);
   });
 
   it("passes the sub to identity resolution and records it in the audit log", async () => {

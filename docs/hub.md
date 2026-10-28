@@ -60,12 +60,14 @@ There is no tier 3: `identity.allow_preferred_username` was removed, and a confi
 
 - The service-level token is a root-level credential — it is not user-scoped.
 - The token is never stored in the config file. It is read from `CONSTELLATION_HUB_TOKEN` at startup, optionally sourced from an env file (`env_file` in config).
+- The env file is written atomically with mode `0600` (shared `writeEnvFileValue`), and a value containing a line break is refused. The hub accepts a rotated token only while a rotation it requested is pending, and only if it is 64 lowercase hex characters.
+- While a rotation is unconfirmed, the displaced token is kept in the env file as `CONSTELLATION_HUB_PREVIOUS_TOKEN`; it is cleared once a connection with the new token succeeds. If a rotation never connects, restore `CONSTELLATION_HUB_TOKEN` from that value.
 - The env file should be `0600`, owned by the service user. The hub warns on startup if permissions are too broad.
 - **Subnode workers never inherit the parent's environment.** `CONSTELLATION_HUB_TOKEN` (and anything else read from `env_file`) lives in the hub's `process.env`, but each tool call is dispatched to a forked worker that immediately `setuid()`s to the requesting user — a possibly low-trust local account that could read its own `/proc/<pid>/environ`. Spreading `process.env` into that fork would hand the hub token (and any other secret) to that user. Instead, `buildWorkerEnv()` in `packages/hub/src/subnode.ts` constructs an explicit allowlisted environment (`CONSTELLATION_TARGET_*`, `HOME`/`USER`/`LOGNAME` for the *target* user, `PATH`, `LOG_LEVEL`). **If you find a variable isn't propagating to the subnode worker, this is why — add it explicitly to `buildWorkerEnv`, do not change it back to `...process.env`.** See [ADR 0014](adr/0014-subnode-worker-explicit-env.md).
 
 ### Sub-path access control
 
-The hub controls access at the share root level only. Access to specific files and directories within a share is enforced entirely by the OS filesystem permissions of the subnode running under the user's identity. Operators who need sub-path restrictions should use standard OS permissions (`chmod`, ACLs, supplementary groups) on the underlying paths.
+The hub's own permission model works at the share root level. Inside a share, access is enforced by the OS filesystem permissions of the subnode running under the user's identity, plus the users' own relay path filters (see [Relay path filters](#relay-path-filters)). Operators who need sub-path restrictions should use standard OS permissions (`chmod`, ACLs, supplementary groups) on the underlying paths.
 
 ### UID restrictions
 
@@ -128,6 +130,16 @@ See the config reference in [§5](#5-deployment) for details.
 
 ---
 
+### Relay path filters
+
+Users can set deny patterns on their shares at the relay (`/api/filters`). The relay sends the caller's filters for the hub in every envelope as `path_filters` (RE2 sources), and **the executor enforces them**: inside the subnode worker, on top of the hub's own permission checks and the OS permissions of the user's identity. The relay never filters anything itself.
+
+- A path is blocked when it, or any ancestor, matches a filter. Matching runs on the real path after symlinks are resolved, so a link cannot reach blocked content. A filter that fails to compile blocks everything.
+- Every tool checks its target paths: `read_file`, `write_file`, `edit_file`, `create_directory`, `delete`, `file_info`, and both the source and destination of `copy` and `move`. A blocked path is refused with code `PATH_FILTERED` and a message naming only the share-relative path.
+- `list_directory` (including recursive), `find_files` and `grep_files` skip blocked entries while they walk. They do not list, count, match, search or descend into them, so their names and number are not revealed. Pointing one of them at a blocked path is refused like any other tool.
+- **On a share with any active filter, `copy` and `move` of a directory, and `delete` of a directory (recursive or not), are refused** with code `FILTERED_DIRECTORY_OP`. These would copy, relocate, destroy or (for the non-recursive confirmation summary) count content the filter hides. Files can still be copied, moved and deleted. Operators who need to move a directory can do it on the host.
+- An envelope whose `path_filters` is missing, is not an array of strings, or has more than 100 entries (an old or buggy relay) is refused as malformed and audited, never run unfiltered.
+
 ## 3. Request Flow
 
 ```
@@ -135,7 +147,7 @@ MCP client
   → POST /mcp (Bearer token)
     → Relay authenticates session → takes the user id (`sub`), groups and claims from the verified access token
     → Relay resolves share → checks HubShare registry (optimistic permission check)
-    → Relay builds RPC envelope: { tool, share, absolute_root, user_sub, user_groups, user_claims, params }
+    → Relay builds RPC envelope: { tool, share, absolute_root, user_sub, user_groups, user_claims, path_filters, params }
     → Relay forwards RPC via WebSocket to hub
       → Hub resolves OS identity (2-tier chain)
       → Hub checks permissions (share-level access against admin config)
@@ -148,7 +160,7 @@ MCP client
     → Relay returns result to MCP client
 ```
 
-The envelope fields changed with the asterism cutover (`user_oidc_sub` became `user_sub` plus `user_groups`). There is no protocol version negotiation: upgrade the relay and every hub together. A hub refuses an envelope without a non-empty `user_sub`, and the relay rejects a `hub_share_sync` that still carries `oidc_sub` overrides.
+The envelope fields changed with the asterism cutover (`user_oidc_sub` became `user_sub` plus `user_groups`). There is no protocol version negotiation: upgrade the relay and every hub together. A hub refuses an envelope without a valid `path_filters` list or without a non-empty `user_sub`, and the relay rejects a `hub_share_sync` that still carries `oidc_sub` overrides.
 
 Two enforcement points:
 - **Relay (optimistic):** evaluates the synced permission blob (`default` access and per-`sub` / per-`group` overrides) at share resolution time. May grant access that the hub subsequently denies (e.g. due to Tier 1 identity resolution failure).

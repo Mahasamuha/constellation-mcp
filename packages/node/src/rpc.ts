@@ -1,5 +1,5 @@
 import { promises as fs } from "node:fs";
-import { createLogger, FileExecutor, type RpcError, type RpcResponse, type RpcEnvelope, type PathEntry } from "@constellation/shared";
+import { createLogger, FileExecutor, parsePathFilters, type RpcError, type RpcResponse, type RpcEnvelope, type PathEntry } from "@constellation/shared";
 import type { NodeConfig } from "./config.js";
 
 const log = createLogger("node:rpc");
@@ -46,6 +46,13 @@ export async function handleRpc(
 ): Promise<RpcResponse> {
   const { request_id, tool, absolute_root, params } = envelope;
 
+  // Refuse rather than run unfiltered: a missing or malformed list means an old or buggy relay.
+  const pathFilters = parsePathFilters(envelope.path_filters);
+  if (pathFilters === null) {
+    log.warn({ tool }, "Malformed request — path_filters missing or invalid");
+    return { request_id, error: { message: "Malformed request: path_filters must be an array of at most 100 strings" } };
+  }
+
   const allowed = paths.find((p) => p.path === absolute_root);
   if (!allowed) {
     log.warn({ tool, absolute_root }, "Path rejected by node — not in allowlist");
@@ -60,7 +67,7 @@ export async function handleRpc(
   }
 
   const executor = new FileExecutor(shareRegistry, config.max_file_size_kb);
-  const result = await executor.execute(tool, allowed.share, params);
+  const result = await executor.execute(tool, allowed.share, params, pathFilters);
 
   if (result.isError) {
     return { request_id, error: result.content as RpcError };

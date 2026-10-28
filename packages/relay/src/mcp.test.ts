@@ -22,6 +22,8 @@ vi.mock("./db.js", () => ({
 vi.mock("./router.js", () => ({
   routeToolCall: vi.fn(),
   checkToolRateLimit: vi.fn(() => true),
+  checkMcpRequestRateLimit: vi.fn(() => true),
+  shouldLogRateLimited: vi.fn(() => true),
   resolveShare: vi.fn(),
   pruneRateLimits: vi.fn(),
 }));

@@ -13,7 +13,7 @@ describe("isValidMessage", () => {
   });
 
   it("accepts a well-formed request message", () => {
-    expect(isValidMessage({ type: "request", request_id: "r1", tool: "read_file", share: "docs", params: {} })).toBe(true);
+    expect(isValidMessage({ type: "request", request_id: "r1", tool: "read_file", share: "docs", params: {}, path_filters: [] })).toBe(true);
   });
 
   it.each([
@@ -25,6 +25,9 @@ describe("isValidMessage", () => {
     ["init with non-numeric max_file_size_kb", { type: "init", shares: {}, max_file_size_kb: "100" }],
     ["request missing request_id", { type: "request", tool: "read_file", share: "docs" }],
     ["request missing tool", { type: "request", request_id: "r1", share: "docs" }],
+    ["request missing path_filters", { type: "request", request_id: "r1", tool: "read_file", share: "docs", params: {} }],
+    ["request with non-array path_filters", { type: "request", request_id: "r1", tool: "read_file", share: "docs", params: {}, path_filters: "x" }],
+    ["request with a non-string filter", { type: "request", request_id: "r1", tool: "read_file", share: "docs", params: {}, path_filters: [1] }],
     ["request missing share", { type: "request", request_id: "r1", tool: "read_file" }],
   ])("rejects %s", (_name, msg) => {
     expect(isValidMessage(msg)).toBe(false);
@@ -33,7 +36,7 @@ describe("isValidMessage", () => {
 
 describe("handleRequest", () => {
   function makeRequest(overrides: Partial<SubnodeRequest> = {}): SubnodeRequest {
-    return { type: "request", request_id: "r1", tool: "read_file", share: "docs", params: {}, ...overrides };
+    return { type: "request", request_id: "r1", tool: "read_file", share: "docs", params: {}, path_filters: ["^/f$"], ...overrides };
   }
 
   it("sends a result response when the executor succeeds", async () => {
@@ -42,7 +45,7 @@ describe("handleRequest", () => {
 
     await handleRequest(executor, makeRequest(), send);
 
-    expect(executor.execute).toHaveBeenCalledWith("read_file", "docs", {});
+    expect(executor.execute).toHaveBeenCalledWith("read_file", "docs", {}, ["^/f$"]);
     expect(send).toHaveBeenCalledWith({ type: "response", request_id: "r1", result: "file contents" });
   });
 

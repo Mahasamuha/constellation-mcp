@@ -28,10 +28,10 @@ tokens that a resource server verifies with `@mahasamuha/asterism-verify`.
   `/.well-known/oauth-protected-resource/mcp`, pointing clients at asterism. It no
   longer serves authorization server metadata, `/oauth/*` or `/activate*`.
 - **The relay is registered in asterism as a resource server.** asterism fetches the
-  relay's metadata, which declares the `relay` scope and the step-up-only `admin` scope.
+  relay's metadata, which declares the `relay` scope and the fresh-sign-in-only `admin` and `register` scopes.
 - **Admin is a scope plus a group.** `requireAdmin` requires the `admin` scope and
   membership of `ADMIN_GROUP` (default `constellation-admins`) in the token's `groups`.
-  asterism issues the scope only on step-up (a `403 insufficient_scope`, 5 minutes), and
+  asterism issues the scope only after a fresh sign-in (a `403 insufficient_scope`, 5 minutes), and
   the group check means admin does not depend on asterism's `requireGroups` policy having
   been set. Stale groups can only deny, never grant, because the scope is required too. This replaces `User.role`, `ADMIN_GROUPS`,
   `RELAY_ADMIN_TOKEN` and the `adminUntil` window.
@@ -79,7 +79,11 @@ and the identity provider.
 
 - Only the node client may register a node and only the hub client a hub
   (`POST /api/executors/register` checks the token's `client_id`), so a token issued to a
-  third-party MCP client cannot mint an executor token.
+  third-party MCP client cannot mint an executor token. Registration also needs the
+  `register` scope, which asterism grants only after a fresh sign-in and a consent screen
+  (a hub also needs `admin`).
+- Every other `/api` route accepts only the CLI client's token, so MCP clients such as
+  Claude.ai are limited to `/mcp`: they cannot change filters, revoke tokens or touch `/api`.
 - Access tokens are short-lived and not individually revocable at the relay. Revoking a
   grant in asterism takes effect when the current token expires.
 - The relay depends on asterism being reachable to fetch signing keys (cached). A

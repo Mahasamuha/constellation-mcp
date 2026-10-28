@@ -1,8 +1,8 @@
 import { promises as fs, constants as fsConstants } from "node:fs";
 import { join, relative } from "node:path";
 import { openNoFollow } from "./safe-open.js";
-import picomatch from "picomatch";
-import safeRegex from "safe-regex2";
+import { compileToolPattern } from "./pattern.js";
+import { entryHidden, type PathFilter } from "./path-guard.js";
 
 // ---------------------------------------------------------------------------
 // find_files
@@ -11,6 +11,7 @@ import safeRegex from "safe-regex2";
 export interface FindFilesParams {
   pattern: string;
   type?: "glob" | "regex";
+  filter?: PathFilter;
 }
 
 export interface FindFilesResult {
@@ -23,10 +24,8 @@ export async function findFiles(
   base: string,
   params: FindFilesParams
 ): Promise<FindFilesResult> {
-  if (params.type === "regex" && !safeRegex(params.pattern)) {
-    throw new Error("Pattern rejected: potential ReDoS vulnerability");
-  }
-  const re = params.type === "regex" ? new RegExp(params.pattern) : null;
+  const re = compileToolPattern(params.pattern, params.type === "regex" ? "regex" : "glob");
+  const isRegex = params.type === "regex";
   const cap = 200;
   const matches: string[] = [];
   let truncated = false;
@@ -37,11 +36,11 @@ export async function findFiles(
     for (const entry of entries) {
       if (truncated) break;
       const fullPath = join(dir, entry.name);
+      if (await entryHidden(params.filter, fullPath, entry.isSymbolicLink())) continue;
       const relPath = relative(root, fullPath);
 
-      const matched = re
-        ? re.test(entry.name)
-        : picomatch.isMatch(entry.name, params.pattern);
+      const m = re.matcher(entry.name);
+      const matched = isRegex ? m.find() : m.matches();
 
       if (matched) {
         matches.push(relPath);
@@ -64,6 +63,7 @@ export interface GrepFilesParams {
   pattern: string;
   file_glob?: string;
   type?: "literal" | "regex";
+  filter?: PathFilter;
 }
 
 export interface GrepMatch {
@@ -87,15 +87,8 @@ export async function grepFiles(
   params: GrepFilesParams
 ): Promise<GrepFilesResult> {
   const isRegex = params.type === "regex";
-  if (isRegex && !safeRegex(params.pattern)) {
-    throw new Error("Pattern rejected: potential ReDoS vulnerability");
-  }
-  if (params.file_glob && !safeRegex(picomatch.makeRe(params.file_glob).source)) {
-    throw new Error("file_glob rejected: potential ReDoS vulnerability");
-  }
-  const re = isRegex
-    ? new RegExp(params.pattern, "g")
-    : null;
+  const re = isRegex ? compileToolPattern(params.pattern, "regex") : null;
+  const fileGlob = params.file_glob ? compileToolPattern(params.file_glob, "glob", "file_glob") : null;
 
   const matchCap = 50;
   const sizeCap = 100 * 1024;
@@ -131,10 +124,8 @@ export async function grepFiles(
       if (truncated) break;
       const line = lines[i]!;
       const matched = re
-        ? re.test(line)
+        ? re.matcher(line).find()
         : line.includes(params.pattern);
-
-      if (re) re.lastIndex = 0;
 
       if (matched) {
         const entry: GrepMatch = { line: i + 1, text: line };
@@ -162,10 +153,11 @@ export async function grepFiles(
       for (const entry of entries) {
         if (truncated) break;
         const fullPath = join(dir, entry.name);
+        if (await entryHidden(params.filter, fullPath, entry.isSymbolicLink())) continue;
         if (entry.isDirectory()) {
           await walk(fullPath);
         } else if (entry.isFile()) {
-          if (params.file_glob && !picomatch.isMatch(entry.name, params.file_glob)) continue;
+          if (fileGlob && !fileGlob.matcher(entry.name).matches()) continue;
           await searchInFile(fullPath);
         }
       }

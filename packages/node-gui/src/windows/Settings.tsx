@@ -22,6 +22,7 @@ export default function Settings() {
   const [dangerOpen, setDangerOpen] = useState(false);
   const [error, setError] = useState("");
   const [saved, setSaved] = useState(false);
+  const [needsRegistration, setNeedsRegistration] = useState(false);
 
   useEffect(() => {
     invoke<NodeConfig>("get_config").then((cfg) => {
@@ -38,16 +39,28 @@ export default function Settings() {
   async function save() {
     setError("");
     setSaved(false);
+    if (relayUrlChanged) {
+      const ok = await confirm(
+        "Changing the relay URL removes this node's token, because it was issued by the old relay and must not be sent to the new one. You will have to connect to the new relay again before the node can serve files. Continue?",
+        { title: "Change Relay", kind: "warning" }
+      );
+      if (!ok) return;
+    }
     setSaving(true);
     try {
-      await invoke("save_settings", {
+      const outcome = await invoke<{ credentials_dropped: boolean }>("save_settings", {
         relayUrl: relayUrl.trim(),
         host: host.trim(),
         maxFileSizeKb,
       });
       setOriginal({ relay_url: relayUrl.trim(), host: host.trim(), max_file_size_kb: maxFileSizeKb });
-      setSaved(true);
-      setTimeout(() => setSaved(false), 3000);
+      if (outcome.credentials_dropped) {
+        // Nothing to confirm with a "Saved." here: the node is now unregistered.
+        setNeedsRegistration(true);
+      } else {
+        setSaved(true);
+        setTimeout(() => setSaved(false), 3000);
+      }
     } catch (e) {
       setError(String(e));
     } finally {
@@ -100,7 +113,10 @@ export default function Settings() {
             placeholder="https://relay.example.com"
           />
           {relayUrlChanged && (
-            <p className="settings-warn">Restart the node service for this change to take effect.</p>
+            <p className="settings-warn">
+              A different relay removes this node's token. You will need to connect to it again
+              (tray menu, Connect to Relay…).
+            </p>
           )}
         </div>
         <div className="settings-field">
@@ -139,6 +155,13 @@ export default function Settings() {
 
       {error && <p className="settings-error">{error}</p>}
       {saved && <p className="settings-saved">Saved.</p>}
+      {needsRegistration && (
+        <p className="settings-error">
+          The relay was changed and this node's token was removed. The node is no longer registered:
+          choose Connect to Relay… from the tray menu (or run `constellation node init`) to register
+          with the new relay.
+        </p>
+      )}
 
       <div className="settings-actions">
         <button className="settings-save-btn" disabled={saving} onClick={save}>

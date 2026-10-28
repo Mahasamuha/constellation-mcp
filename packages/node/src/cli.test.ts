@@ -117,6 +117,7 @@ describe("node --help", () => {
 
 const RELAY = "https://relay.example.com";
 const ISSUER = "https://auth.example.com";
+const NEW_NODE_TOKEN = "ab".repeat(32);
 
 function jsonRes(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
@@ -153,7 +154,7 @@ function stubBackends(opts: FakeOpts = {}) {
       case `${ISSUER}/oauth/token`:
         return opts.token?.() ?? jsonRes(200, { access_token: "at-node", token_type: "Bearer", expires_in: 3600, scope: "relay" });
       case `${RELAY}/api/executors/register`:
-        return opts.register?.() ?? jsonRes(200, { access_token: "tok-new", token_type: "agent", host: JSON.parse(String(init?.body))["host"] });
+        return opts.register?.() ?? jsonRes(200, { access_token: NEW_NODE_TOKEN, token_type: "agent", host: JSON.parse(String(init?.body))["host"] });
       default:
         throw new Error(`unexpected fetch: ${u}`);
     }
@@ -164,7 +165,7 @@ function stubBackends(opts: FakeOpts = {}) {
 // Instant polling: the device flow sleeps `interval` seconds before every poll. The mock targets
 // cli-util itself because asterism-client imports sleep from there, not through the package index.
 vi.mock("../../shared/src/cli-util.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../../shared/src/cli-util.js")>();
+  const actual = await importOriginal<Record<string, unknown>>();
   return { ...actual, sleep: async () => {} };
 });
 vi.mock("open", () => ({ default: vi.fn(async () => undefined) }));
@@ -207,7 +208,7 @@ describe("node init — relay URL scheme validation", () => {
 });
 
 describe("node init — registration", () => {
-  it("signs in with the node client and scope relay, registers with the chosen host, and writes node.yaml", async () => {
+  it("signs in with the node client and scope relay register, registers with the chosen host, and writes node.yaml", async () => {
     const calls = stubBackends();
     const { exitCode, out } = await runCli(["node", "init", "--relay", RELAY, "--host-name", "my-laptop"], dir);
 
@@ -217,7 +218,7 @@ describe("node init — registration", () => {
 
     const deviceReq = new URLSearchParams(calls.find((c) => c.url === `${ISSUER}/oauth/device/code`)!.body);
     expect(Object.fromEntries(deviceReq)).toEqual({
-      client_id: `${RELAY}/clients/node.json`, scope: "relay", resource: `${RELAY}/mcp`,
+      client_id: `${RELAY}/clients/node.json`, scope: "relay register", resource: `${RELAY}/mcp`,
     });
     const tokenReq = new URLSearchParams(calls.find((c) => c.url === `${ISSUER}/oauth/token`)!.body);
     expect(tokenReq.get("client_id")).toBe(`${RELAY}/clients/node.json`);
@@ -228,7 +229,23 @@ describe("node init — registration", () => {
     expect(JSON.parse(reg.body)).toEqual({ type: "node", host: "my-laptop" });
 
     const cfg = loadNodeConfig(dir);
-    expect(cfg).toMatchObject({ relay_url: RELAY, node_token: "tok-new", host: "my-laptop" });
+    expect(cfg).toMatchObject({ relay_url: RELAY, node_token: NEW_NODE_TOKEN, issuer: ISSUER, host: "my-laptop" });
+  });
+
+  it("pins a repeat registration to the issuer it used before and honours --accept-new-issuer", async () => {
+    writeNodeConfig(dir, { relay_url: RELAY, node_token: "old", host: "h", max_file_size_kb: 100, issuer: "https://previous-auth.example.com" });
+    const calls = stubBackends();
+    const refused = await runCli(["node", "init", "--relay", RELAY, "--host-name", "h"], dir);
+    expect(refused.exitCode).toBe(1);
+    expect(refused.err).toContain("different authorization server");
+    expect(refused.err).toContain("--accept-new-issuer");
+    expect(calls.some((c) => c.url.startsWith(ISSUER) && !c.url.includes(".well-known"))).toBe(false);
+    expect(loadNodeConfig(dir).node_token).toBe("old");
+
+    stubBackends();
+    const accepted = await runCli(["node", "init", "--relay", RELAY, "--host-name", "h", "--accept-new-issuer"], dir);
+    expect(accepted.exitCode).toBe(0);
+    expect(loadNodeConfig(dir).issuer).toBe(ISSUER);
   });
 
   it("defaults the host to the previous registration's, then to the machine hostname", async () => {
@@ -346,7 +363,8 @@ describe("node auth complete", () => {
     expect(exitCode).toBe(0);
     expect(JSON.parse(out)).toEqual({ status: "success", host: "new-host" });
     const cfg = loadNodeConfig(dir);
-    expect(cfg.node_token).toBe("tok-new");
+    expect(cfg.node_token).toBe(NEW_NODE_TOKEN);
+    expect(cfg.issuer).toBe(ISSUER);
     expect(cfg.host).toBe("new-host");
     expect(cfg.relay_url).toBe(RELAY);
   });
@@ -417,17 +435,35 @@ describe("node config set", () => {
     writeNodeConfig(dir, { relay_url: "https://relay.example.com", node_token: "tok-original", host: "test-host", max_file_size_kb: 100 });
   });
 
-  it("updates relay_url and max_file_size_kb while preserving node_token/host", async () => {
+  it("updates max_file_size_kb and a same-origin relay_url while preserving node_token/host", async () => {
     const { exitCode } = await runCli(
-      ["node", "config", "set", "--relay-url", "https://new-relay.example.com", "--max-file-size-kb", "250"],
+      ["node", "config", "set", "--relay-url", "https://relay.example.com/", "--max-file-size-kb", "250"],
       dir
     );
     expect(exitCode).toBe(0);
     const cfg = loadNodeConfig(dir);
-    expect(cfg.relay_url).toBe("https://new-relay.example.com");
     expect(cfg.max_file_size_kb).toBe(250);
     expect(cfg.node_token).toBe("tok-original");
     expect(cfg.host).toBe("test-host");
+  });
+
+  it("drops node_token and previous_node_token when the relay origin changes, and says to run node init", async () => {
+    writeNodeConfig(dir, { previous_node_token: "tok-older", issuer: ISSUER });
+    const { exitCode, out } = await runCli(
+      ["node", "config", "set", "--relay-url", "https://new-relay.example.com", "--max-file-size-kb", "250"],
+      dir
+    );
+    expect(exitCode).toBe(0);
+    expect(out).toContain("node init --relay https://new-relay.example.com");
+    const raw = await fs.readFile(join(dir, "node.yaml"), "utf8");
+    expect(raw).toContain("relay_url: https://new-relay.example.com");
+    expect(raw).toContain("max_file_size_kb: 250");
+    expect(raw).not.toMatch(/node_token|previous_node_token|issuer/);
+  });
+
+  it("reports credentials_dropped with --json", async () => {
+    const changed = await runCli(["node", "config", "set", "--relay-url", "https://new-relay.example.com", "--json"], dir);
+    expect(JSON.parse(changed.out)).toEqual({ ok: true, credentials_dropped: true });
   });
 
   it("rejects a non-localhost http:// relay URL and leaves node.yaml untouched", async () => {
@@ -449,6 +485,29 @@ describe("node config set", () => {
     } finally {
       await cleanTempDir(freshDir);
     }
+  });
+});
+
+describe("terminal safety of stored values", () => {
+  const evil = "ho\u001b[2Jst\u202ex";
+  beforeEach(() => {
+    writeNodeConfig(dir, { relay_url: RELAY, node_token: "abcdefgh12345678", host: evil, max_file_size_kb: 100 });
+  });
+
+  it("node status strips control and bidi characters from the host, in text and --json", async () => {
+    const text = await runCli(["node", "status"], dir);
+    expect(text.out).toContain("Host:       ho[2Jstx");
+    // eslint-disable-next-line no-control-regex -- asserting escapes were stripped
+    expect(text.out).not.toMatch(/[\u001b\u202e]/);
+    const json = await runCli(["node", "status", "--json"], dir);
+    expect(JSON.parse(json.out).host).not.toMatch(/\u202e/);
+  });
+
+  it("node config show strips them too", async () => {
+    const { out } = await runCli(["node", "config", "show"], dir);
+    expect(out).toContain("host: ho[2Jstx");
+    // eslint-disable-next-line no-control-regex -- asserting escapes were stripped
+    expect(out).not.toMatch(/[\u001b\u202e]/);
   });
 });
 
@@ -773,17 +832,59 @@ describe("node rotate — no daemon running", () => {
     await new Promise<void>((resolve) => wss.close(() => resolve()));
   });
 
-  it("falls back to a direct relay connection when no control file is present", async () => {
+  it("falls back to a direct relay connection, and clears previous_node_token only after the new token connects", async () => {
     writeNodeConfig(dir, { relay_url: `http://localhost:${port}`, node_token: "tok-original", host: "test-host" });
-    wss.once("connection", (ws: WSClient) => {
-      ws.once("message", () => ws.send(JSON.stringify({ type: "token_rotated", token: "tok-rotated" })));
+    const auths: Array<string | undefined> = [];
+    wss.on("connection", (ws: WSClient, req) => {
+      auths.push(req.headers.authorization);
+      ws.once("message", (data) => {
+        const msg = JSON.parse(data.toString()) as { type: string };
+        ws.send(JSON.stringify(msg.type === "rotate_token"
+          ? { type: "token_rotated", token: NEW_NODE_TOKEN }
+          : { type: "config_update_ok" }));
+      });
     });
 
     const { exitCode, out } = await runCli(["node", "rotate"], dir);
 
     expect(exitCode).toBe(0);
     expect(out).toContain("Start the node service to connect with the new token");
-    expect(loadNodeConfig(dir).node_token).toBe("tok-rotated");
+    expect(auths).toEqual(["Bearer tok-original", `Bearer ${NEW_NODE_TOKEN}`]);
+    const cfg = loadNodeConfig(dir);
+    expect(cfg.node_token).toBe(NEW_NODE_TOKEN);
+    expect(cfg.previous_node_token).toBeUndefined();
+  });
+
+  it("keeps previous_node_token when the new token cannot be confirmed", async () => {
+    writeNodeConfig(dir, { relay_url: `http://localhost:${port}`, node_token: "tok-original", host: "test-host" });
+    wss.on("connection", (ws: WSClient) => {
+      ws.once("message", (data) => {
+        const msg = JSON.parse(data.toString()) as { type: string };
+        ws.send(JSON.stringify(msg.type === "rotate_token"
+          ? { type: "token_rotated", token: NEW_NODE_TOKEN }
+          : { type: "config_update_error", error: "Unauthorized" }));
+      });
+    });
+
+    const { exitCode } = await runCli(["node", "rotate"], dir);
+
+    expect(exitCode).toBe(1);
+    const cfg = loadNodeConfig(dir);
+    expect(cfg.node_token).toBe(NEW_NODE_TOKEN);
+    expect(cfg.previous_node_token).toBe("tok-original");
+  });
+
+  it("refuses a malformed token from the relay and leaves node.yaml alone", async () => {
+    writeNodeConfig(dir, { relay_url: `http://localhost:${port}`, node_token: "tok-original", host: "test-host" });
+    wss.once("connection", (ws: WSClient) => {
+      ws.once("message", () => ws.send(JSON.stringify({ type: "token_rotated", token: "bad\nX=1" })));
+    });
+
+    const { exitCode, err } = await runCli(["node", "rotate"], dir);
+
+    expect(exitCode).toBe(1);
+    expect(err).toContain("malformed");
+    expect(loadNodeConfig(dir).node_token).toBe("tok-original");
   });
 
   it("does not attempt rotation when the user declines the confirmation", async () => {

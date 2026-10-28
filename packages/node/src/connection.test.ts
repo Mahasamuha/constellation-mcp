@@ -29,6 +29,7 @@ function waitForMessage(ws: ServerSideSocket): Promise<Record<string, unknown>> 
   });
 }
 
+const NEW_TOKEN = "cd".repeat(32);
 let dir: string;
 let wss: WebSocketServer;
 let port: number;
@@ -83,7 +84,7 @@ describe("NodeConnection.rotateToken", () => {
     expect(rotateMsg).toEqual({ type: "rotate_token" });
 
     const secondConnPromise = nextConnection(wss);
-    firstConn.send(JSON.stringify({ type: "token_rotated", token: "tok-rotated" }));
+    firstConn.send(JSON.stringify({ type: "token_rotated", token: NEW_TOKEN }));
 
     // The promise must not resolve just because the relay replied — only once the
     // resulting reconnect (closing firstConn, opening a new one) actually succeeds.
@@ -91,10 +92,10 @@ describe("NodeConnection.rotateToken", () => {
     expect(resolved).toBe(false);
 
     const [, secondReq] = await secondConnPromise;
-    expect(secondReq.headers.authorization).toBe("Bearer tok-rotated");
+    expect(secondReq.headers.authorization).toBe(`Bearer ${NEW_TOKEN}`);
 
     await pollUntil(() => resolved);
-    expect(loadNodeConfig(dir).node_token).toBe("tok-rotated");
+    expect(loadNodeConfig(dir).node_token).toBe(NEW_TOKEN);
     expect(loadNodeConfig(dir).previous_node_token).toBeUndefined();
   });
 
@@ -109,6 +110,46 @@ describe("NodeConnection.rotateToken", () => {
     firstConn.send(JSON.stringify({ type: "rotate_token_error", error: "Internal error" }));
 
     await expect(rotatePromise).rejects.toThrow("Internal error");
+    expect(loadNodeConfig(dir).node_token).toBe("tok-original");
+  });
+
+  it("ignores token_rotated when no rotation was requested", async () => {
+    configureNode("tok-original");
+    startConnection();
+    const [firstConn] = await nextConnection(wss);
+    await waitForMessage(firstConn);
+    firstConn.send(JSON.stringify({ type: "token_rotated", token: NEW_TOKEN }));
+    await new Promise((r) => setTimeout(r, 100));
+    const cfg = loadNodeConfig(dir);
+    expect(cfg.node_token).toBe("tok-original");
+    expect(cfg.previous_node_token).toBeUndefined();
+  });
+
+  it("ignores a second token_rotated while the first is awaiting confirmation, keeping previous_node_token", async () => {
+    configureNode("tok-original");
+    const c = startConnection();
+    const [firstConn] = await nextConnection(wss);
+    await waitForMessage(firstConn);
+    const rotation = c.rotateToken();
+    rotation.catch(() => { /* torn down in afterEach */ });
+    await waitForMessage(firstConn);
+    // Two pushes back to back, before the reconnect is confirmed.
+    firstConn.send(JSON.stringify({ type: "token_rotated", token: NEW_TOKEN }));
+    firstConn.send(JSON.stringify({ type: "token_rotated", token: "ef".repeat(32) }));
+    await rotation;
+    const cfg = loadNodeConfig(dir);
+    expect(cfg.node_token).toBe(NEW_TOKEN);
+  });
+
+  it("refuses a malformed token and fails the rotation", async () => {
+    configureNode("tok-original");
+    const c = startConnection();
+    const [firstConn] = await nextConnection(wss);
+    await waitForMessage(firstConn);
+    const rotation = c.rotateToken();
+    await waitForMessage(firstConn);
+    firstConn.send(JSON.stringify({ type: "token_rotated", token: "evil\nX=1" }));
+    await expect(rotation).rejects.toThrow(/well-formed/);
     expect(loadNodeConfig(dir).node_token).toBe("tok-original");
   });
 

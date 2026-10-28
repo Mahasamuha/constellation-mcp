@@ -2,12 +2,13 @@ import { Router, IRouter, Request, Response, NextFunction, RequestHandler } from
 import { protectedResourceMetadataHandler } from "@mahasamuha/asterism-verify";
 import { config } from "./config.js";
 import { resourceAudience } from "./middleware.js";
-import { ADMIN_SCOPE, BASE_SCOPE } from "./request-user.js";
+import { ADMIN_SCOPE, BASE_SCOPE, REGISTER_SCOPE } from "./request-user.js";
 
 /**
  * RFC 9728 protected-resource metadata. asterism is the authorization server; Constellation
- * only advertises itself and its scopes. `admin` is step-up only: it stays out of
- * scopes_supported and is obtained through a 403 insufficient_scope challenge.
+ * only advertises itself and its scopes. `admin` and `register` need a fresh sign-in (which
+ * implies step-up): they stay out of scopes_supported and are obtained through a 403
+ * insufficient_scope challenge.
  */
 export const discoveryRouter: IRouter = Router();
 
@@ -22,7 +23,16 @@ function metadataHandler(): RequestHandler {
       offlineAccess: true,
       scopes: [
         { name: BASE_SCOPE, description: "Use your files through MCP tools, and manage your own nodes and shares" },
-        { name: ADMIN_SCOPE, description: "Administer Constellation: manage all users, nodes and hub shares", stepUp: true },
+        {
+          name: ADMIN_SCOPE,
+          description: "Administer Constellation: register hubs, view hub-share configuration and read the admin activity log",
+          freshSignIn: true,
+        },
+        {
+          name: REGISTER_SCOPE,
+          description: "Permanently connect a computer to your files (until you remove it)",
+          freshSignIn: true,
+        },
       ],
     },
   );

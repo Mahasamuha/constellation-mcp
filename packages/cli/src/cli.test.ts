@@ -12,7 +12,7 @@ import { makeTempDir, cleanTempDir } from "./test/fixtures.js";
 // Instant polling: the device flow sleeps `interval` seconds before every poll. The mock targets
 // cli-util itself because asterism-client and file-lock import sleep from there.
 vi.mock("../../shared/src/cli-util.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../../shared/src/cli-util.js")>();
+  const actual = await importOriginal<Record<string, unknown>>();
   return { ...actual, sleep: async () => {} };
 });
 vi.mock("open", () => ({ default: vi.fn(async () => undefined) }));
@@ -309,6 +309,32 @@ describe("die()", () => {
 
     errorSpy.mockRestore();
     exitSpy.mockRestore();
+  });
+});
+
+describe("relay list output safety", () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+  const session = () => writeRelaySession(dir, { relay_url: RELAY, access_token: "tok", access_token_expires_at: issuedAt(3_600_000) });
+
+  it.each([
+    ["a string total", { total: "1; rm -rf ~", offset: 0 }],
+    ["a fractional total", { total: 5.5, offset: 0 }],
+    ["an unsafe integer", { total: 1e300, offset: 0 }],
+    ["a negative offset", { total: 250, offset: -5 }],
+  ])("drops the pagination footer for %s", async (_n, counts) => {
+    session();
+    const page = { data: [{ id: "e1", host: "h1", online: true, last_heartbeat_at: null, shares: [] }], limit: 100, ...counts };
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(page), { status: 200 })));
+    const { err } = await runCli(["relay", "executors", "list"], dir);
+    expect(err).not.toContain("Showing");
+  });
+
+  it("strips bidi, zero-width and C1 characters from --json string fields", async () => {
+    session();
+    const page = { data: [{ id: "e1", host: "h\u202e1\u200b\u009b", online: true, last_heartbeat_at: null, shares: [] }], total: 1, limit: 100, offset: 0 };
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(page), { status: 200 })));
+    const { out } = await runCli(["relay", "executors", "list", "--json"], dir);
+    expect(JSON.parse(out)[0].host).toBe("h1");
   });
 });
 
@@ -627,6 +653,73 @@ describe("relay status — pinned authorization server", () => {
   });
 });
 
+describe("relay login — a changed authorization server", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.mocked(mockedConfirm).mockReset();
+    Object.defineProperty(process.stdin, "isTTY", { value: undefined, configurable: true });
+    Object.defineProperty(process.stdout, "isTTY", { value: undefined, configurable: true });
+  });
+  const setTty = (v: boolean | undefined) => {
+    Object.defineProperty(process.stdin, "isTTY", { value: v, configurable: true });
+    Object.defineProperty(process.stdout, "isTTY", { value: v, configurable: true });
+  };
+  const existing = () => writeRelaySession(dir, {
+    relay_url: RELAY, issuer: "https://old-auth.example.com", access_token: "tok_old", access_token_expires_at: issuedAt(3_600_000),
+    refresh_token: "rt-old", refresh_token_expires_at: issuedAt(20 * 86_400_000),
+  });
+
+  it("refuses without a terminal, naming both issuers, and keeps the session", async () => {
+    existing();
+    const backend = stubBackend();
+    const { exitCode, err } = await runCli(["relay", "--relay", RELAY, "login"], dir);
+    expect(exitCode).toBe(1);
+    expect(err).toContain("https://old-auth.example.com");
+    expect(err).toContain(ISSUER);
+    expect(err).toContain("--accept-new-issuer");
+    expect(backend.calls.some((c) => c.url.endsWith("/oauth/device/code"))).toBe(false);
+    expect(loadRelaySession(dir).refresh_token).toBe("rt-old");
+  });
+
+  it("signs in to the new server when --accept-new-issuer is given", async () => {
+    existing();
+    stubBackend();
+    const { exitCode } = await runCli(["relay", "--relay", RELAY, "login", "--accept-new-issuer"], dir);
+    expect(exitCode).toBe(0);
+    expect(loadRelaySession(dir).issuer).toBe(ISSUER);
+  });
+
+  it("asks at a terminal, and stops on a no", async () => {
+    existing();
+    setTty(true);
+    vi.mocked(mockedConfirm).mockResolvedValue(false);
+    const backend = stubBackend();
+    const { exitCode } = await runCli(["relay", "--relay", RELAY, "login"], dir);
+    expect(mockedConfirm).toHaveBeenCalledTimes(1);
+    expect(exitCode).toBe(1);
+    expect(backend.calls.some((c) => c.url.endsWith("/oauth/device/code"))).toBe(false);
+    expect(loadRelaySession(dir).issuer).toBe("https://old-auth.example.com");
+  });
+
+  it("asks at a terminal, and signs in on a yes", async () => {
+    existing();
+    setTty(true);
+    vi.mocked(mockedConfirm).mockResolvedValue(true);
+    stubBackend();
+    const { exitCode } = await runCli(["relay", "--relay", RELAY, "login"], dir);
+    expect(exitCode).toBe(0);
+    expect(loadRelaySession(dir).issuer).toBe(ISSUER);
+  });
+
+  it("does not ask when the issuer is unchanged", async () => {
+    writeRelaySession(dir, { relay_url: RELAY, issuer: ISSUER, access_token: "x", access_token_expires_at: issuedAt(1000) });
+    stubBackend();
+    const { exitCode } = await runCli(["relay", "--relay", RELAY, "login"], dir);
+    expect(exitCode).toBe(0);
+    expect(mockedConfirm).not.toHaveBeenCalled();
+  });
+});
+
 describe("relay login — server-supplied text", () => {
   afterEach(() => { vi.unstubAllGlobals(); });
 
@@ -900,6 +993,23 @@ describe("admin step-up", () => {
     expect(loadRelaySession(dir)).toMatchObject({ access_token: "tok_session", refresh_token: "rt-session" });
   });
 
+  it("pins the step-up to the stored session's issuer and sends nothing to a different one", async () => {
+    writeRelaySession(dir, {
+      relay_url: RELAY, issuer: "https://old-auth.example.com", access_token: "tok_session", access_token_expires_at: issuedAt(3_600_000),
+      refresh_token: "rt-session", refresh_token_expires_at: issuedAt(20 * 86_400_000),
+    });
+    const backend = stubBackend({ token: stepUpToken });
+    const { exitCode, err } = await runCli(["relay", "hub-shares", "list"], dir);
+    expect(exitCode).toBe(1);
+    expect(err).toContain("different authorization server");
+    expect(backend.calls.some((c) => c.url.startsWith(ISSUER))).toBe(false);
+  });
+
+  it("no longer has token create --shared", async () => {
+    const { err } = await runCli(["relay", "token", "create", "--shared"], dir);
+    expect(err).toContain("unknown command");
+  });
+
   it("explains a denied step-up", async () => {
     stubBackend({ token: () => jsonRes(400, { error: "access_denied" }) });
     const { exitCode, err } = await runCli(["relay", "hub-shares", "list"], dir);
@@ -907,24 +1017,4 @@ describe("admin step-up", () => {
     expect(err).toContain("admin group");
   });
 
-  it("token create --shared steps up after the confirmation and prints the token", async () => {
-    vi.mocked(mockedConfirm).mockResolvedValue(true);
-    const backend = stubBackend({
-      token: stepUpToken,
-      api: () => jsonRes(201, { token: "hub-secret", token_id: "t1", created_at: "now" }),
-    });
-    const { exitCode, out } = await runCli(["relay", "token", "create", "--shared"], dir);
-    expect(exitCode).toBe(0);
-    expect(out).toContain("hub-secret");
-    expect(backend.calls.find((c) => c.url === `${RELAY}/api/tokens/shared`)!.auth).toBe("Bearer at-admin");
-  });
-
-  it("does not step up when the user declines the confirmation", async () => {
-    vi.mocked(mockedConfirm).mockResolvedValue(false);
-    const backend = stubBackend();
-    const { exitCode, out } = await runCli(["relay", "token", "create", "--shared"], dir);
-    expect(exitCode).toBe(0);
-    expect(out).toContain("Cancelled.");
-    expect(backend.calls).toHaveLength(0);
-  });
 });

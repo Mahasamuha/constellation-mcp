@@ -30,11 +30,11 @@ The relay is an OAuth resource server. [asterism](adr/0022-asterism-authorizatio
 To connect a relay to asterism:
 
 1. Set `ASTERISM_ISSUER` and `RELAY_URL` on the relay.
-2. Register the relay in asterism as a resource server. asterism fetches the relay's RFC 9728 metadata at `${RELAY_URL}/.well-known/oauth-protected-resource/mcp`, which declares the `relay` scope and the step-up-only `admin` scope. The token audience is `${RELAY_URL}/mcp`.
+2. Register the relay in asterism as a resource server. asterism fetches the relay's RFC 9728 metadata at `${RELAY_URL}/.well-known/oauth-protected-resource/mcp`, which declares the `relay` scope and the fresh-sign-in-only `admin` and `register` scopes. The token audience is `${RELAY_URL}/mcp`.
 3. Create the `constellation-admins` group in asterism and add the people who should administer the relay.
 4. Set the released claims and the `admin` scope policy (below), before any user connects.
 
-**Admin** means the access token holds the `admin` scope **and** its `groups` claim contains `ADMIN_GROUP` (default `constellation-admins`). asterism issues the scope only on step-up (a `403 insufficient_scope` from the relay), good for 5 minutes. The relay checks the group itself, so admin never depends on the asterism scope policy having been set. A stale `groups` claim can only deny admin, never grant it, because the scope is required too. An account with the scope but not the group gets a plain `403` (no step-up challenge, since stepping up cannot help). It gates `POST /api/tokens/shared`, `GET /api/admin/hub-shares`, `GET /api/admin/activity` and hub registration. There is no stored role and no admin bootstrap token.
+**Admin** means the access token holds the `admin` scope **and** its `groups` claim contains `ADMIN_GROUP` (default `constellation-admins`). asterism issues the scope only after a fresh sign-in (a `403 insufficient_scope` from the relay), good for 5 minutes. The relay checks the group itself, so admin never depends on the asterism scope policy having been set. A stale `groups` claim can only deny admin, never grant it, because the scope is required too. An account with the scope but not the group gets a plain `403` (no step-up challenge, since stepping up cannot help). It gates `GET /api/admin/hub-shares`, `GET /api/admin/activity` and hub registration. There is no stored role and no admin bootstrap token.
 
 #### Operator runbook: configure asterism before users connect
 
@@ -91,7 +91,10 @@ All numeric variables are validated at startup. A non-integer value causes the r
 | `RATE_LIMIT_TOOL_CALLS_PER_MIN` | `60` | 60 s | Per user | Standard MCP tool call limit |
 | `RATE_LIMIT_EXPENSIVE_TOOLS_PER_MIN` | `20` | 60 s | Per user | Limit for `grep_files`, `find_files`, recursive `list_directory`, **and any MCP tool not explicitly classified as "standard" in `router.ts`'s `classifyTool`** |
 | `RATE_LIMIT_STATIC_PER_15MIN` | `300` | 15 min | Per IP | The unauthenticated, cheap GETs: `/.well-known/oauth-protected-resource/*` and `/clients/*.json` |
-| `RATE_LIMIT_DEFAULT_PER_15MIN` | `10` | 15 min | Per IP | Catch-all for any HTTP route not explicitly classified in `app.ts`'s `classifyHttpRoute` (e.g. `/api/*`, `/`). Deliberately the strictest HTTP bucket — see [architecture.md](architecture.md#rate-limiting). `/healthz` and `/mcp` are explicitly exempt instead of falling here; see that doc for why. |
+| `RATE_LIMIT_DEFAULT_PER_15MIN` | `10` | 15 min | Per IP | Catch-all for any HTTP route not explicitly classified in `app.ts`'s `classifyHttpRoute` (e.g. `/api/executors/register`, `/`), and the failed or unauthenticated requests to `/api/*`. Deliberately the strictest HTTP bucket — see [architecture.md](architecture.md#rate-limiting). `/healthz` has its own limiter. |
+| `RATE_LIMIT_API_PER_USER_PER_15MIN` | `600` | 15 min | Per user | Authenticated `/api/*` requests (except registration). Failed or unauthenticated ones count against `RATE_LIMIT_DEFAULT_PER_15MIN` per IP |
+| `RATE_LIMIT_MCP_FAILED_PER_15MIN` | `300` | 15 min | Per IP | Unauthenticated or failed `/mcp` requests |
+| `RATE_LIMIT_MCP_REQUESTS_PER_MIN` | `300` | 60 s | Per user | Every authenticated `/mcp` request, tool call or not (tool calls have tighter limits of their own) |
 | `RATE_LIMIT_WS_RECONNECT_PER_MIN` | `10` | 60 s | Per executor token | Executor WebSocket reconnect attempts |
 
 Rate limit state is in-memory. It is lost on relay restart, which is acceptable for single-instance deployments.

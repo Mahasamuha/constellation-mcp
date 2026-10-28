@@ -85,6 +85,26 @@ export const staticLimiter = rateLimit({
   message: { error: "rate_limit_exceeded" },
 });
 
+// Per-IP limit for /mcp and /api that counts only failed requests (status >= 400):
+// unauthenticated probing and bad tokens. Successful authenticated traffic is limited per
+// user instead (mcp.ts, api.ts), so a shared NAT can't lock everyone out.
+export const mcpFailureLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: config.rateLimits.mcpFailedPer15Min,
+  skipSuccessfulRequests: true,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  message: { error: "rate_limit_exceeded" },
+});
+export const apiFailureLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: config.rateLimits.defaultPer15Min,
+  skipSuccessfulRequests: true,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  message: { error: "rate_limit_exceeded" },
+});
+
 // Catch-all for any route not explicitly classified in the dispatcher below.
 export const defaultLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -100,7 +120,8 @@ export const defaultLimiter = rateLimit({
 app.use((req: Request, res: Response, next: NextFunction) => {
   const bucket = classifyHttpRoute(req.path);
   switch (bucket) {
-    case "exempt": return next();
+    case "mcp": return mcpFailureLimiter(req, res, next);
+    case "api": return apiFailureLimiter(req, res, next);
     case "static": return staticLimiter(req, res, next);
     case "default": return defaultLimiter(req, res, next);
   }

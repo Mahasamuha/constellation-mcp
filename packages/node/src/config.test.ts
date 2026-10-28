@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { readdirSync, utimesSync } from "node:fs";
+import { readdirSync, readFileSync, utimesSync } from "node:fs";
 import { join } from "node:path";
-import { writeNodeConfig, writeNodeToken, clearPreviousToken, loadNodeConfig, nodeYamlPath, cachedByMtime } from "./config.js";
+import { changeRelayUrl, writeNodeConfig, writeNodeToken, clearPreviousToken, loadNodeConfig, nodeYamlPath, cachedByMtime } from "./config.js";
 import { makeTempDir, cleanTempDir } from "./test/fixtures.js";
 
 let dir: string;
@@ -92,5 +92,39 @@ describe("cachedByMtime", () => {
     expect(cached()).toBe("value");
     expect(cached()).toBe("value");
     expect(calls).toBe(2);
+  });
+});
+
+describe("changeRelayUrl", () => {
+  beforeEach(() => {
+    writeNodeConfig(dir, { issuer: "https://auth.example.com" });
+    writeNodeToken(dir, "tok-rotated");
+  });
+
+  it("drops both tokens and the issuer when the origin changes", () => {
+    expect(changeRelayUrl(dir, "https://other.example.org")).toEqual({ credentialsDropped: true });
+    const raw = readFileSync(nodeYamlPath(dir), "utf8");
+    expect(raw).toContain("relay_url: https://other.example.org");
+    expect(raw).not.toMatch(/node_token|previous_node_token|issuer/);
+    expect(() => loadNodeConfig(dir)).toThrow(/node_token is required/);
+  });
+
+  it("keeps the tokens when only the path or case of the same origin changes", () => {
+    expect(changeRelayUrl(dir, "https://RELAY.example.com/")).toEqual({ credentialsDropped: false });
+    const cfg = loadNodeConfig(dir);
+    expect(cfg.node_token).toBe("tok-rotated");
+    expect(cfg.previous_node_token).toBe("tok-original");
+    expect(cfg.issuer).toBe("https://auth.example.com");
+  });
+
+  it("treats a different port or scheme as another origin", () => {
+    expect(changeRelayUrl(dir, "https://relay.example.com:8443").credentialsDropped).toBe(true);
+  });
+});
+
+describe("atomic writes", () => {
+  it("round-trips the issuer", () => {
+    writeNodeConfig(dir, { issuer: "https://auth.example.com" });
+    expect(loadNodeConfig(dir).issuer).toBe("https://auth.example.com");
   });
 });

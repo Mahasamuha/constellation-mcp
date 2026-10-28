@@ -7,7 +7,7 @@ import {
   type Verifier,
   type VerifierConfig,
 } from "@mahasamuha/asterism-verify";
-import { requireEnv, groupsFromClaims, InvalidGroupsError, createLogger } from "@constellation/shared";
+import { requireEnv, groupsFromClaims, InvalidGroupsError, createLogger, clientIdFor } from "@constellation/shared";
 import { prisma } from "./db.js";
 import { config } from "./config.js";
 import { ADMIN_SCOPE, BASE_SCOPE, type RequestUser } from "./request-user.js";
@@ -141,6 +141,29 @@ export async function requireBearerAuth(req: Request, res: Response, next: NextF
   next();
 }
 
+/** Answers 403 insufficient_scope asking for `scopes`, so the client can step up and retry. */
+export function sendMissingScopes(res: Response, scopes: string[], description: string): void {
+  sendInsufficientScope(res, verifierConfig(), scopes, description);
+}
+
+/**
+ * Router-level guard for /api: only the Constellation CLI's client may call it. A token
+ * issued to an MCP client (Claude.ai, ...) carries the `relay` scope too, but must never
+ * change filters, revoke tokens or otherwise touch /api. Must run after requireBearerAuth.
+ */
+export function requireCliClient(req: Request, res: Response, next: NextFunction): void {
+  const user = (req as Partial<AuthenticatedRequest>).user;
+  const expected = clientIdFor(requireEnv("RELAY_URL"), "cli");
+  if (!user || user.clientId !== expected) {
+    res.status(403).json({
+      error: "invalid_client",
+      error_description: "The /api routes accept only tokens issued to the Constellation CLI client",
+    });
+    return;
+  }
+  next();
+}
+
 /**
  * Requires the `admin` scope on the verified token AND membership of `config.adminGroup`
  * in its `groups`. Must run after requireBearerAuth.
@@ -159,7 +182,7 @@ export function requireAdmin(req: Request, res: Response, next: NextFunction): v
     return;
   }
   if (!user.scopes.includes(ADMIN_SCOPE)) {
-    sendInsufficientScope(res, verifierConfig(), [BASE_SCOPE, ADMIN_SCOPE], "Admin scope required");
+    sendMissingScopes(res, [BASE_SCOPE, ADMIN_SCOPE], "Admin scope required");
     return;
   }
   if (!user.groups.includes(config.adminGroup)) {

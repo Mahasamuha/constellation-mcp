@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { sanitizeForTerminal, isValidUserCode, deviceCodeLines } from "./terminal-text.js";
+import { sanitizeForTerminal, sanitizeJsonStrings, isValidUserCode, deviceCodeLines } from "./terminal-text.js";
 
 describe("sanitizeForTerminal", () => {
   it("strips C0 and C1 controls, including escape sequences' ESC and CSI", () => {
@@ -57,5 +57,16 @@ describe("deviceCodeLines", () => {
 
   it("names who should enter the code", () => {
     expect(deviceCodeLines("x", dc, "https://a.example/", "the admin").join("\n")).toContain("the admin should enter this code");
+  });
+});
+
+describe("sanitizeJsonStrings", () => {
+  it("strips C1, bidi and zero-width characters from nested strings and keys, leaving other values", () => {
+    const dirty = { "ho\u200bst": "a\u202eb\u009bc", n: 5, ok: true, nil: null, list: [{ s: "x\ufeffy" }, "z\u2066"] };
+    expect(sanitizeJsonStrings(dirty)).toEqual({ host: "abc", n: 5, ok: true, nil: null, list: [{ s: "xy" }, "z"] });
+  });
+
+  it("keeps ordinary text and newlines", () => {
+    expect(sanitizeJsonStrings({ a: "line1\nline2 日本語" })).toEqual({ a: "line1\nline2 日本語" });
   });
 });

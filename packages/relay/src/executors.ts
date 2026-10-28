@@ -1,10 +1,12 @@
 import { Router, Request, Response, NextFunction, IRouter } from "express";
 import { prisma } from "./db.js";
 import { ExecutorTokenType } from "./generated/prisma/client.js";
-import { requireBearerAuth, requireAdmin, type AuthenticatedRequest } from "./middleware.js";
+import { requireBearerAuth, requireAdmin, sendMissingScopes, type AuthenticatedRequest } from "./middleware.js";
+import { ADMIN_SCOPE, BASE_SCOPE, REGISTER_SCOPE } from "./request-user.js";
 import { generateToken, hashToken, createLogger, clientIdFor, requireEnv } from "@constellation/shared";
 import { Prisma } from "./generated/prisma/client.js";
 import { getConnection } from "./registry.js";
+import { cancelPendingRotation } from "./hub.js";
 import { validateHostName } from "./host-name.js";
 
 const log = createLogger("executors");
@@ -54,7 +56,15 @@ export async function registerExecutor(req: Request, res: Response): Promise<voi
     return;
   }
 
-  // A hub is shared across users, so only an admin token may register one.
+  // Registering is permanent until removed, so it needs its own fresh-sign-in scope; a hub
+  // is shared across users and also needs admin. Ask for everything missing in one challenge.
+  const required = type === "hub" ? [BASE_SCOPE, ADMIN_SCOPE, REGISTER_SCOPE] : [BASE_SCOPE, REGISTER_SCOPE];
+  if (!required.every((s) => user.scopes.includes(s))) {
+    sendMissingScopes(res, required, type === "hub" ? "Registering a hub needs the admin and register scopes" : "Registering a node needs the register scope");
+    return;
+  }
+
+  // The group check for admin.
   if (type === "hub" && !(await passes(requireAdmin, req, res))) return;
 
   const validated = validateHostName(body["host"]);
@@ -147,7 +157,10 @@ export async function registerExecutor(req: Request, res: Response): Promise<voi
   }
 
   // The old token is revoked, but an open socket stays authenticated until it drops.
-  if (replacedExecutorId) getConnection(replacedExecutorId)?.ws.terminate();
+  if (replacedExecutorId) {
+    getConnection(replacedExecutorId)?.ws.terminate();
+    await cancelPendingRotation(replacedExecutorId);
+  }
 
   log.info({ userId, host, type }, type === "hub" ? "Hub registered" : "Executor registered");
 

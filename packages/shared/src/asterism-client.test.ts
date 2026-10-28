@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import {
   AsterismError,
   clientIdFor,
+  deviceSignIn,
   discoverAsterism,
   pollDeviceToken,
   refreshTokens,
@@ -187,6 +188,16 @@ describe("verificationUrlToOpen", () => {
     expect(verificationUrlToOpen(ENDPOINTS, { ...DC, verification_uri_complete: `${RELAY}/activate` })).toBeNull();
     expect(verificationUrlToOpen(ENDPOINTS, { ...DC, verification_uri_complete: "javascript:alert(1)" })).toBeNull();
   });
+
+  it("returns the normalized href", () => {
+    const host = new URL(ISSUER).host;
+    expect(verificationUrlToOpen(ENDPOINTS, { ...DC, verification_uri_complete: `${new URL(ISSUER).protocol}//${host.toUpperCase()}/a/../activate?x=1` }))
+      .toBe(`${ISSUER}/activate?x=1`);
+  });
+
+  it.each(["\\", " ", "\t", "\n", "\u0000", "\u009b"])("refuses a URL containing %j", (bad) => {
+    expect(verificationUrlToOpen(ENDPOINTS, { ...DC, verification_uri_complete: `${ISSUER}/activate${bad}x` })).toBeNull();
+  });
 });
 
 describe("pollDeviceToken", () => {
@@ -324,7 +335,7 @@ describe("revokeRefreshToken", () => {
 });
 
 describe("registerExecutor", () => {
-  const ok = { access_token: "node-token", host: "laptop" };
+  const ok = { access_token: "ab".repeat(32), host: "laptop" };
 
   it("posts the type and host with the access token and refuses redirects", async () => {
     const seen: Array<{ url: string; init?: RequestInit }> = [];
@@ -354,8 +365,34 @@ describe("registerExecutor", () => {
     await expect(registerExecutor(RELAY, "at", { type: "node", host: "h" }, { fetch })).resolves.toMatchObject({ ok: false, message: expect.stringContaining("Could not reach") });
   });
 
+  it.each([
+    ["a short token", { access_token: "abc", host: "laptop" }],
+    ["an upper-case token", { access_token: "AB".repeat(32), host: "laptop" }],
+    ["a token with a line break", { access_token: `${"ab".repeat(31)}\nX=1`, host: "laptop" }],
+    ["a host with an escape sequence", { access_token: "ab".repeat(32), host: "la\u001b[2Jptop" }],
+    ["a host with a space", { access_token: "ab".repeat(32), host: "my laptop" }],
+  ])("refuses %s before returning it", async (_name, body) => {
+    const { fetch } = queue(json(200, body));
+    const r = await registerExecutor(RELAY, "at", { type: "node", host: "laptop" }, { fetch });
+    expect(r).toMatchObject({ ok: false, message: expect.stringContaining("malformed") });
+    expect(JSON.stringify(r)).not.toContain("access_token");
+  });
+
   it("reports a malformed success body", async () => {
     const { fetch } = queue(new Response("<html>", { status: 200 }));
     await expect(registerExecutor(RELAY, "at", { type: "node", host: "h" }, { fetch })).resolves.toMatchObject({ ok: false, message: expect.stringContaining("status 200") });
+  });
+});
+
+describe("deviceSignIn — issuer pinning", () => {
+  const prm = { resource: `${RELAY}/mcp`, authorization_servers: [ISSUER] };
+
+  it("throws issuer_changed before any code is shown when the relay names another issuer", async () => {
+    const { fetch, calls } = queue(json(200, prm));
+    const onCode = vi.fn();
+    await expect(deviceSignIn(RELAY, { kind: "cli", scope: "relay", onCode, expectedIssuer: "https://old.example.com" }, { fetch }))
+      .rejects.toMatchObject({ code: "issuer_changed" });
+    expect(onCode).not.toHaveBeenCalled();
+    expect(calls).toHaveLength(1);
   });
 });

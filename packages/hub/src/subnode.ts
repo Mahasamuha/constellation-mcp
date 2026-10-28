@@ -24,6 +24,8 @@ interface SubnodeRequest {
   tool: string;
   share: string;
   params: unknown;
+  /** The caller's relay path filters (RE2 sources); the worker's executor enforces them. */
+  path_filters: string[];
 }
 
 interface SubnodeReady {
@@ -61,6 +63,7 @@ interface QueuedRequest {
   tool: string;
   share: string;
   params: unknown;
+  pathFilters: string[];
   requestId: string;
   identity: ResolvedIdentity;
   resolve: (r: DispatchResult | DispatchError) => void;
@@ -78,6 +81,11 @@ interface Subnode {
   queue: QueuedRequest[];
   /** Serializes "pick / spawn / enqueue" decisions for this user without serializing IPC round-trips. */
   lock: Promise<void>;
+}
+
+/** True when the worker's fixed OS credentials are the ones this identity resolves to now. */
+function workerRunsAs(worker: Pick<Worker, "uid" | "gid">, identity: ResolvedIdentity): boolean {
+  return worker.uid === identity.uid && worker.gid === identity.gid;
 }
 
 // ---------------------------------------------------------------------------
@@ -272,7 +280,8 @@ export class SubnodePool {
     tool: string,
     share: string,
     params: unknown,
-    requestId: string
+    requestId: string,
+    pathFilters: string[]
   ): Promise<DispatchResult | DispatchError> {
     if (this.shuttingDown) {
       return { kind: "worker_error", message: "HUB_SHUTTING_DOWN — retry after 45 seconds" };
@@ -320,7 +329,7 @@ export class SubnodePool {
       this.subnodes.set(identity.username, subnode);
     }
 
-    return this.assignAndSend(subnode, identity, tool, share, params, requestId);
+    return this.assignAndSend(subnode, identity, tool, share, params, requestId, pathFilters);
   }
 
   /**
@@ -336,7 +345,8 @@ export class SubnodePool {
     tool: string,
     share: string,
     params: unknown,
-    requestId: string
+    requestId: string,
+    pathFilters: string[]
   ): Promise<DispatchResult | DispatchError> {
     let resultResolve!: (r: DispatchResult | DispatchError) => void;
     const result = new Promise<DispatchResult | DispatchError>((resolve) => {
@@ -349,7 +359,7 @@ export class SubnodePool {
       // (e.g. the account was deleted and recreated with a recycled uid), any existing idle
       // worker is running under the WRONG identity and must never be handed this request.
       for (const stale of subnode.workers.filter(
-        (w) => w.pending.size === 0 && (w.uid !== identity.uid || w.gid !== identity.gid)
+        (w) => w.pending.size === 0 && !workerRunsAs(w, identity)
       )) {
         this.removeWorker(subnode, stale, "identity uid/gid changed since this worker was spawned");
       }
@@ -359,7 +369,7 @@ export class SubnodePool {
 
       const idleWorker = subnode.workers.find((w) => w.ready && w.pending.size === 0);
       if (idleWorker) {
-        void this.sendRequest(subnode, idleWorker, tool, share, params, requestId).then(resultResolve);
+        void this.sendRequest(subnode, idleWorker, tool, share, params, requestId, pathFilters).then(resultResolve);
         return;
       }
 
@@ -373,7 +383,7 @@ export class SubnodePool {
         }
         const newWorker = spawnResult.worker;
         subnode.workers.push(newWorker);
-        void this.sendRequest(subnode, newWorker, tool, share, params, requestId).then(resultResolve);
+        void this.sendRequest(subnode, newWorker, tool, share, params, requestId, pathFilters).then(resultResolve);
         return;
       }
 
@@ -383,7 +393,7 @@ export class SubnodePool {
       // opportunistically, when some other request happens to complete.
       const queueTimeoutMs = resolveQueueTimeoutMs(this.cfg);
       const entry: QueuedRequest = {
-        tool, share, params, requestId, identity,
+        tool, share, params, pathFilters, requestId, identity,
         resolve: resultResolve,
         deadline: Date.now() + queueTimeoutMs,
         timer: setTimeout(() => this.expireQueued(subnode, entry), queueTimeoutMs),
@@ -486,11 +496,12 @@ export class SubnodePool {
     tool: string,
     share: string,
     params: unknown,
-    requestId: string
+    requestId: string,
+    pathFilters: string[]
   ): Promise<DispatchResult | DispatchError> {
     const timeoutMs = this.cfg.subnode_rpc_timeout_seconds * 1000;
 
-    const msg: SubnodeRequest = { type: "request", request_id: requestId, tool, share, params };
+    const msg: SubnodeRequest = { type: "request", request_id: requestId, tool, share, params, path_filters: pathFilters };
 
     return new Promise<DispatchResult | DispatchError>((resolve) => {
       const timer = setTimeout(() => {
@@ -547,6 +558,13 @@ export class SubnodePool {
         entry.resolve({ kind: "timeout", message: "Request timed out waiting for a free worker" });
         continue;
       }
+      // Same rule as the idle-worker check in assignAndSend: a worker's credentials are fixed
+      // at spawn, so one that no longer matches the request's identity must not serve it.
+      if (!workerRunsAs(worker, entry.identity)) {
+        this.removeWorker(subnode, worker, "identity uid/gid changed since this worker was spawned");
+        entry.resolve({ kind: "worker_error", message: "Your account's identity changed while this request was queued. Please retry." });
+        return;
+      }
       const uidBlock = checkUidRestrictions(entry.identity.uid, this.cfg);
       if (uidBlock) {
         log.warn({ username: entry.identity.username, uid: entry.identity.uid, restriction: uidBlock, request_id: entry.requestId }, "Queued request rejected — UID newly blocked");
@@ -560,7 +578,7 @@ export class SubnodePool {
         entry.resolve(gidBlock);
         continue;
       }
-      void this.sendRequest(subnode, worker, entry.tool, entry.share, entry.params, entry.requestId)
+      void this.sendRequest(subnode, worker, entry.tool, entry.share, entry.params, entry.requestId, entry.pathFilters)
         .then(entry.resolve);
       return;
     }

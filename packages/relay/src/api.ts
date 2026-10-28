@@ -1,12 +1,11 @@
 import { createRequire } from "node:module";
-import RE2 from "re2";
 import { Router, Request, Response, IRouter } from "express";
-import { ExecutorTokenType } from "./generated/prisma/client.js";
 import { prisma } from "./db.js";
-import { requireBearerAuth, requireAdmin, AuthenticatedRequest } from "./middleware.js";
-import { getConnection } from "./hub.js";
+import { rateLimit } from "express-rate-limit";
+import { requireBearerAuth, requireCliClient, requireAdmin, AuthenticatedRequest } from "./middleware.js";
+import { getConnection, cancelPendingRotation } from "./hub.js";
 import { type ActivityEventType } from "./activity.js";
-import { createLogger, generateToken, hashToken, type ExecutorEntry } from "@constellation/shared";
+import { createLogger, filterSource, InvalidFilterError, type ExecutorEntry } from "@constellation/shared";
 import { config } from "./config.js";
 
 const { version } = createRequire(import.meta.url)("../package.json") as { version: string };
@@ -21,7 +20,23 @@ function parsePagination(req: Request): { limit: number; offset: number } {
   return { limit, offset };
 }
 
-apiRouter.use(requireBearerAuth);
+// Every /api route takes the CLI's token only (requireCliClient); registration lives in
+// executors.ts with its own checks. Authenticated calls are then counted per user, so one
+// shared NAT address can't lock everyone out; the per-IP limit in app.ts only sees failures.
+export const apiUserLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: config.rateLimits.apiPerUserPer15Min,
+  keyGenerator: (req) => (req as Partial<AuthenticatedRequest>).user?.id ?? "anonymous",
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  message: { error: "rate_limit_exceeded" },
+  validate: { keyGeneratorIpFallback: false },
+});
+
+apiRouter.use(requireBearerAuth, requireCliClient, apiUserLimiter);
+
+/** Most filters one user may keep. */
+export const MAX_FILTERS_PER_USER = 100;
 
 const HEARTBEAT_THRESHOLD_MS = config.heartbeat.intervalMs * config.heartbeat.maxMissed;
 
@@ -125,6 +140,7 @@ apiRouter.delete("/api/executors/:id/token", async (req: Request, res: Response)
   // Terminate any active WebSocket connection for this executor.
   const conn = getConnection(executorId);
   if (conn) conn.ws.terminate();
+  await cancelPendingRotation(executorId);
 
   log.info({ executorId, userId: uid }, "Executor token revoked");
   res.status(204).end();
@@ -210,10 +226,6 @@ apiRouter.post("/api/filters", async (req: Request, res: Response) => {
     res.status(400).json({ error: "invalid_request", error_description: "pattern is required" });
     return;
   }
-  if (pattern.length > 1000) {
-    res.status(400).json({ error: "invalid_request", error_description: "pattern must be 1000 characters or fewer" });
-    return;
-  }
 
   const patternType = body["pattern_type"];
   if (patternType !== "glob" && patternType !== "regex") {
@@ -230,14 +242,18 @@ apiRouter.post("/api/filters", async (req: Request, res: Response) => {
     }
   }
 
-  // Validate regex compiles before storing.
-  if (patternType === "regex") {
-    try {
-      new RE2(pattern);
-    } catch {
-      res.status(400).json({ error: "invalid_request", error_description: "Invalid regex pattern" });
-      return;
-    }
+  // The same compile the router and executors use, so a stored pattern is enforceable.
+  try {
+    filterSource(pattern, patternType);
+  } catch (err) {
+    if (!(err instanceof InvalidFilterError)) throw err;
+    res.status(400).json({ error: "invalid_request", error_description: err.message });
+    return;
+  }
+
+  if (await prisma.relayPathFilter.count({ where: { scopeUserId: uid } }) >= MAX_FILTERS_PER_USER) {
+    res.status(400).json({ error: "invalid_request", error_description: `At most ${MAX_FILTERS_PER_USER} filters per user` });
+    return;
   }
 
   const filter = await prisma.relayPathFilter.create({
@@ -279,28 +295,6 @@ apiRouter.delete("/api/filters/:id", async (req: Request, res: Response) => {
   await prisma.relayPathFilter.delete({ where: { id: filterId } });
   log.info({ filterId, userId: uid }, "Relay filter deleted");
   res.status(204).end();
-});
-
-// ---------------------------------------------------------------------------
-// POST /api/tokens/shared — break-glass hub token creation
-// Preferred path is constellation hub register (POST /api/executors/register).
-// ---------------------------------------------------------------------------
-
-apiRouter.post("/api/tokens/shared", requireAdmin, async (_req: Request, res: Response) => {
-  const token = generateToken();
-  const tokenHash = hashToken(token);
-
-  const executorToken = await prisma.executorToken.create({
-    data: { userId: null, tokenType: ExecutorTokenType.HUB, tokenHash },
-    select: { id: true, createdAt: true },
-  });
-
-  log.info({ tokenId: executorToken.id }, "Hub token created via break-glass API");
-  res.status(201).json({
-    token,
-    token_id: executorToken.id,
-    created_at: executorToken.createdAt.toISOString(),
-  });
 });
 
 // ---------------------------------------------------------------------------

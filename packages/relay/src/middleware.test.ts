@@ -9,7 +9,7 @@ import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
 import { TokenValidationError, type Principal, type Verifier } from "@mahasamuha/asterism-verify";
 import { prisma } from "./db.js";
-import { requireBearerAuth, requireAdmin, setVerifierForTests, type AuthenticatedRequest } from "./middleware.js";
+import { requireBearerAuth, requireAdmin, requireCliClient, setVerifierForTests, type AuthenticatedRequest } from "./middleware.js";
 
 const RELAY = "https://relay.example.com";
 const CHALLENGE = `Bearer realm="${RELAY}/mcp", resource_metadata="${RELAY}/.well-known/oauth-protected-resource/mcp"`;
@@ -38,6 +38,9 @@ beforeAll(async () => {
     res.json({ user: (req as AuthenticatedRequest).user });
   });
   app.get("/admin", requireBearerAuth, requireAdmin, (_req, res) => {
+    res.json({ ok: true });
+  });
+  app.get("/cli-only", requireBearerAuth, requireCliClient, (_req, res) => {
     res.json({ ok: true });
   });
   app.get("/admin-alone", requireAdmin, (_req, res) => {
@@ -201,5 +204,22 @@ describe("requireAdmin", () => {
   it("fails closed with 401 when run without requireBearerAuth", async () => {
     const res = await get("/admin-alone");
     expect(res.status).toBe(401);
+  });
+});
+
+describe("requireCliClient", () => {
+  it("accepts a token issued to the CLI client", async () => {
+    verify.mockResolvedValue(principal({ clientId: `${RELAY}/clients/cli.json` }));
+    const res = await fetch(`${base}/cli-only`, { headers: { Authorization: "Bearer t" } });
+    expect(res.status).toBe(200);
+  });
+
+  it("refuses a token issued to an MCP client or to another Constellation client with 403 invalid_client", async () => {
+    for (const clientId of ["https://claude.ai/oauth/client.json", `${RELAY}/clients/node.json`, `${RELAY}/clients/hub.json`]) {
+      verify.mockResolvedValue(principal({ clientId }));
+      const res = await fetch(`${base}/cli-only`, { headers: { Authorization: "Bearer t" } });
+      expect(res.status).toBe(403);
+      expect(((await res.json()) as { error: string }).error).toBe("invalid_client");
+    }
   });
 });

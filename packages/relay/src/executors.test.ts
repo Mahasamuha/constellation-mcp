@@ -15,6 +15,7 @@ vi.mock("@constellation/shared", async (importOriginal) => {
 });
 
 vi.mock("./registry.js", () => ({ getConnection: vi.fn() }));
+vi.mock("./hub.js", () => ({ cancelPendingRotation: vi.fn().mockResolvedValue(undefined) }));
 
 vi.mock("./middleware.js", () => ({
   requireBearerAuth: vi.fn(),
@@ -22,6 +23,9 @@ vi.mock("./middleware.js", () => ({
   requireAdmin: vi.fn((req: { user: { scopes: string[] } }, res: { status: (n: number) => { json: (b: unknown) => void } }, next: () => void) => {
     if (req.user.scopes.includes("admin")) next();
     else res.status(403).json({ error: "insufficient_scope" });
+  }),
+  sendMissingScopes: vi.fn((res: { status: (n: number) => { json: (b: unknown) => void } }, scopes: string[]) => {
+    res.status(403).json({ error: "insufficient_scope", scope: scopes.join(" ") });
   }),
 }));
 
@@ -38,6 +42,7 @@ vi.mock("./db.js", () => {
 import { prisma } from "./db.js";
 import { registerExecutor } from "./executors.js";
 import { getConnection } from "./registry.js";
+import { cancelPendingRotation } from "./hub.js";
 import { Prisma } from "./generated/prisma/client.js";
 
 const getConn = getConnection as unknown as ReturnType<typeof vi.fn>;
@@ -69,7 +74,7 @@ async function register(body: unknown, scopes?: string[], clientId?: string) {
   const res = mockRes();
   const type = (body as { type?: string } | undefined)?.type;
   const client = clientId ?? (type === "hub" ? HUB_CLIENT : NODE_CLIENT);
-  await registerExecutor(mockReq(body, scopes ?? ["relay"], client) as never, res as never);
+  await registerExecutor(mockReq(body, scopes ?? ["relay", "register"], client) as never, res as never);
   return res;
 }
 
@@ -126,15 +131,15 @@ describe("POST /api/executors/register", () => {
   });
 
   it("refuses a hub registration without the admin scope", async () => {
-    const res = await register({ type: "hub", host: "hub-1" }, ["relay"]);
+    const res = await register({ type: "hub", host: "hub-1" }, ["relay", "register"]);
     expect(res.statusCode).toBe(403);
-    expect(res.body).toMatchObject({ error: "insufficient_scope" });
+    expect(res.body).toMatchObject({ error: "insufficient_scope", scope: "relay admin register" });
     expect(db.executorToken.create).not.toHaveBeenCalled();
   });
 
   it("creates a shared HUB token recording the approving admin", async () => {
     db.executor.findFirst.mockResolvedValue(null);
-    const res = await register({ type: "hub", host: "hub-1" }, ["relay", "admin"]);
+    const res = await register({ type: "hub", host: "hub-1" }, ["relay", "admin", "register"]);
 
     expect(db.executorToken.create).toHaveBeenCalledWith(
       expect.objectContaining({ data: { userId: null, tokenType: "HUB", tokenHash: "hashed:generated-token", approvedByUserId: "user-1" } })
@@ -145,7 +150,7 @@ describe("POST /api/executors/register", () => {
 
   it("revokes the active HUB token for the host and replaces it", async () => {
     db.executor.findFirst.mockResolvedValue({ id: "exec-h", executorTokenId: "token-old-hub" });
-    await register({ type: "hub", host: "hub-1" }, ["relay", "admin"]);
+    await register({ type: "hub", host: "hub-1" }, ["relay", "admin", "register"]);
 
     expect(db.executor.findFirst).toHaveBeenCalledWith(expect.objectContaining({
       where: { userId: null, host: "hub-1", executorToken: { tokenType: "HUB" } },
@@ -159,15 +164,31 @@ describe("POST /api/executors/register", () => {
 
   it("refuses a node registration from a token issued to another client", async () => {
     for (const clientId of ["https://claude.ai/oauth/client.json", HUB_CLIENT, "https://relay.example.com/clients/cli.json"]) {
-      const res = await register({ type: "node", host: "laptop" }, ["relay"], clientId);
+      const res = await register({ type: "node", host: "laptop" }, ["relay", "register"], clientId);
       expect(res.statusCode).toBe(403);
       expect(res.body).toMatchObject({ error: "invalid_client" });
     }
     expect(db.executorToken.create).not.toHaveBeenCalled();
   });
 
+  it("refuses a registration without the fresh-approval register scope, asking for it", async () => {
+    const res = await register({ type: "node", host: "laptop" }, ["relay"]);
+    expect(res.statusCode).toBe(403);
+    expect(res.body).toMatchObject({ error: "insufficient_scope", scope: "relay register" });
+    expect(db.executorToken.create).not.toHaveBeenCalled();
+    const hub = await register({ type: "hub", host: "hub-1" }, ["relay", "admin"]);
+    expect(hub.statusCode).toBe(403);
+    expect(hub.body).toMatchObject({ scope: "relay admin register" });
+  });
+
+  it("cancels a pending rotation for an executor whose token was replaced", async () => {
+    db.executor.findFirst.mockResolvedValue({ id: "exec-1", executorTokenId: "token-old" });
+    await register({ type: "node", host: "laptop" });
+    expect(cancelPendingRotation).toHaveBeenCalledWith("exec-1");
+  });
+
   it("refuses a hub registration from the node client, even with the admin scope", async () => {
-    const res = await register({ type: "hub", host: "hub-1" }, ["relay", "admin"], NODE_CLIENT);
+    const res = await register({ type: "hub", host: "hub-1" }, ["relay", "admin", "register"], NODE_CLIENT);
     expect(res.statusCode).toBe(403);
     expect(res.body).toMatchObject({ error: "invalid_client" });
     expect(db.executorToken.create).not.toHaveBeenCalled();
@@ -183,7 +204,7 @@ describe("POST /api/executors/register", () => {
   it("takes a per-(owner, host) advisory lock before looking the executor up", async () => {
     db.executor.findFirst.mockResolvedValue(null);
     await register({ type: "node", host: "laptop" });
-    await register({ type: "hub", host: "hub-1" }, ["relay", "admin"]);
+    await register({ type: "hub", host: "hub-1" }, ["relay", "admin", "register"]);
     const tx = db as unknown as { $executeRaw: ReturnType<typeof vi.fn> };
     expect(tx.$executeRaw).toHaveBeenCalledTimes(2);
     const keys = tx.$executeRaw.mock.calls.map((c) => c[1]);

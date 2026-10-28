@@ -11,6 +11,7 @@ import {
   writeNodeConfig,
   writeNodeToken,
   clearPreviousToken,
+  changeRelayUrl,
   writePathsConfig,
   buildConfigUpdatePaths,
   nodeYamlPath,
@@ -26,6 +27,9 @@ import {
   checkHostName,
   relayWsUrl,
   sanitizeForTerminal as t,
+  sanitizeJsonStrings,
+  EXECUTOR_TOKEN_PATTERN,
+  isSameOrigin,
   deviceCodeLines,
   registerExecutor,
   discoverAsterism,
@@ -66,7 +70,8 @@ export function registerNodeCommands(program: Command): void {
     .description("Authenticate and register this machine with a relay")
     .option("--relay <url>", "Relay URL")
     .option("--host-name <name>", "Host name for this machine (default: the name from a previous registration, else the machine's hostname)")
-    .action(async (opts: { relay?: string; hostName?: string }) => {
+    .option("--accept-new-issuer", "Trust the authorization server the relay names now, even though this node registered with another")
+    .action(async (opts: { relay?: string; hostName?: string; acceptNewIssuer?: boolean }) => {
       const relayUrl = opts.relay ?? process.env["RELAY_URL"];
       if (!relayUrl) {
         console.error("Error: --relay <url> is required");
@@ -86,13 +91,14 @@ export function registerNodeCommands(program: Command): void {
         process.exit(1);
       }
 
-      const started = await requestDeviceCode(relayUrl);
+      const started = await requestDeviceCode(relayUrl, pinnedIssuer(getConfigDir(), relayUrl, opts.acceptNewIssuer));
       if (!started.ok) {
         console.error("Failed to start sign-in:", t(started.error));
         process.exit(1);
       }
       const { dc, openUrl, issuer } = started;
 
+      console.log("Registering a node needs a fresh sign-in: expect to be asked for your password even if you are already signed in.");
       for (const line of deviceCodeLines("Open the following URL to authenticate", dc, openUrl)) console.log(line);
 
       if (openUrl) {
@@ -110,7 +116,7 @@ export function registerNodeCommands(program: Command): void {
       }
 
       const dir = getConfigDir();
-      persistNodeRegistration(dir, relayUrl, outcome.access_token, outcome.host);
+      persistNodeRegistration(dir, relayUrl, outcome.access_token, outcome.host, issuer);
 
       console.log(`\nNode registered as '${t(outcome.host)}'.`);
       console.log(`Config written to: ${dir}`);
@@ -132,7 +138,8 @@ export function registerNodeCommands(program: Command): void {
     .description("Request a device code from the relay's authorization server")
     .requiredOption("--relay <url>", "Relay URL")
     .option("--host-name <name>", "Host name for this machine (validated here, passed again to 'node auth complete')")
-    .action(async (opts: { relay: string; hostName?: string }) => {
+    .option("--accept-new-issuer", "Trust the authorization server the relay names now, even though this node registered with another")
+    .action(async (opts: { relay: string; hostName?: string; acceptNewIssuer?: boolean }) => {
       try {
         assertRelayUrl(opts.relay);
       } catch (err) {
@@ -144,7 +151,7 @@ export function registerNodeCommands(program: Command): void {
         console.log(JSON.stringify({ ok: false, error: host.error }));
         return;
       }
-      const started = await requestDeviceCode(opts.relay);
+      const started = await requestDeviceCode(opts.relay, pinnedIssuer(getConfigDir(), opts.relay, opts.acceptNewIssuer));
       // `issuer` goes back to `node auth complete`, which refuses to continue if the relay names a
       // different authorization server by then. `open_url` is the only URL a caller may open: null
       // when the verification URL is not on the issuer's origin.
@@ -198,7 +205,7 @@ export function registerNodeCommands(program: Command): void {
         return;
       }
 
-      persistNodeRegistration(getConfigDir(), opts.relay, outcome.access_token, outcome.host);
+      persistNodeRegistration(getConfigDir(), opts.relay, outcome.access_token, outcome.host, opts.issuer);
       console.log(JSON.stringify({ status: "success", host: outcome.host }));
     });
 
@@ -254,13 +261,13 @@ export function registerNodeCommands(program: Command): void {
       };
 
       if (opts.json) {
-        console.log(JSON.stringify(out, null, 2));
+        console.log(JSON.stringify(sanitizeJsonStrings(out), null, 2));
       } else {
-        console.log(`Service:    ${out.service}`);
-        console.log(`Relay:      ${out.relay_url ?? "(not configured)"}`);
-        console.log(`Host:       ${out.host ?? "(not configured)"}`);
+        console.log(`Service:    ${t(out.service)}`);
+        console.log(`Relay:      ${out.relay_url === null ? "(not configured)" : t(out.relay_url)}`);
+        console.log(`Host:       ${out.host === null ? "(not configured)" : t(out.host)}`);
         console.log(`Shares:     ${out.shares.length === 0 ? "(none)" : ""}`);
-        for (const l of out.shares) console.log(`  ${l.share} → ${l.path}`);
+        for (const l of out.shares) console.log(`  ${t(l.share)} → ${t(l.path)}`);
       }
     });
 
@@ -301,19 +308,26 @@ export function registerNodeCommands(program: Command): void {
         return;
       }
 
-      // No daemon reachable — nothing to evict, but also nothing to confirm the
-      // reconnect for. Rotate directly and let the next `node start` pick it up.
+      // No daemon reachable — nothing to evict. Rotate directly, write the new token, then confirm it
+      // by connecting with it ourselves. previous_node_token (the displaced token, still valid on the
+      // relay until the new one connects) is cleared only after that connection works; if it
+      // fails, node.yaml keeps both so the node is never left with only a dead credential.
       const result = await nodeControlCommand(dir, "rotate_token",
         () => ({ type: "rotate_token" }),
         "token_rotated", "rotate_token_error"
       );
-      if (result && typeof result === "object" && "token" in result) {
-        writeNodeToken(dir, (result as { token: string }).token);
-        // No live daemon to confirm the reconnect, so no rotation window to protect —
-        // clear previous_node_token immediately so node.yaml isn't permanently misleading.
-        clearPreviousToken(dir);
-        console.log("Token rotated. Start the node service to connect with the new token.");
+      const newToken = result && typeof result === "object" ? (result as { token?: unknown }).token : undefined;
+      if (typeof newToken !== "string" || !EXECUTOR_TOKEN_PATTERN.test(newToken)) {
+        console.error("Error: the relay sent a malformed token; the node token was not changed.");
+        process.exit(1);
       }
+      writeNodeToken(dir, newToken);
+      await nodeControlCommand(dir, "confirm the new token",
+        (_cfg, loadedPaths) => ({ type: "config_update", paths: buildConfigUpdatePaths(loadedPaths) }),
+        "config_update_ok", "config_update_error"
+      );
+      clearPreviousToken(dir);
+      console.log("Token rotated and confirmed. Start the node service to connect with the new token.");
     });
 
   node
@@ -373,9 +387,9 @@ export function registerNodeCommands(program: Command): void {
       try {
         const nodeCfg = loadNodeConfig(dir);
         console.log("=== node.yaml ===");
-        console.log(`relay_url: ${nodeCfg.relay_url}`);
-        console.log(`node_token: ${maskToken(nodeCfg.node_token)}`);
-        console.log(`host: ${nodeCfg.host}`);
+        console.log(`relay_url: ${t(nodeCfg.relay_url)}`);
+        console.log(`node_token: ${t(maskToken(nodeCfg.node_token))}`);
+        console.log(`host: ${t(nodeCfg.host)}`);
         console.log(`max_file_size_kb: ${nodeCfg.max_file_size_kb}`);
       } catch {
         console.log("node.yaml not found — run 'constellation node init' first");
@@ -385,7 +399,7 @@ export function registerNodeCommands(program: Command): void {
       if (paths.length === 0) {
         console.log("(no paths configured)");
       } else {
-        for (const p of paths) console.log(`- share: ${p.share}\n  path: ${p.path}`);
+        for (const p of paths) console.log(`- share: ${t(p.share)}\n  path: ${t(p.path)}`);
       }
     });
 
@@ -406,19 +420,27 @@ export function registerNodeCommands(program: Command): void {
   cfg
     .command("set")
     .description("Update relay_url/max_file_size_kb without re-registering (used by node-gui's settings save)")
-    .option("--relay-url <url>", "New relay URL")
+    .option("--relay-url <url>", "New relay URL (a different origin removes the node token: run 'node init' again)")
     .option("--max-file-size-kb <n>", "New max file size in KB")
-    .action((opts: { relayUrl?: string; maxFileSizeKb?: string }) => {
+    .option("--json", "Print {\"ok\":true,\"credentials_dropped\":bool} instead of text")
+    .action((opts: { relayUrl?: string; maxFileSizeKb?: string; json?: boolean }) => {
       const dir = getConfigDir();
-      let nodeCfg: NodeConfig;
       try {
-        nodeCfg = loadNodeConfig(dir);
+        loadNodeConfig(dir);
       } catch {
         console.error("Error: node.yaml not found — run 'constellation node init' first");
         process.exit(1);
       }
 
-      const update: Partial<NodeConfig> = {};
+      let maxFileSizeKb: number | undefined;
+      if (opts.maxFileSizeKb) {
+        const n = parseInt(opts.maxFileSizeKb, 10);
+        if (!Number.isFinite(n) || n <= 0) {
+          console.error("Error: --max-file-size-kb must be a positive integer");
+          process.exit(1);
+        }
+        maxFileSizeKb = n;
+      }
       if (opts.relayUrl) {
         try {
           assertRelayUrl(opts.relayUrl);
@@ -426,19 +448,21 @@ export function registerNodeCommands(program: Command): void {
           console.error("Error:", t((err as Error).message));
           process.exit(1);
         }
-        update.relay_url = opts.relayUrl;
-      }
-      if (opts.maxFileSizeKb) {
-        const n = parseInt(opts.maxFileSizeKb, 10);
-        if (!Number.isFinite(n) || n <= 0) {
-          console.error("Error: --max-file-size-kb must be a positive integer");
-          process.exit(1);
-        }
-        update.max_file_size_kb = n;
       }
 
-      writeNodeConfig(dir, { ...nodeCfg, ...update });
+      // The node token was issued by the relay it registered with. Pointing the node at another
+      // origin would send that token there, so a change of origin drops it (see changeRelayUrl).
+      const { credentialsDropped } = opts.relayUrl ? changeRelayUrl(dir, opts.relayUrl) : { credentialsDropped: false };
+      if (maxFileSizeKb !== undefined) writeNodeConfig(dir, { max_file_size_kb: maxFileSizeKb });
+
+      if (opts.json) {
+        console.log(JSON.stringify({ ok: true, credentials_dropped: credentialsDropped }));
+        return;
+      }
       console.log("Config updated.");
+      if (credentialsDropped) {
+        console.log(`The relay changed to a different origin, so this node's token was removed. Run 'constellation node init --relay ${t(opts.relayUrl ?? "")}' to register with it.`);
+      }
     });
 
   // -------------------------------------------------------------------------
@@ -454,10 +478,10 @@ export function registerNodeCommands(program: Command): void {
     .action((opts: { json?: boolean }) => {
       const entries = loadPathsConfig(getConfigDir()).paths;
       if (opts.json) {
-        console.log(JSON.stringify(entries));
+        console.log(JSON.stringify(sanitizeJsonStrings(entries)));
       } else {
         if (entries.length === 0) { console.log("(no paths configured)"); return; }
-        for (const e of entries) console.log(`${e.share} → ${e.path}`);
+        for (const e of entries) console.log(`${t(e.share)} → ${t(e.path)}`);
       }
     });
 
@@ -559,6 +583,10 @@ async function syncPaths(dir: string, candidatePaths?: PathEntry[]): Promise<voi
 // token is used once and thrown away; it is never written to disk.
 // ---------------------------------------------------------------------------
 
+/** Registering mints a long-lived credential, so the relay requires the step-up `register` scope,
+ * which the authorization server grants only after a fresh sign-in. */
+const NODE_REGISTER_SCOPE = "relay register";
+
 /** Refuses a relay URL that is not https, or http to localhost (the same rule covers the HTTP
  * calls here and, via relayWsUrl, the WebSocket the node opens later). */
 function assertRelayUrl(relayUrl: string): void {
@@ -589,17 +617,34 @@ type DeviceCodeResult =
   | { ok: true; dc: DeviceCodeInfo; issuer: string; openUrl: string | null }
   | { ok: false; error: string };
 
-async function requestDeviceCode(relayUrl: string): Promise<DeviceCodeResult> {
+/**
+ * The authorization server a new registration must stay with: the one this node registered with
+ * before, if it is registering with the same relay again. `undefined` for a first registration, a
+ * different relay, a config from before the issuer was recorded, or when the user passed
+ * --accept-new-issuer.
+ */
+function pinnedIssuer(dir: string, relayUrl: string, acceptNew: boolean | undefined): string | undefined {
+  if (acceptNew) return undefined;
   try {
-    const endpoints = await discoverAsterism(relayUrl);
+    const existing = loadNodeConfig(dir);
+    return existing.issuer && isSameOrigin(existing.relay_url, relayUrl) ? existing.issuer : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function requestDeviceCode(relayUrl: string, expectedIssuer?: string): Promise<DeviceCodeResult> {
+  try {
+    const endpoints = await discoverAsterism(relayUrl, {}, expectedIssuer);
     const dc = await requestDeviceAuthorization(endpoints, {
       clientId: clientIdFor(relayUrl, "node"),
-      scope: "relay",
+      scope: NODE_REGISTER_SCOPE,
       resource: resourceFor(relayUrl),
     });
     return { ok: true, dc, issuer: endpoints.issuer, openUrl: verificationUrlToOpen(endpoints, dc) };
   } catch (err) {
-    return { ok: false, error: (err as Error).message };
+    const hint = err instanceof AsterismError && err.code === "issuer_changed" ? " Pass --accept-new-issuer to 'constellation node init' if you trust the change." : "";
+    return { ok: false, error: `${(err as Error).message}${hint}` };
   }
 }
 
@@ -635,12 +680,13 @@ async function completeRegistration(
     : { kind: "error", message: registered.message };
 }
 
-function persistNodeRegistration(dir: string, relayUrl: string, accessToken: string, host: string): void {
+function persistNodeRegistration(dir: string, relayUrl: string, accessToken: string, host: string, issuer: string): void {
   writeNodeConfig(dir, {
     relay_url: relayUrl,
     node_token: accessToken,
     host,
     max_file_size_kb: 100,
+    issuer,
   });
   // Create an empty paths.yaml if it doesn't exist.
   try { loadPathsConfig(dir); } catch {

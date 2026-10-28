@@ -6,7 +6,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { Router, Request, Response, IRouter } from "express";
 import { z } from "zod/v4";
 import { prisma } from "./db.js";
-import { routeToolCall, checkToolRateLimit, RouterError } from "./router.js";
+import { routeToolCall, checkToolRateLimit, checkMcpRequestRateLimit, shouldLogRateLimited, RouterError } from "./router.js";
 import { isOnline } from "./api.js";
 import { logEvent } from "./activity.js";
 import { evaluatePermissionBlob, type PermissionBlob } from "@constellation/shared";
@@ -108,6 +108,13 @@ mcpRouter.all("/mcp", async (req: Request, res: Response) => {
   // Answers the request itself (401/403/503) when the token is missing, invalid or lacks the relay scope.
   const user = await authenticateRequest(req, res);
   if (!user) return;
+
+  // Coarse per-user ceiling on all /mcp traffic (initialize, tools/list, pings, ...).
+  if (!checkMcpRequestRateLimit(user.id)) {
+    res.set("Retry-After", "60");
+    res.status(429).json({ error: "rate_limit_exceeded" });
+    return;
+  }
 
   const token = req.headers["authorization"]?.slice("Bearer ".length) ?? "";
   (req as Request & { auth: object }).auth = {
@@ -212,7 +219,9 @@ function registerTool<Args extends unknown[]>(
     const params = (args.length > 1 ? args[0] : {}) as Record<string, unknown>;
     if (!checkToolRateLimit(userId, name, params)) {
       const share = typeof params["share"] === "string" ? params["share"] : undefined;
-      logEvent({ userId, eventType: "rate_limited", tool: name, share, requestId: randomUUID() });
+      if (shouldLogRateLimited(userId)) {
+        logEvent({ userId, eventType: "rate_limited", tool: name, share, requestId: randomUUID() });
+      }
       toolError("Rate limit exceeded. Please slow down.");
     }
     return handler(...args);
@@ -459,7 +468,7 @@ function registerListDirectory(server: McpServer): void {
     "list_directory",
     {
       title: "List Directory",
-      description: "Enumerate directory contents — names, types, and sizes. Use to understand folder structure or browse what files exist in a directory. Returns entries for all items in the directory, not a single path's metadata. Use recursive:true with exclude:[\"node_modules\",\".git\"] for repo trees.",
+      description: "Enumerate directory contents — names, types, and sizes. Use to understand folder structure or browse what files exist in a directory. Returns entries for all items in the directory, not a single path's metadata. Use recursive:true with exclude:[\"node_modules\",\".git\"] for repo trees. exclude entries are globs matched against entry names: * and ? stay within a name, [abc] is a character class, {a,b} is alternation.",
       inputSchema: {
         share: z.string(),
         relative_path: z.string().optional(),
@@ -511,7 +520,7 @@ function registerFindFiles(server: McpServer): void {
     "find_files",
     {
       title: "Find Files",
-      description: "Find files by name using glob or regex. Use when you know part of a filename or extension. Matches filenames and paths only — does not read or search file contents. type:\"glob\" (default, micromatch syntax) or \"regex\". Capped at 200 results.",
+      description: "Find files by name using glob or regex. Use when you know part of a filename or extension. Matches filenames and paths only — does not read or search file contents. type:\"glob\" (default) or \"regex\". Globs match the entry name (not the path): * and ? stay within a name, ** matches anything, [abc] / [!abc] are character classes, {a,b} is alternation. Regex is RE2 syntax (no lookarounds or backreferences), matched anywhere in the text, case-sensitive. Capped at 200 results.",
       inputSchema: {
         share: z.string(),
         pattern: z.string(),
@@ -563,7 +572,7 @@ function registerGrepFiles(server: McpServer): void {
     "grep_files",
     {
       title: "Search File Contents",
-      description: "Search file contents for a literal string or regex pattern. Use to find which files contain specific text. Does not match on filenames or paths — only file contents. relative_path can be a file or directory; file_glob (e.g. \"*.ts\") scopes recursive search. Results grouped by file, capped at 50 matches and 100KB.",
+      description: "Search file contents for a literal string or regex pattern. Use to find which files contain specific text. Does not match on filenames or paths — only file contents. relative_path can be a file or directory; file_glob (e.g. \"*.ts\", same glob rules as find_files, matched against file names) scopes recursive search. type:\"regex\" is RE2 syntax (no lookarounds or backreferences), matched anywhere in each line, case-sensitive. Results grouped by file, capped at 50 matches and 100KB.",
       inputSchema: {
         share: z.string(),
         pattern: z.string(),

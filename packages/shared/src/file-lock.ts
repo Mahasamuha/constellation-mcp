@@ -15,30 +15,35 @@ export const LOCK_WAIT_MS = STALE_LOCK_MS + 30_000;
 const RETRY_MS = 100;
 
 /**
- * Removes the lock at `lockPath` if it is stale, and returns whether it did. The lock is moved to
- * a unique name with rename (atomic, so of several waiters that all saw a stale lock exactly one
- * succeeds) and its age is checked again on the moved file. If a live lock replaced the stale one
- * between the first check and the rename, the live lock is put back with link (which never
- * overwrites) instead of being deleted. `afterStat` is a test seam between the check and the move.
+ * Removes the lock at `lockPath` if it is stale, and returns whether it did. The lock is moved with
+ * rename (atomic) to a name derived from the inode and mtime that the staleness check saw, so
+ * several waiters that all saw the same stale lock converge on one name and only one rename
+ * succeeds. The moved file is then checked to be that same inode with that same mtime: if a live
+ * lock replaced the stale one between the check and the rename, the live lock is the one we moved,
+ * and it is put back with link (which never overwrites) instead of being deleted. `afterStat` is a
+ * test seam between the check and the move.
  */
 export function stealStaleLock(lockPath: string, staleMs = STALE_LOCK_MS, afterStat?: () => void): boolean {
+  let seen;
   try {
-    if (Date.now() - statSync(lockPath).mtimeMs <= staleMs) return false;
+    seen = statSync(lockPath);
+    if (Date.now() - seen.mtimeMs <= staleMs) return false;
   } catch {
     return false; // released or removed by someone else meanwhile
   }
   afterStat?.();
 
-  const moved = `${lockPath}.stale-${process.pid}-${randomBytes(8).toString("hex")}`;
+  const moved = `${lockPath}.stale-${seen.ino}-${Math.trunc(seen.mtimeMs)}`;
   try {
     renameSync(lockPath, moved);
   } catch {
     return false; // another waiter got there first
   }
   try {
-    if (Date.now() - statSync(moved).mtimeMs <= staleMs) {
-      // We moved a lock that was not stale after all: restore it. If someone already took the lock
-      // in the meantime, link fails with EEXIST and the moved lock is simply dropped.
+    const now = statSync(moved);
+    if (now.ino !== seen.ino || now.mtimeMs !== seen.mtimeMs) {
+      // We moved a lock that is not the stale one we looked at: restore it. If someone already took
+      // the lock in the meantime, link fails with EEXIST and the moved lock is simply dropped.
       try { linkSync(moved, lockPath); } catch { /* lock already re-taken */ }
       return false;
     }

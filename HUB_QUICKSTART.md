@@ -56,7 +56,7 @@ sudo constellation hub register \
   --env-file /etc/constellation/hub.env
 ```
 
-A browser opens for an admin sign-in (scope `relay admin`). The token is written to `/etc/constellation/hub.env` and never printed to the terminal.
+A browser opens for an admin sign-in (scopes `relay admin register`). Registering needs a fresh sign-in, so the admin is asked for their password even if already signed in. The token is written to `/etc/constellation/hub.env` and never printed to the terminal.
 
 ```sh
 sudo chown constellation:constellation /etc/constellation/hub.env

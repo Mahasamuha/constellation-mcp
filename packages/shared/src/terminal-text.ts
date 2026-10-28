@@ -65,3 +65,34 @@ export function deviceCodeLines(
     `If you do trust it, ${entry}: ${code}\n`,
   ];
 }
+
+// What `--json` output strips: the invisible and reordering characters of UNSAFE, but not the C0
+// controls, which JSON.stringify already escapes (so they cannot reach the terminal raw) and which
+// a legitimate multi-line value may contain.
+const HIDDEN = /[\u007f-\u009f\u00ad\u061c\u180e\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff\ufff9-\ufffb]/g;
+
+/**
+ * A copy of parsed JSON with C1 controls, bidi formatting and zero-width characters removed from
+ * every string, in object keys as well as values. `--json` output is meant for pipes, but people
+ * also read it in a terminal, and a server-supplied string there can hide or reorder text. One
+ * helper so every `--json` print site strips the same set.
+ */
+export function sanitizeJsonStrings<T>(value: T): T {
+  if (typeof value === "string") return value.replace(HIDDEN, "") as T;
+  if (Array.isArray(value)) return value.map((v) => sanitizeJsonStrings(v)) as T;
+  if (typeof value === "object" && value !== null) {
+    return Object.fromEntries(
+      Object.entries(value).map(([k, v]) => [k.replace(HIDDEN, ""), sanitizeJsonStrings(v)])
+    ) as T;
+  }
+  return value;
+}
+
+// Multi-line text (share instructions): UNSAFE minus tab and newline, which such text may use.
+// eslint-disable-next-line no-control-regex
+const UNSAFE_MULTILINE = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u00ad\u061c\u180e\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff\ufff9-\ufffb]/g;
+
+/** `text` with control (except tab and newline), bidi and zero-width characters removed. */
+export function sanitizeMultilineText(text: string): string {
+  return text.replace(UNSAFE_MULTILINE, "");
+}

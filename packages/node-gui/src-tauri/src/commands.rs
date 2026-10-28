@@ -16,13 +16,31 @@ pub fn update_tray(app: tauri::AppHandle) {
     crate::refresh_tray(&app);
 }
 
+/// What `save_settings` tells the window.
+#[derive(Debug, serde::Serialize)]
+pub struct SaveOutcome {
+    /// The relay moved to a different origin, so the CLI removed the node token (it was issued by
+    /// the old relay and must not be sent to the new one). The node must register again.
+    pub credentials_dropped: bool,
+}
+
+/// The `{"ok":true,"credentials_dropped":bool}` line `constellation node config set --json` prints.
+#[derive(Debug, serde::Deserialize)]
+struct ConfigSetResult {
+    credentials_dropped: bool,
+}
+
+fn parse_config_set(stdout: &str) -> Result<ConfigSetResult, String> {
+    serde_json::from_str(stdout.trim()).map_err(|e| format!("Unexpected CLI output: {e}"))
+}
+
 #[tauri::command]
 pub fn save_settings(
     app: tauri::AppHandle,
     relay_url: String,
     host: String,
     max_file_size_kb: u32,
-) -> Result<(), String> {
+) -> Result<SaveOutcome, String> {
     let relay_url = relay_url.trim();
     let host = host.trim();
 
@@ -37,15 +55,15 @@ pub fn save_settings(
     // Everything else is written by the CLI too — node-gui never touches node.yaml
     // directly, so there's exactly one implementation of "persist node config safely".
     let max_file_size_kb_str = max_file_size_kb.to_string();
-    let mut args = vec!["node", "config", "set", "--max-file-size-kb", &max_file_size_kb_str];
+    let mut args = vec!["node", "config", "set", "--json", "--max-file-size-kb", &max_file_size_kb_str];
     if !relay_url.is_empty() {
         args.push("--relay-url");
         args.push(relay_url);
     }
-    crate::cli::run(&args)?;
+    let result = parse_config_set(&crate::cli::output(&args)?)?;
 
     crate::refresh_tray(&app);
-    Ok(())
+    Ok(SaveOutcome { credentials_dropped: result.credentials_dropped })
 }
 
 #[tauri::command]
@@ -59,5 +77,17 @@ pub fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<(), String>
         app.autolaunch().enable().map_err(|e| e.to_string())
     } else {
         app.autolaunch().disable().map_err(|e| e.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_config_set_json() {
+        assert!(parse_config_set("{\"ok\":true,\"credentials_dropped\":true}\n").unwrap().credentials_dropped);
+        assert!(!parse_config_set("{\"ok\":true,\"credentials_dropped\":false}").unwrap().credentials_dropped);
+        assert!(parse_config_set("Config updated.").is_err());
     }
 }

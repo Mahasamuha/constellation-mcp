@@ -7,6 +7,8 @@ vi.mock("@constellation/shared", async (importOriginal) => {
   return {
     // The real evaluatePermissionBlob: sub/group semantics are part of what these tests cover.
     evaluatePermissionBlob: actual.evaluatePermissionBlob,
+    filterSource: actual.filterSource,
+    createPathFilter: actual.createPathFilter,
     createLogger: () => ({ ...log, child: () => log }),
     hashToken: (t: string) => t,
     generateToken: () => "test-token",
@@ -47,8 +49,9 @@ vi.mock("./hub.js", () => ({
 
 import { prisma } from "./db.js";
 import { getConnection, dispatchRpc } from "./hub.js";
-import { routeToolCall, checkToolRateLimit, classifyTool } from "./router.js";
+import { routeToolCall, checkToolRateLimit, classifyTool, checkMcpRequestRateLimit, shouldLogRateLimited } from "./router.js";
 import { config } from "./config.js";
+import { filterSource } from "@constellation/shared";
 import type { RequestUser } from "./request-user.js";
 
 // Typed access to mocked functions
@@ -125,6 +128,42 @@ describe("classifyTool", () => {
   });
 });
 
+describe("rate limit bookkeeping", () => {
+  it("records only allowed calls, so a flood of rejected calls doesn't grow the window", () => {
+    config.rateLimits.toolCallsPerMin = 2;
+    const u = uid().id;
+    const now = vi.spyOn(Date, "now");
+    now.mockReturnValue(1_000_000);
+    expect(checkToolRateLimit(u, "read_file", {})).toBe(true);
+    expect(checkToolRateLimit(u, "read_file", {})).toBe(true);
+    for (let i = 0; i < 1000; i++) expect(checkToolRateLimit(u, "read_file", {})).toBe(false);
+    // Both allowed calls expire together; a rejected call must not have kept the window shut.
+    now.mockReturnValue(1_000_000 + 60_001);
+    expect(checkToolRateLimit(u, "read_file", {})).toBe(true);
+    now.mockRestore();
+  });
+
+  it("logs rate_limited at most once per user per window", () => {
+    const u = uid().id;
+    const now = vi.spyOn(Date, "now");
+    now.mockReturnValue(5_000_000);
+    expect(shouldLogRateLimited(u)).toBe(true);
+    expect(shouldLogRateLimited(u)).toBe(false);
+    expect(shouldLogRateLimited(uid().id)).toBe(true);
+    now.mockReturnValue(5_000_000 + 60_001);
+    expect(shouldLogRateLimited(u)).toBe(true);
+    now.mockRestore();
+  });
+
+  it("has a separate per-user ceiling for /mcp requests", () => {
+    (config.rateLimits as Record<string, number>)["mcpRequestsPerMin"] = 2;
+    const u = uid().id;
+    expect(checkMcpRequestRateLimit(u)).toBe(true);
+    expect(checkMcpRequestRateLimit(u)).toBe(true);
+    expect(checkMcpRequestRateLimit(u)).toBe(false);
+  });
+});
+
 describe("checkToolRateLimit", () => {
   it("allows calls within the standard limit", () => {
     config.rateLimits.toolCallsPerMin = 3;
@@ -191,6 +230,30 @@ describe("share resolution", () => {
 
     const result = await routeToolCall(uid(), "read_file", "projects", {}, "nonexistent-host");
     expect(result).toMatchObject({ code: "host_not_found" });
+  });
+
+  it("answers host_not_found the same for a hub host that exists and one that doesn't, when the user can't see it", async () => {
+    db.pathShare.findFirst.mockResolvedValue(null);
+    // The user owns no such host; a hub with this name exists but exposes nothing they can see.
+    db.executor.findFirst.mockImplementation(async ({ where }: { where: { userId?: string | null } }) =>
+      where.userId === undefined || where.userId === null ? { id: "hub-1" } : null);
+    db.hubShare.findMany.mockResolvedValue([hubShareRow("hub-1", "secret-hub", "none")]);
+    const existing = await routeToolCall(uid(), "read_file", "projects", {}, "secret-hub");
+    db.hubShare.findMany.mockResolvedValue([]);
+    const missing = await routeToolCall(uid(), "read_file", "projects", {}, "no-such-hub");
+    expect(existing).toMatchObject({ code: "host_not_found" });
+    expect(missing).toMatchObject({ code: "host_not_found" });
+    expect((existing as { message: string }).message.replace("secret-hub", "H")).toBe(
+      (missing as { message: string }).message.replace("no-such-hub", "H"),
+    );
+  });
+
+  it("returns share_not_found for a host the user owns", async () => {
+    db.pathShare.findFirst.mockResolvedValue(null);
+    db.hubShare.findMany.mockResolvedValue([]);
+    db.executor.findFirst.mockResolvedValue({ id: "own" });
+    const result = await routeToolCall(uid(), "read_file", "missing", {}, "my-laptop");
+    expect(result).toMatchObject({ code: "share_not_found" });
   });
 
   it("returns executor_offline when executor has no active connection", async () => {
@@ -364,7 +427,7 @@ describe("path filtering", () => {
       executor: { id: "executor-1", host: "home-server", lastHeartbeatAt: new Date() },
     });
     db.relayPathFilter.findMany.mockResolvedValue([
-      { patternType: "regex", pattern: "\\.env$" },
+      { patternType: "regex", pattern: ".*\\.env" },
     ]);
     mockGetConnection.mockReturnValue({ ws: {}, executorId: "executor-1" } as ReturnType<typeof getConnection>);
 
@@ -373,6 +436,53 @@ describe("path filtering", () => {
     });
 
     expect(result).toMatchObject({ code: "path_filtered" });
+  });
+});
+
+describe("path filters for the executor", () => {
+  function stubWithFilters(filters: Array<{ patternType: string; pattern: string }>) {
+    stubShare();
+    db.relayPathFilter.findMany.mockResolvedValue(filters.map((f, i) => ({ id: `f${i}`, ...f })));
+  }
+
+  it("puts the compiled sources in every envelope, including copy and move", async () => {
+    stubWithFilters([{ patternType: "glob", pattern: "*.env" }]);
+    for (const [tool, params] of [
+      ["read_file", { relative_path: "a.txt" }],
+      ["copy", { src_relative_path: "a.txt", dst_relative_path: "b.txt" }],
+      ["move", { src_relative_path: "a.txt", dst_relative_path: "b.txt" }],
+    ] as const) {
+      mockDispatchRpc.mockClear();
+      await routeToolCall(uid(), tool, "projects", { ...params });
+      const envelope = mockDispatchRpc.mock.calls[0]![1];
+      expect(envelope.path_filters).toEqual([filterSource("*.env", "glob")]);
+    }
+  });
+
+  it("sends an empty list when the user has no filters", async () => {
+    stubShare();
+    await routeToolCall(uid(), "read_file", "projects", {});
+    expect(mockDispatchRpc.mock.calls[0]![1].path_filters).toEqual([]);
+  });
+
+  it("blocks a filtered dotfile at any depth with the shared matcher", async () => {
+    stubWithFilters([{ patternType: "glob", pattern: "*.env" }]);
+    const result = await routeToolCall(uid(), "read_file", "projects", { relative_path: "deep/dir/prod.env" });
+    expect(result).toMatchObject({ code: "path_filtered" });
+  });
+
+  it("blocks everything when a stored pattern no longer compiles", async () => {
+    stubWithFilters([{ patternType: "regex", pattern: "(?<=x)y" }]);
+    const result = await routeToolCall(uid(), "read_file", "projects", { relative_path: "a.txt" });
+    expect(result).toMatchObject({ code: "path_filtered" });
+    expect(mockDispatchRpc).not.toHaveBeenCalled();
+  });
+
+  it("refuses a path longer than the cap", async () => {
+    stubShare();
+    const result = await routeToolCall(uid(), "read_file", "projects", { relative_path: "a/".repeat(3000) });
+    expect(result).toMatchObject({ code: "path_filtered" });
+    expect(mockDispatchRpc).not.toHaveBeenCalled();
   });
 });
 

@@ -1,9 +1,10 @@
 import { IncomingMessage, Server } from "node:http";
+import type { Duplex } from "node:stream";
 import { WebSocket, WebSocketServer } from "ws";
 import { prisma } from "./db.js";
 import { ExecutorTokenType, Prisma } from "./generated/prisma/client.js";
 import { logEvent } from "./activity.js";
-import { hashToken, generateToken, createLogger, type RpcError, type RpcResponse, type RpcEnvelope as BaseRpcEnvelope } from "@constellation/shared";
+import { hashToken, generateToken, EXECUTOR_TOKEN_PATTERN, SHARE_NAME_PATTERN, sanitizeMultilineText, createLogger, type RpcError, type RpcResponse, type RpcEnvelope as BaseRpcEnvelope } from "@constellation/shared";
 import { config } from "./config.js";
 import { validateHostName } from "./host-name.js";
 import {
@@ -58,6 +59,29 @@ const pendingRotations = new Map<string, PendingRotationEntry>();
 
 const ROTATION_TTL_MS = 5 * 60 * 1000;
 
+/** Minimum gap between two rotate_token requests from one executor. */
+const ROTATE_MIN_INTERVAL_MS = 60_000;
+const lastRotateAt = new Map<string, number>();
+
+/** Messages (and pongs) one connection may send per window before it is closed. */
+const MSG_RATE_WINDOW_MS = 10_000;
+const MSG_RATE_MAX = 500;
+
+/** Minimum gap between last_heartbeat_at writes for one executor. */
+const HEARTBEAT_WRITE_MIN_INTERVAL_MS = 10_000;
+
+/** Upgrade attempts one client address may make per minute, successful or not, checked before any DB work. */
+/** How long a revoked, unreferenced token row is kept before the prune deletes it. */
+const REVOKED_TOKEN_RETENTION_MS = 60 * 60 * 1000;
+
+const UPGRADE_PER_IP_PER_MIN = 120;
+
+/** Most entries one config_update or hub_share_sync may carry. */
+export const MAX_CONFIG_UPDATE_ENTRIES = 256;
+export const MAX_HUB_SHARE_ENTRIES = 1000;
+
+const MAX_INSTRUCTIONS_LENGTH = 4096;
+
 // ---------------------------------------------------------------------------
 // Rate limiter — sliding window per executor token
 // ---------------------------------------------------------------------------
@@ -72,6 +96,29 @@ function checkReconnectRateLimit(tokenId: string): boolean {
   timestamps.push(now);
   reconnectTimestamps.set(tokenId, timestamps);
   return timestamps.length <= limit;
+}
+
+const upgradeTimestamps = new Map<string, number[]>();
+
+function checkUpgradeRateLimit(ip: string): boolean {
+  const now = Date.now();
+  const timestamps = (upgradeTimestamps.get(ip) ?? []).filter((t) => now - t < 60_000);
+  timestamps.push(now);
+  upgradeTimestamps.set(ip, timestamps);
+  return timestamps.length <= UPGRADE_PER_IP_PER_MIN;
+}
+
+/** The client address for an upgrade request. Behind a trusted proxy (the socket peer is loopback
+ * or private) the nearest proxy's X-Forwarded-For entry is used, as with Express `trust proxy`. */
+function clientIp(req: IncomingMessage): string {
+  const peer = req.socket.remoteAddress ?? "unknown";
+  const isInternal = /^(::1|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|::ffff:(127|10|192\.168)\.|f[cd][0-9a-f]{2}:)/i.test(peer);
+  const xff = req.headers["x-forwarded-for"];
+  if (isInternal && typeof xff === "string") {
+    const last = xff.split(",").pop()?.trim();
+    if (last) return last;
+  }
+  return peer;
 }
 
 // ---------------------------------------------------------------------------
@@ -97,6 +144,7 @@ function startHeartbeatLoop(): void {
         continue;
       }
 
+      conn.awaitingPong = true;
       conn.ws.ping();
     }
   }, HEARTBEAT_INTERVAL_MS);
@@ -119,85 +167,102 @@ export function closeHub(): Promise<void> {
   });
 }
 
+async function handleUpgradeRequest(wss: WebSocketServer, req: IncomingMessage, socket: Duplex, head: Buffer): Promise<void> {
+  if (!checkUpgradeRateLimit(clientIp(req))) {
+    socket.write("HTTP/1.1 429 Too Many Requests\r\n\r\n");
+    socket.destroy();
+    return;
+  }
+
+  if (req.url !== "/executor/connect") {
+    socket.destroy();
+    return;
+  }
+
+  const authHeader = req.headers["authorization"];
+  if (!authHeader?.startsWith("Bearer ")) {
+    socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
+    socket.destroy();
+    return;
+  }
+
+  const token = authHeader.slice(7);
+  const tokenHash = hashToken(token);
+
+  const executorToken = await prisma.executorToken.findUnique({
+    where: { tokenHash },
+    include: {
+      executors: { select: { id: true, userId: true, host: true } },
+    },
+  });
+
+  if (!executorToken || executorToken.revokedAt !== null || (executorToken.expiresAt !== null && executorToken.expiresAt < new Date())) {
+    socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
+    socket.destroy();
+    return;
+  }
+
+  // Primary lookup: find the executor that currently references this token.
+  // For a pending rotation token, executorTokenId hasn't been updated yet — fall
+  // back to the pendingRotations map.
+  let executor = executorToken.executors[0];
+  let pendingRotation: PendingRotationEntry | undefined;
+
+  if (!executor) {
+    pendingRotation = pendingRotations.get(executorToken.id);
+    if (!pendingRotation) {
+      socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
+      socket.destroy();
+      return;
+    }
+    const executorRecord = await prisma.executor.findUnique({
+      where: { id: pendingRotation.executorId },
+      select: { id: true, userId: true, host: true },
+    });
+    if (!executorRecord) {
+      socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
+      socket.destroy();
+      return;
+    }
+    executor = executorRecord;
+  }
+
+  if (!checkReconnectRateLimit(executorToken.id)) {
+    socket.write("HTTP/1.1 429 Too Many Requests\r\n\r\n");
+    socket.destroy();
+    return;
+  }
+
+  // Update last_used_at on the token.
+  await prisma.executorToken.update({
+    where: { id: executorToken.id },
+    data: { lastUsedAt: new Date() },
+  });
+
+  wss.handleUpgrade(req, socket, head, (ws) => {
+    wss.emit("connection", ws, req, {
+      executorId: executor.id,
+      userId: executor.userId,
+      tokenType: executorToken.tokenType,
+      host: executor.host,
+      tokenId: executorToken.id,
+      pendingRotation,
+    });
+  });
+}
+
 export function attachHub(server: Server): void {
-  const wss = new WebSocketServer({ noServer: true });
+  const wss = new WebSocketServer({ noServer: true, maxPayload: WS_MAX_MESSAGE_BYTES });
   _wss = wss;
 
-  server.on("upgrade", async (req: IncomingMessage, socket, head) => {
-    if (req.url !== "/executor/connect") {
+  server.on("upgrade", (req: IncomingMessage, socket, head) => {
+    // An upgrade socket has no HTTP error handler: an unhandled ECONNRESET would crash the process.
+    socket.on("error", (err) => log.debug({ err }, "Upgrade socket error"));
+    // Must never become an unhandled rejection: index.ts exits the process on one.
+    handleUpgradeRequest(wss, req, socket, head).catch((err) => {
+      log.error({ err }, "Executor upgrade failed");
+      try { socket.write("HTTP/1.1 500 Internal Server Error\r\n\r\n"); } catch { /* socket already gone */ }
       socket.destroy();
-      return;
-    }
-
-    const authHeader = req.headers["authorization"];
-    if (!authHeader?.startsWith("Bearer ")) {
-      socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
-      socket.destroy();
-      return;
-    }
-
-    const token = authHeader.slice(7);
-    const tokenHash = hashToken(token);
-
-    const executorToken = await prisma.executorToken.findUnique({
-      where: { tokenHash },
-      include: {
-        executors: { select: { id: true, userId: true, host: true } },
-      },
-    });
-
-    if (!executorToken || executorToken.revokedAt !== null || (executorToken.expiresAt !== null && executorToken.expiresAt < new Date())) {
-      socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
-      socket.destroy();
-      return;
-    }
-
-    // Primary lookup: find the executor that currently references this token.
-    // For a pending rotation token, executorTokenId hasn't been updated yet — fall
-    // back to the pendingRotations map.
-    let executor = executorToken.executors[0];
-    let pendingRotation: PendingRotationEntry | undefined;
-
-    if (!executor) {
-      pendingRotation = pendingRotations.get(executorToken.id);
-      if (!pendingRotation) {
-        socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
-        socket.destroy();
-        return;
-      }
-      const executorRecord = await prisma.executor.findUnique({
-        where: { id: pendingRotation.executorId },
-        select: { id: true, userId: true, host: true },
-      });
-      if (!executorRecord) {
-        socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
-        socket.destroy();
-        return;
-      }
-      executor = executorRecord;
-    }
-
-    if (!checkReconnectRateLimit(executorToken.id)) {
-      socket.write("HTTP/1.1 429 Too Many Requests\r\n\r\n");
-      socket.destroy();
-      return;
-    }
-
-    // Update last_used_at on the token.
-    await prisma.executorToken.update({
-      where: { id: executorToken.id },
-      data: { lastUsedAt: new Date() },
-    });
-
-    wss.handleUpgrade(req, socket, head, (ws) => {
-      wss.emit("connection", ws, req, {
-        executorId: executor.id,
-        userId: executor.userId,
-        tokenType: executorToken.tokenType,
-        host: executor.host,
-        tokenId: executorToken.id,
-        pendingRotation,
-      });
     });
   });
 
@@ -237,6 +302,9 @@ async function handleConnection(ws: WebSocket, meta: {
         await prisma.$transaction([
           prisma.executor.update({ where: { id: executorId }, data: { executorTokenId: tokenId } }),
           prisma.executorToken.update({ where: { id: pendingRotation.oldTokenId }, data: { revokedAt: new Date() } }),
+          // The rotation token was minted with a 5-minute expiry; once adopted it is the executor's
+          // permanent token, so a reconnect after that window must still authenticate.
+          prisma.executorToken.update({ where: { id: tokenId }, data: { expiresAt: null } }),
         ]);
       } catch (err) {
         log.error({ err, executorId }, "Failed to complete token rotation — closing connection");
@@ -275,9 +343,36 @@ async function handleConnection(ws: WebSocket, meta: {
     log.info({ executorId, host, userId }, "Executor connected");
     logEvent({ userId, eventType: "executor_connect", host });
 
+    // Sliding count of messages and pongs; a connection over the limit is closed.
+    let windowStart = Date.now();
+    let windowCount = 0;
+    let lastHeartbeatWriteAt = Date.now();
+    const overRateLimit = (): boolean => {
+      const now = Date.now();
+      if (now - windowStart >= MSG_RATE_WINDOW_MS) {
+        windowStart = now;
+        windowCount = 0;
+      }
+      windowCount += 1;
+      if (windowCount <= MSG_RATE_MAX) return false;
+      log.warn({ executorId, limit: MSG_RATE_MAX }, "Executor message rate exceeded — closing");
+      conn.disconnectReason = "error";
+      ws.close(1008, "Message rate limit exceeded");
+      // A client that ignores the close handshake must not hold the slot.
+      setTimeout(() => ws.terminate(), 1000).unref();
+      return true;
+    };
+
     ws.on("pong", () => {
-      conn.lastPongAt = Date.now();
+      if (overRateLimit()) return;
+      // Only a pong answering our ping counts; unsolicited pongs are ignored.
+      if (!conn.awaitingPong) return;
+      conn.awaitingPong = false;
+      const now = Date.now();
+      conn.lastPongAt = now;
       conn.missedPings = 0;
+      if (now - lastHeartbeatWriteAt < HEARTBEAT_WRITE_MIN_INTERVAL_MS) return;
+      lastHeartbeatWriteAt = now;
       prisma.executor.update({
         where: { id: executorId },
         data: { lastHeartbeatAt: new Date() },
@@ -285,6 +380,7 @@ async function handleConnection(ws: WebSocket, meta: {
     });
 
     ws.on("message", (data) => {
+      if (overRateLimit()) return;
       const byteLength = Buffer.isBuffer(data)
         ? data.length
         : Array.isArray(data)
@@ -369,7 +465,7 @@ interface ConfigUpdateEntry {
   instructions?: string;
 }
 
-async function handleConfigUpdate(conn: ConnectedExecutor, msg: ConfigUpdateMessage): Promise<void> {
+export async function handleConfigUpdate(conn: ConnectedExecutor, msg: ConfigUpdateMessage): Promise<void> {
   if (conn.tokenType === ExecutorTokenType.HUB) {
     send(conn.ws, { type: "config_update_error", error: "Hubs use admin-defined shares; config_update is not supported" });
     return;
@@ -383,12 +479,32 @@ async function handleConfigUpdate(conn: ConnectedExecutor, msg: ConfigUpdateMess
   }
 
   const entries = paths as ConfigUpdateEntry[];
+  if (entries.length > MAX_CONFIG_UPDATE_ENTRIES) {
+    send(conn.ws, { type: "config_update_error", error: `config_update may carry at most ${MAX_CONFIG_UPDATE_ENTRIES} paths` });
+    return;
+  }
 
   // Validate all shares before writing anything.
   const seen = new Set<string>();
   for (const entry of entries) {
     if (typeof entry !== "object" || entry === null || !entry.share || !entry.reported_path) {
       send(conn.ws, { type: "config_update_error", error: "Each path entry must have share and reported_path" });
+      return;
+    }
+    if (typeof entry.share !== "string" || !SHARE_NAME_PATTERN.test(entry.share)) {
+      send(conn.ws, { type: "config_update_error", error: "share must be 1-64 characters: letters, digits, '.', '_' or '-'" });
+      return;
+    }
+    if (typeof entry.reported_path !== "string") {
+      send(conn.ws, { type: "config_update_error", error: "reported_path must be a string" });
+      return;
+    }
+    if (entry.instructions !== undefined && typeof entry.instructions !== "string") {
+      send(conn.ws, { type: "config_update_error", error: `Share '${entry.share}': instructions must be a string` });
+      return;
+    }
+    if (typeof entry.instructions === "string" && entry.instructions.length > MAX_INSTRUCTIONS_LENGTH) {
+      send(conn.ws, { type: "config_update_error", error: `Share '${entry.share}': instructions must not exceed ${MAX_INSTRUCTIONS_LENGTH} characters` });
       return;
     }
     if (seen.has(entry.share)) {
@@ -420,7 +536,7 @@ async function handleConfigUpdate(conn: ConnectedExecutor, msg: ConfigUpdateMess
       }
 
       for (const entry of entries) {
-        const instructions = typeof entry.instructions === "string" ? entry.instructions : null;
+        const instructions = typeof entry.instructions === "string" ? sanitizeMultilineText(entry.instructions) : null;
         await tx.pathShare.upsert({
           where: { userId_share: { userId, share: entry.share } },
           create: {
@@ -490,9 +606,22 @@ export async function handleUpdateHost(conn: ConnectedExecutor, msg: UpdateHostM
   send(conn.ws, { type: "update_host_ok", host: newHost });
 }
 
-async function handleRotateToken(conn: ConnectedExecutor): Promise<void> {
+export async function handleRotateToken(conn: ConnectedExecutor): Promise<void> {
+  const now = Date.now();
+  const last = lastRotateAt.get(conn.executorId);
+  if (last !== undefined && now - last < ROTATE_MIN_INTERVAL_MS) {
+    send(conn.ws, { type: "rotate_token_error", error: "rotate_token is limited to once per minute" });
+    return;
+  }
+  lastRotateAt.set(conn.executorId, now);
+
   const newToken = generateToken();
+  // The only executor token the relay ever sends is one it just minted.
+  if (!EXECUTOR_TOKEN_PATTERN.test(newToken)) throw new Error("generateToken returned a malformed token");
   const newTokenHash = hashToken(newToken);
+
+  // Cancel any prior pending rotation for this executor to avoid orphaned tokens.
+  await cancelPendingRotation(conn.executorId);
 
   const newExecutorToken = await prisma.executorToken.create({
     data: {
@@ -503,17 +632,6 @@ async function handleRotateToken(conn: ConnectedExecutor): Promise<void> {
     },
     select: { id: true },
   });
-
-  // Cancel any prior pending rotation for this executor to avoid orphaned tokens.
-  for (const [priorTokenId, entry] of pendingRotations) {
-    if (entry.executorId === conn.executorId) {
-      clearTimeout(entry.timer);
-      pendingRotations.delete(priorTokenId);
-      prisma.executorToken.update({ where: { id: priorTokenId }, data: { revokedAt: new Date() } })
-        .catch((err) => log.error({ err, priorTokenId }, "Failed to revoke superseded rotation token"));
-      break;
-    }
-  }
 
   // Do NOT update executor.executorTokenId yet — the executor must reconnect with the new token first.
   // If it does not reconnect within the TTL, revoke the new token so the old one stays valid.
@@ -532,6 +650,25 @@ async function handleRotateToken(conn: ConnectedExecutor): Promise<void> {
 
   log.info({ executorId: conn.executorId }, "Token rotation prepared");
   send(conn.ws, { type: "token_rotated", token: newToken });
+}
+
+/** Cancels any pending token rotation for the executor and revokes the pending rotation token.
+ * Called when the executor's token is revoked or replaced, so a rotation token minted earlier
+ * cannot be adopted afterwards. */
+export async function cancelPendingRotation(executorId: string): Promise<void> {
+  const tokenIds: string[] = [];
+  for (const [tokenId, entry] of pendingRotations) {
+    if (entry.executorId === executorId) {
+      clearTimeout(entry.timer);
+      pendingRotations.delete(tokenId);
+      tokenIds.push(tokenId);
+    }
+  }
+  if (tokenIds.length === 0) return;
+  await prisma.executorToken.updateMany({
+    where: { id: { in: tokenIds }, revokedAt: null },
+    data: { revokedAt: new Date() },
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -563,6 +700,10 @@ export async function handleHubShareSync(conn: ConnectedExecutor, msg: HubShareS
   }
 
   const shares = rawShares as HubShareEntry[];
+  if (shares.length > MAX_HUB_SHARE_ENTRIES) {
+    send(conn.ws, { type: "hub_share_sync_error", error: `hub_share_sync may carry at most ${MAX_HUB_SHARE_ENTRIES} shares` });
+    return;
+  }
 
   // Validate shape
   for (const entry of shares) {
@@ -572,6 +713,10 @@ export async function handleHubShareSync(conn: ConnectedExecutor, msg: HubShareS
     }
     if (typeof entry.name !== "string" || !entry.name) {
       send(conn.ws, { type: "hub_share_sync_error", error: "Each share entry must have a name string" });
+      return;
+    }
+    if (!SHARE_NAME_PATTERN.test(entry.name)) {
+      send(conn.ws, { type: "hub_share_sync_error", error: "Share name must be 1-64 characters: letters, digits, '.', '_' or '-'" });
       return;
     }
     if (typeof entry.reported_path !== "string" || !entry.reported_path) {
@@ -619,8 +764,8 @@ export async function handleHubShareSync(conn: ConnectedExecutor, msg: HubShareS
       send(conn.ws, { type: "hub_share_sync_error", error: `Share '${entry.name}': instructions must be a string` });
       return;
     }
-    if (typeof entry.instructions === "string" && entry.instructions.length > 4096) {
-      send(conn.ws, { type: "hub_share_sync_error", error: `Share '${entry.name}': instructions must not exceed 4096 characters` });
+    if (typeof entry.instructions === "string" && entry.instructions.length > MAX_INSTRUCTIONS_LENGTH) {
+      send(conn.ws, { type: "hub_share_sync_error", error: `Share '${entry.name}': instructions must not exceed ${MAX_INSTRUCTIONS_LENGTH} characters` });
       return;
     }
   }
@@ -629,7 +774,7 @@ export async function handleHubShareSync(conn: ConnectedExecutor, msg: HubShareS
   try {
     await prisma.$transaction(async (tx) => {
       for (const entry of shares) {
-        const instructions = typeof entry.instructions === "string" ? entry.instructions : null;
+        const instructions = typeof entry.instructions === "string" ? sanitizeMultilineText(entry.instructions) : null;
         await tx.hubShare.upsert({
           where: { executorId_share: { executorId: conn.executorId, share: entry.name } },
           create: {
@@ -684,6 +829,14 @@ export async function pruneExpiredOrphanedTokens(): Promise<void> {
   if (result.count > 0) {
     log.warn({ count: result.count }, "Revoked orphaned executor tokens from prior restart");
   }
+  // Superseded rotation tokens and old tokens replaced by a completed rotation stay revoked and
+  // unreferenced; delete them after a grace period.
+  const deleted = await prisma.executorToken.deleteMany({
+    where: { revokedAt: { lt: new Date(Date.now() - REVOKED_TOKEN_RETENTION_MS) }, executors: { none: {} } },
+  });
+  if (deleted.count > 0) {
+    log.info({ count: deleted.count }, "Deleted revoked, unreferenced executor tokens");
+  }
 }
 
 /** Removes expired reconnect timestamp entries. Called periodically from index.ts. */
@@ -694,6 +847,14 @@ export function pruneReconnectTimestamps(): void {
     const fresh = ts.filter((t) => now - t < window);
     if (fresh.length === 0) reconnectTimestamps.delete(k);
     else reconnectTimestamps.set(k, fresh);
+  }
+  for (const [ip, ts] of upgradeTimestamps) {
+    const fresh = ts.filter((t) => now - t < window);
+    if (fresh.length === 0) upgradeTimestamps.delete(ip);
+    else upgradeTimestamps.set(ip, fresh);
+  }
+  for (const [id, at] of lastRotateAt) {
+    if (now - at >= ROTATE_MIN_INTERVAL_MS) lastRotateAt.delete(id);
   }
 }
 

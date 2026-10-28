@@ -91,7 +91,7 @@ All windows are non-resizable panels that open centered on screen. A window that
 
 ### Auth Window (`480 × 280`)
 
-Triggered by **Connect to Relay…** in the tray menu, or from Settings when the token is missing.
+Triggered by **Connect to Relay…** in the tray menu, or from Settings when the token is missing. Registering uses the step-up scope `relay register`, which needs a fresh sign-in: the authorization server asks for the password even if you are already signed in. A repeat registration is pinned to the authorization server recorded in `node.yaml` (`issuer`); if the relay names another one, the GUI shows the error and the user must run `constellation node init --accept-new-issuer` in a terminal.
 
 **Step 1 — Relay URL**  
 Enter the relay base URL (e.g. `https://relay.example.com`) and click Continue. The GUI calls `start_device_flow`, which runs `constellation node auth device-code`: it finds the relay's authorization server (asterism) from the relay's metadata and requests a device code there with scope `relay` and the node client (`<relay>/clients/node.json`).
@@ -148,7 +148,7 @@ Edits `node.yaml` fields. `node_token` is managed via the Auth window only.
 
 | Field | Notes |
 |---|---|
-| Relay URL | Changing this requires a node restart |
+| Relay URL | A different relay origin removes the node token (it belongs to the old relay): Save asks for confirmation first, then the window says the node is unregistered and to use **Connect to Relay…** again. The same origin keeps it |
 | Node name (host) | Calls `constellation node rename` if changed |
 | Max file size (KB) | Minimum 1 (enforced); the GUI caps input at 100 but higher values can be set directly in `node.yaml` |
 | Config directory | Read-only; shows the resolved path |
@@ -196,7 +196,7 @@ All commands are invoked from the frontend via `invoke('<name>', args)`.
 |---|---|---|---|
 | `get_config` | — | `NodeConfig` | Reads `node.yaml` |
 | `get_config_dir` | — | `string` | Resolved config directory path |
-| `save_settings` | `relay_url`, `host`, `max_file_size_kb` | `void` | Writes `node.yaml`; calls `node rename` if host changed |
+| `save_settings` | `relay_url`, `host`, `max_file_size_kb` | `{ credentials_dropped: bool }` | Writes `node.yaml` via `node config set --json`; calls `node rename` if host changed. `credentials_dropped` is true when the relay origin changed and the node token was removed |
 | `update_tray` | — | `void` | Force-refreshes tray state |
 
 ### Auth

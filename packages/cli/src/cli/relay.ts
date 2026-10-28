@@ -6,8 +6,8 @@ import {
   deleteRelaySession,
   type RelaySession,
 } from "@constellation/node/config";
-import { confirm, type ExecutorEntry, assertSecureHttpUrl, sanitizeForTerminal as t } from "@constellation/shared";
-import { adminStepUp, getValidSession, revokeStoredSession, signIn } from "./session.js";
+import { confirm, type ExecutorEntry, assertSecureHttpUrl, isSameOrigin, sanitizeForTerminal as t, sanitizeJsonStrings } from "@constellation/shared";
+import { adminStepUp, getValidSession, login, revokeStoredSession } from "./session.js";
 
 // ---------------------------------------------------------------------------
 // API response types
@@ -97,11 +97,14 @@ async function getAdminSession(
   relayUrlFlag: string | undefined
 ): Promise<RelaySession> {
   // Prefer the relay the user is signed in to over the node config's.
-  const signedIn = relayUrlFlag ? undefined : (() => {
-    try { return loadRelaySession(getConfigDir()).relay_url; } catch { return undefined; }
+  const stored = (() => {
+    try { return loadRelaySession(getConfigDir()); } catch { return undefined; }
   })();
-  const relayUrl = resolveRelayUrl(relayUrlFlag ?? signedIn, getConfigDir);
-  const accessToken = await adminStepUp(relayUrl);
+  const relayUrl = resolveRelayUrl(relayUrlFlag ?? stored?.relay_url, getConfigDir);
+  // Pinned to the authorization server of the stored sign-in (for the same relay): a relay that now
+  // names another is refused, not asked for an admin token.
+  const issuer = stored?.issuer && isSameOrigin(stored.relay_url, relayUrl) ? stored.issuer : undefined;
+  const accessToken = await adminStepUp(relayUrl, issuer);
   return { relay_url: relayUrl, access_token: accessToken, access_token_expires_at: new Date(Date.now() + 300_000).toISOString() };
 }
 
@@ -144,7 +147,12 @@ function buildListQuery(opts: ListOpts, extra: Record<string, string | undefined
 /** Warns when the server paginated and more rows exist beyond what's shown — to
  * stderr, so --json output stays valid, pipeable JSON either way. */
 function warnIfMore(res: PaginatedResponse<unknown>): void {
+  // The counts come from the server and are printed in a command line the user may copy: anything
+  // but a plain non-negative integer drops the footer rather than printing it.
+  const counts = [res.offset, res.total, res.data.length];
+  if (!counts.every((n) => Number.isSafeInteger(n) && n >= 0)) return;
   const shown = res.offset + res.data.length;
+  if (!Number.isSafeInteger(shown)) return;
   if (shown < res.total) {
     console.error(`Showing ${res.data.length} of ${res.total} total (offset ${res.offset}) — use --offset ${shown} to see more.`);
   }
@@ -230,9 +238,10 @@ export function registerRelayCommands(program: Command): void {
   relay
     .command("login")
     .description("Sign in to the relay's authorization server (OAuth device flow)")
-    .action(async () => {
+    .option("--accept-new-issuer", "Without a terminal, accept that the relay now names a different authorization server than your current sign-in")
+    .action(async (opts: { acceptNewIssuer?: boolean }) => {
       const relayUrl = resolveRelayUrl(getRelayFlag(), getConfigDir);
-      await signIn(relayUrl, cfgDir());
+      await login(relayUrl, cfgDir(), opts.acceptNewIssuer);
       console.log(`\nLogged in to ${relayUrl}`);
     });
 
@@ -282,7 +291,7 @@ export function registerRelayCommands(program: Command): void {
       const session = await getValidSession(cfgDir());
       const qs = buildListQuery(opts);
       const res = await apiGet<PaginatedResponse<ExecutorEntry>>(session, `/api/executors${qs}`);
-      if (opts.json) { console.log(JSON.stringify(res.data, null, 2)); warnIfMore(res); return; }
+      if (opts.json) { console.log(JSON.stringify(sanitizeJsonStrings(res.data), null, 2)); warnIfMore(res); return; }
       for (const a of res.data) {
         console.log(`${t(a.host)} (${t(a.id)})`);
         console.log(`  Status: ${a.online ? "online" : "offline"}${a.last_heartbeat_at ? `  last seen ${t(a.last_heartbeat_at)}` : ""}`);
@@ -320,7 +329,7 @@ export function registerRelayCommands(program: Command): void {
       const session = await getValidSession(cfgDir());
       const qs = buildListQuery(opts, { executor_id: opts.executor });
       const res = await apiGet<PaginatedResponse<ShareEntry>>(session, `/api/shares${qs}`);
-      if (opts.json) { console.log(JSON.stringify(res.data, null, 2)); warnIfMore(res); return; }
+      if (opts.json) { console.log(JSON.stringify(sanitizeJsonStrings(res.data), null, 2)); warnIfMore(res); return; }
       for (const s of res.data) {
         console.log(`${t(s.share)}  (${t(s.host)})  →  ${t(s.reported_path)}`);
       }
@@ -343,7 +352,7 @@ export function registerRelayCommands(program: Command): void {
       const session = await getValidSession(cfgDir());
       const qs = buildListQuery(opts);
       const res = await apiGet<PaginatedResponse<FilterEntry>>(session, `/api/filters${qs}`);
-      if (opts.json) { console.log(JSON.stringify(res.data, null, 2)); warnIfMore(res); return; }
+      if (opts.json) { console.log(JSON.stringify(sanitizeJsonStrings(res.data), null, 2)); warnIfMore(res); return; }
       for (const f of res.data) {
         const scope = f.scope_executor_id ? ` [executor: ${t(f.scope_executor_id)}]` : "";
         console.log(`${t(f.id)}  ${t(f.pattern_type)}:${t(f.pattern)}${scope}  (${t(f.created_at)})`);
@@ -398,7 +407,7 @@ export function registerRelayCommands(program: Command): void {
       const session = await getAdminSession(cfgDir, getRelayFlag());
       const qs = buildListQuery(opts, { executor_id: opts.executor });
       const data = await apiGet<PaginatedResponse<HubShareEntry>>(session, `/api/admin/hub-shares${qs}`);
-      if (opts.json) { console.log(JSON.stringify(data.data, null, 2)); warnIfMore(data); return; }
+      if (opts.json) { console.log(JSON.stringify(sanitizeJsonStrings(data.data), null, 2)); warnIfMore(data); return; }
 
       if (data.data.length === 0) {
         console.log(data.total > 0 ? `No hub shares at this offset (${data.total} total — try --offset 0).` : "No hub shares found.");
@@ -418,52 +427,6 @@ export function registerRelayCommands(program: Command): void {
         console.log(`  ${t(s.share)}  →  ${t(s.reported_path)}  [default: ${t(s.permission_blob.default)}]${t(overrideStr)}`);
       }
       warnIfMore(data);
-    });
-
-  // -------------------------------------------------------------------------
-  // token — break-glass token management
-  // -------------------------------------------------------------------------
-
-  const tokenCmd = relay.command("token").description("Manage executor tokens (break-glass operations)");
-
-  tokenCmd
-    .command("create")
-    .description("Create a new executor token")
-    .requiredOption("--shared", "Create a HUB service token (break-glass — prefer: constellation hub register)")
-    .action(async () => {
-      console.error("╔══════════════════════════════════════════════════════════════════════════╗");
-      console.error("║  BREAK-GLASS OPERATION                                                   ║");
-      console.error("║                                                                          ║");
-      console.error("║  The preferred registration path is:                                     ║");
-      console.error("║    constellation hub register --relay <url>                              ║");
-      console.error("║  That flow requires no manual token handling and is safer.               ║");
-      console.error("║                                                                          ║");
-      console.error("║  Use this command only when the device code flow is unavailable          ║");
-      console.error("║  (e.g. scripted provisioning or break-glass recovery).                  ║");
-      console.error("║                                                                          ║");
-      console.error("║  The token is shown ONCE. Store it immediately in a secure location.    ║");
-      console.error("║  Treat it as a root-level credential — it is not user-scoped.           ║");
-      console.error("╚══════════════════════════════════════════════════════════════════════════╝");
-      console.error("");
-
-      const ok = await confirm("Proceed with break-glass shared token creation?");
-      if (!ok) { console.log("Cancelled."); return; }
-
-      const session = await getAdminSession(cfgDir, getRelayFlag());
-      const data = await apiPost<{ token: string; token_id: string; created_at: string }>(
-        session, "/api/tokens/shared", {}
-      );
-
-      console.log("");
-      console.log("=== HUB TOKEN (shown once) ===");
-      console.log("");
-      console.log(t(data.token));
-      console.log("");
-      console.log(`Token ID:   ${t(data.token_id)}`);
-      console.log(`Created at: ${t(data.created_at)}`);
-      console.log("");
-      console.log("Store this token as CONSTELLATION_HUB_TOKEN in the hub's environment.");
-      console.log("It will not be shown again. Revoke via: constellation relay executors revoke <executor-id>");
     });
 }
 

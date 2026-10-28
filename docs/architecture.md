@@ -59,9 +59,9 @@ The relay has three layers that operate in sequence on every MCP tool call.
 
 The relay is an OAuth 2.0 resource server. [asterism](adr/0022-asterism-authorization-server.md), an external OAuth 2.1 authorization server, owns sign-in, local accounts, groups, consent, grants and revocation, and issues JWT access tokens. The relay verifies each token (signature, issuer `ASTERISM_ISSUER`, expiry, audience `<RELAY_URL>/mcp`) with `@mahasamuha/asterism-verify`. It stores no sessions and no OAuth tokens, and creates a `users` row the first time it sees a token's `sub`.
 
-The relay advertises itself with RFC 9728 protected resource metadata, which names asterism as the authorization server and declares two scopes: `relay` (use the tools and your own resources) and `admin` (step-up only). Admin means the token holds the `admin` scope (a step-up) and its `groups` contain `ADMIN_GROUP` (default `constellation-admins`). The node, relay CLI and hub identify themselves to asterism with Client ID Metadata Documents the relay serves at `/clients/*.json`.
+The relay advertises itself with RFC 9728 protected resource metadata, which names asterism as the authorization server and declares three scopes: `relay` (use the tools and your own resources), `admin` (fresh sign-in only: hub registration, hub-share configuration, the admin activity log) and `register` (fresh sign-in only: permanently connect a computer). Admin means the token holds the `admin` scope (a fresh sign-in) and its `groups` contain `ADMIN_GROUP` (default `constellation-admins`). The node, relay CLI and hub identify themselves to asterism with Client ID Metadata Documents the relay serves at `/clients/*.json`.
 
-Nodes and hubs register with `POST /api/executors/register`, authenticated by an access token (a hub needs `admin`). The relay mints a long-lived executor token for the WebSocket connection: a 32-byte cryptographically random value stored as a SHA-256 hash and never logged in plaintext.
+Nodes and hubs register with `POST /api/executors/register`, authenticated by an access token that holds the `register` scope (a hub also needs `admin`). Every other `/api` route accepts only tokens issued to the CLI client, so MCP clients are limited to `/mcp`. The relay mints a long-lived executor token for the WebSocket connection: a 32-byte cryptographically random value stored as a SHA-256 hash and never logged in plaintext.
 
 ### WebSocket hub
 
@@ -202,7 +202,7 @@ Refreshing tokens and revoking grants happen in asterism. For an admin-gated cal
 
 The relay resolves a share to an `absolute_root` and forwards it to the node. The node independently validates that root against its own `paths.yaml`. Because the node holds the allowlist locally, a compromised relay cannot forge a root the node doesn't recognise — it can at most send a path the node will reject.
 
-Relay path filters are a further restrict-only layer applied before an RPC is dispatched. They cannot grant access to anything the node would otherwise allow.
+Relay path filters are a further restrict-only layer. The relay pre-checks them before an RPC is dispatched and sends them in the envelope; the executor enforces them again on resolved real paths. They cannot grant access to anything the node would otherwise allow.
 
 ### Path validation
 
@@ -238,21 +238,20 @@ new is "rate limited too aggressively," never "not rate limited at all."
 | MCP tool calls (standard tools) | 60 req/min per user | `RATE_LIMIT_TOOL_CALLS_PER_MIN` |
 | MCP tool calls (expensive tools — `grep_files`, `find_files`, recursive `list_directory`, **and any unclassified tool**) | 20 req/min per user | `RATE_LIMIT_EXPENSIVE_TOOLS_PER_MIN` |
 | Discovery metadata and client metadata documents (`/.well-known/oauth-protected-resource/*`, `/clients/*.json`) | 300 req/15 min per IP | `RATE_LIMIT_STATIC_PER_15MIN` |
-| Any other HTTP route, including `/api/*` and `/api/executors/register` — **and any route added later and not explicitly classified** | 10 req/15 min per IP | `RATE_LIMIT_DEFAULT_PER_15MIN` |
+| Any other HTTP route, including `/api/executors/register` — **and any route added later and not explicitly classified** | 10 req/15 min per IP | `RATE_LIMIT_DEFAULT_PER_15MIN` |
+| `/api/*` (except registration), failed or unauthenticated requests | 10 req/15 min per IP | `RATE_LIMIT_DEFAULT_PER_15MIN` |
+| `/api/*` (except registration), authenticated requests | 600 req/15 min per user | `RATE_LIMIT_API_PER_USER_PER_15MIN` |
+| `/mcp`, failed or unauthenticated requests | 300 req/15 min per IP | `RATE_LIMIT_MCP_FAILED_PER_15MIN` |
+| `/mcp`, every authenticated request (tool call or not) | 300 req/min per user | `RATE_LIMIT_MCP_REQUESTS_PER_MIN` |
 | Executor WebSocket reconnects | 10 req/min per executor token | `RATE_LIMIT_WS_RECONNECT_PER_MIN` |
 
-**Caveat: the defaults are sized for a single-user relay.** The relay no longer handles sign-in, so connecting a client costs it only a discovery request (the static bucket) and later `/api/*` calls (the default bucket). `/mcp` traffic itself is exempt and limited per user by the tool-call limiter. Authorization endpoints are asterism's and are limited there.
+**Caveat: the defaults are sized for a single-user relay.** The relay no longer handles sign-in, so connecting a client costs it only a discovery request (the static bucket) and later `/api/*` calls (per user). `/mcp` and `/api` count only failed requests per IP, so a shared NAT or hosted MCP client's egress address isn't locked out; authenticated requests are counted per user, and `/mcp` tool calls additionally by the tool-call limiter. Authorization endpoints are asterism's and are limited there.
 
 **Multi-user deployments belong behind a WAF.** The built-in limiter is in-memory, per-instance, and keyed only on IP. Use it for single-user deployments, prototyping and pilots. A multi-user production deployment should sit behind a WAF or an equivalent dedicated rate-limiting and abuse-protection tool (e.g. a cloud WAF, an API gateway, or a reverse proxy with rate-limiting and bot rules), as a security measure as well as for capacity.
 
-Several users connecting at once from the same office NAT, VPN exit, or hosted MCP client will exhaust the default buckets quickly. Whether you size the WAF's rules or raise `RATE_LIMIT_DEFAULT_PER_15MIN` for a pilot, start from the number of `/api/*` calls you expect per IP in 15 minutes and add headroom for retries. Client SDKs differ in how many discovery URLs they probe, so verify against your relay's access logs.
+Several users connecting at once from the same office NAT, VPN exit, or hosted MCP client will exhaust the per-IP buckets for failed requests quickly only if they fail; successful authenticated `/api` and `/mcp` requests are counted per user. Whether you size the WAF's rules or raise `RATE_LIMIT_DEFAULT_PER_15MIN` for a pilot, start from the number of `/api/*` calls you expect per IP in 15 minutes and add headroom for retries. Client SDKs differ in how many discovery URLs they probe, so verify against your relay's access logs.
 
-Two routes are deliberately exempt from the HTTP-level buckets, not by oversight:
-`/healthz` (an infra liveness check, registered before the rate-limit dispatcher is
-mounted) and `/mcp` (every MCP tool call already goes through the per-user tool-call
-buckets above, which fit that traffic shape far better than a per-IP HTTP bucket
-would — a normal session legitimately makes many more requests to this one endpoint
-than the default bucket allows for an arbitrary route).
+`/healthz` is deliberately outside the dispatcher's buckets (an infra liveness check with its own generous limiter). `/mcp` and `/api` are not exempt: per IP they count only failed requests, and authenticated requests are limited per user (see the table).
 
 Rate limit state is in-memory — no Redis required. State is lost on relay restart, which is acceptable.
 

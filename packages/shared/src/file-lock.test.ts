@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync, utimesSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { withLockFile, stealStaleLock, STALE_LOCK_MS, LOCK_WAIT_MS } from "./file-lock.js";
@@ -86,6 +86,24 @@ describe("stealStaleLock", () => {
     const stolen = stealStaleLock(lock, STALE_LOCK_MS, () => {
       rmSync(lock);
       writeFileSync(lock, "live");
+    });
+    expect(stolen).toBe(false);
+    expect(readFileSync(lock, "utf8")).toBe("live");
+    expect(readdirSync(dir)).toEqual(["x.lock"]);
+  });
+
+  it("puts back a live lock that took the stale one's place with the same mtime", () => {
+    const lock = join(dir, "x.lock");
+    writeFileSync(lock, "dead");
+    age(lock, STALE_LOCK_MS + 1000);
+    const staleMtime = statSync(lock).mtime;
+    // The replacement is created while the stale file still exists, so it has a different inode,
+    // and carries the same mtime: only the inode check can tell it from the stale lock.
+    const stolen = stealStaleLock(lock, STALE_LOCK_MS, () => {
+      const replacement = join(dir, "replacement");
+      writeFileSync(replacement, "live");
+      utimesSync(replacement, staleMtime, staleMtime);
+      renameSync(replacement, lock);
     });
     expect(stolen).toBe(false);
     expect(readFileSync(lock, "utf8")).toBe("live");

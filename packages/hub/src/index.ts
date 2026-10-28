@@ -1,5 +1,5 @@
 import { checkSharePath } from "./paths.js";
-import { readFileSync, writeFileSync, statSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { userInfo } from "node:os";
 import {
@@ -11,6 +11,9 @@ import {
   RelaySocket,
   startControlServer,
   type RpcEnvelope,
+  parsePathFilters,
+  writeEnvFileValue,
+  EXECUTOR_TOKEN_PATTERN,
   type RotatableConnection,
 } from "@constellation/shared";
 import { loadHubConfig, validateHubConfig, type HubConfig } from "./config.js";
@@ -37,6 +40,12 @@ interface IncomingRpcEnvelope extends RpcEnvelope {
  * (5 minutes) so a caller never hangs past the point where the rotation would have
  * expired server-side anyway. Mirrors node/src/connection.ts's identical constant. */
 const ROTATE_TIMEOUT_MS = 30_000;
+
+const HUB_TOKEN_KEY = "CONSTELLATION_HUB_TOKEN";
+/** Holds the token a rotation displaced until a connection with the new one has succeeded, so a
+ * rotation that never connects can't leave env_file with only a dead credential (as node does
+ * with previous_node_token). Empty when there is none. */
+const HUB_PREVIOUS_TOKEN_KEY = "CONSTELLATION_HUB_PREVIOUS_TOKEN";
 
 interface RotationState {
   resolve: () => void;
@@ -209,6 +218,11 @@ export class HubSocket extends RelaySocket implements RotatableConnection {
     this.send(buildHubShareSyncPayload(this.cfg, this.shareRegistry));
     if (this.awaitingRotationConfirm) {
       this.awaitingRotationConfirm = false;
+      try {
+        if (this.cfg.env_file) writeEnvFileValue(this.cfg.env_file, HUB_PREVIOUS_TOKEN_KEY, "");
+      } catch (err) {
+        this.log.warn({ err }, "Rotated token is in use but the previous token could not be cleared from env_file");
+      }
       if (this.rotationState) {
         clearTimeout(this.rotationState.timer);
         const { resolve } = this.rotationState;
@@ -249,10 +263,21 @@ export class HubSocket extends RelaySocket implements RotatableConnection {
     const type = msg["type"];
 
     if (type === "token_rotated") {
+      // Only a rotation this hub asked for may change its credential: an unsolicited
+      // token_rotated (or a repeat) is dropped rather than adopted.
+      if (!this.rotationState || this.awaitingRotationConfirm) {
+        this.log.warn("Received token_rotated with no rotation pending — ignoring");
+        return;
+      }
       const token = msg["token"];
       if (typeof token !== "string") {
         this.log.warn("Received token_rotated without a token string");
         this.failRotation(new Error("Relay sent token_rotated without a token"));
+        return;
+      }
+      if (!EXECUTOR_TOKEN_PATTERN.test(token)) {
+        this.log.warn("Received token_rotated with a token of the wrong shape — refusing");
+        this.failRotation(new Error("Relay sent a malformed token"));
         return;
       }
       if (!this.cfg.env_file) {
@@ -263,7 +288,9 @@ export class HubSocket extends RelaySocket implements RotatableConnection {
         return;
       }
       try {
-        writeTokenToEnvFile(this.cfg.env_file, token);
+        // The displaced token is saved first and stays until the new one has connected.
+        writeEnvFileValue(this.cfg.env_file, HUB_PREVIOUS_TOKEN_KEY, this.hubToken);
+        writeEnvFileValue(this.cfg.env_file, HUB_TOKEN_KEY, token);
       } catch (err) {
         this.log.error({ err }, "Failed to write rotated token to env_file");
         this.failRotation(err instanceof Error ? err : new Error(String(err)));
@@ -314,6 +341,26 @@ export class HubSocket extends RelaySocket implements RotatableConnection {
     // and replies with an error, but knows nothing about the audit log's shape).
     if (typeof params !== "object" || params === null) {
       const message = "Malformed request: params must be an object";
+      this.log.warn({ request_id, tool, share }, message);
+      this.audit.write({
+        ts: new Date().toISOString(),
+        hub_name: this.cfg.hub_name,
+        request_id,
+        user_sub: typeof envelope.user_sub === "string" ? envelope.user_sub : null,
+        local_username: null,
+        share,
+        tool,
+        outcome: "exec_error",
+        error: message,
+      });
+      return { request_id, error: { message } };
+    }
+
+    // The relay's path filters are enforced by the executor, so a request without a valid list
+    // (an old or buggy relay) is refused rather than run unfiltered.
+    const pathFilters = parsePathFilters(envelope.path_filters as unknown);
+    if (pathFilters === null) {
+      const message = "Malformed request: path_filters must be an array of at most 100 strings";
       this.log.warn({ request_id, tool, share }, message);
       this.audit.write({
         ts: new Date().toISOString(),
@@ -442,7 +489,7 @@ export class HubSocket extends RelaySocket implements RotatableConnection {
     }
 
     // Dispatch to subnode
-    const dispatchResult = await this.pool.dispatch(identity, tool, share, params, request_id);
+    const dispatchResult = await this.pool.dispatch(identity, tool, share, params, request_id, pathFilters);
 
     if (isDispatchError(dispatchResult)) {
       this.log.warn({ request_id, tool, share, username: identity.username, kind: dispatchResult.kind, error: dispatchResult.message }, "Subnode dispatch failed");
@@ -647,19 +694,4 @@ export function resolveDstShare(
     return guessShare(normalized, registry) || normalized;
   }
   return null;
-}
-
-function writeTokenToEnvFile(envFile: string, token: string): void {
-  if (/[\r\n]/.test(token)) {
-    throw new Error("Received token contains newline characters — rotation rejected");
-  }
-  let existing: string[] = [];
-  try {
-    existing = readFileSync(envFile, "utf8").split("\n");
-  } catch { /* file may not exist */ }
-
-  const key = "CONSTELLATION_HUB_TOKEN";
-  const updated = existing.filter((line) => !line.startsWith(`${key}=`) && line !== "");
-  updated.push(`${key}=${token}`);
-  writeFileSync(envFile, updated.join("\n") + "\n", { mode: 0o600 });
 }

@@ -1,5 +1,6 @@
 import { assertSecureHttpUrl, isLoopbackUrl, isSameOrigin } from "./relay-socket.js";
-import { sleep } from "./cli-util.js";
+import { sleep, HOST_NAME_PATTERN } from "./cli-util.js";
+import { EXECUTOR_TOKEN_PATTERN } from "./tokens.js";
 import { isValidUserCode, sanitizeForTerminal } from "./terminal-text.js";
 
 /**
@@ -247,10 +248,21 @@ function clampPollInterval(interval: unknown): number {
 /**
  * The verification URL to open in a browser, or null if it is not on the authorization
  * server's own origin (a compromised or misconfigured response must not make us open an
- * arbitrary URL).
+ * arbitrary URL). The result is the normalized `URL.href`, which is also what is printed, so what
+ * the user reads is what the browser gets. A string with a backslash, whitespace or a control
+ * character is refused outright: browsers and URL parsers disagree on what those mean.
  */
 export function verificationUrlToOpen(endpoints: AsterismEndpoints, dc: DeviceAuthorization): string | null {
-  return isSameOrigin(endpoints.issuer, dc.verification_uri_complete) ? dc.verification_uri_complete : null;
+  const raw = dc.verification_uri_complete;
+  // eslint-disable-next-line no-control-regex
+  if (/[\\\s\u0000-\u001f\u007f-\u009f]/.test(raw)) return null;
+  let href: string;
+  try {
+    href = new URL(raw).href;
+  } catch {
+    return null;
+  }
+  return isSameOrigin(endpoints.issuer, href) ? href : null;
 }
 
 function parseTokenResponse(body: Record<string, unknown>): TokenResponse {
@@ -405,6 +417,14 @@ export async function registerExecutor(
     const reason = field("error_description") ?? field("error") ?? `status ${res.status}`;
     return { ok: false, message: `The relay refused the registration: ${sanitizeForTerminal(reason)}` };
   }
+  // The token goes into node.yaml or a sourced env file and the host into the CLI's output, so
+  // anything that is not the exact shape the relay mints is refused before it is stored or printed.
+  if (!EXECUTOR_TOKEN_PATTERN.test(token)) {
+    return { ok: false, message: "The relay's registration response carried a malformed token; nothing was stored." };
+  }
+  if (!HOST_NAME_PATTERN.test(host)) {
+    return { ok: false, message: "The relay's registration response carried a malformed host name; nothing was stored." };
+  }
   return { ok: true, access_token: token, host };
 }
 
@@ -420,10 +440,13 @@ export async function deviceSignIn(
     kind: ClientKind;
     scope: string;
     onCode: (dc: DeviceAuthorization, openUrl: string | null) => void | Promise<void>;
+    /** Pins the authorization server: a relay that names another throws `issuer_changed` before
+     * that server is contacted. Omit only for a first sign-in with nothing to compare against. */
+    expectedIssuer?: string;
   },
   deps: AsterismDeps = {}
 ): Promise<{ endpoints: AsterismEndpoints; tokens: TokenResponse }> {
-  const endpoints = await discoverAsterism(relayUrl, deps);
+  const endpoints = await discoverAsterism(relayUrl, deps, params.expectedIssuer);
   const clientId = clientIdFor(relayUrl, params.kind);
   const resource = resourceFor(relayUrl);
   const dc = await requestDeviceAuthorization(endpoints, { clientId, scope: params.scope, resource }, deps);

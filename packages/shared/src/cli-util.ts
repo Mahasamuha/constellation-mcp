@@ -78,6 +78,9 @@ export async function confirm(
 /** The relay's host-name rule (relay/src/host-name.ts): 1-63 of letters, digits, dot, underscore, hyphen. */
 export const HOST_NAME_PATTERN = /^[A-Za-z0-9._-]{1,63}$/;
 
+/** Share names come from nodes and hubs and reach the LLM through list_shares. */
+export const SHARE_NAME_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
+
 /**
  * Trims `raw` and checks it against the relay's host-name rule, so a bad name fails before the
  * user approves a sign-in rather than after.

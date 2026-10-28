@@ -1,8 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { Command } from "commander";
 import { join } from "node:path";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, statSync, writeFileSync } from "node:fs";
 import { startControlServer, type RotatableConnection } from "@constellation/shared";
+import { WebSocketServer, type WebSocket as WSClient } from "ws";
 import { registerHubCommands } from "./cli.js";
 import { makeTempDir, cleanTempDir } from "./test/fixtures.js";
 
@@ -15,7 +16,7 @@ class ExitError extends Error {
 vi.mock("open", () => ({ default: vi.fn(async () => undefined) }));
 // Instant polling; the mock targets cli-util because asterism-client imports sleep from there.
 vi.mock("../../shared/src/cli-util.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../../shared/src/cli-util.js")>();
+  const actual = await importOriginal<Record<string, unknown>>();
   return { ...actual, sleep: async () => {} };
 });
 
@@ -109,9 +110,37 @@ describe("hub rotate-token — prefers the control channel over a second connect
   });
 });
 
+describe("hub rotate-token — direct fallback", () => {
+  it("refuses a malformed token from the relay and leaves the env file alone", async () => {
+    const wss = new WebSocketServer({ port: 0 });
+    await new Promise<void>((resolve) => wss.once("listening", resolve));
+    const port = (wss.address() as { port: number }).port;
+    wss.on("connection", (ws: WSClient) => {
+      ws.once("message", () => ws.send(JSON.stringify({ type: "token_rotated", token: "x\nPATH=/evil" })));
+    });
+    const envFile = join(dir, "hub.env");
+    const original = `CONSTELLATION_HUB_TOKEN=${"ab".repeat(32)}\n`;
+    writeFileSync(envFile, original);
+    const configPath = join(dir, "hub.yaml");
+    writeFileSync(configPath, `relay_url: http://localhost:${port}\nhub_name: t\naudit_log: ${join(dir, "audit.jsonl")}\nenv_file: ${envFile}\nshares: []\n`);
+    const saved = process.env["CONSTELLATION_HUB_TOKEN"];
+    delete process.env["CONSTELLATION_HUB_TOKEN"];
+    try {
+      const { exitCode, err } = await runCli(["hub", "rotate-token", "--config-file", configPath]);
+      expect(exitCode).toBe(1);
+      expect(err).toContain("malformed");
+      expect(readFileSync(envFile, "utf8")).toBe(original);
+    } finally {
+      if (saved !== undefined) process.env["CONSTELLATION_HUB_TOKEN"] = saved; else delete process.env["CONSTELLATION_HUB_TOKEN"];
+      await new Promise<void>((resolve) => wss.close(() => resolve()));
+    }
+  });
+});
+
 describe("hub register", () => {
   const RELAY = "https://relay.example.com";
   const ISSUER = "https://auth.example.com";
+  const HUB_TOKEN = "ab".repeat(32);
   const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 
   /** A relay and an asterism that approve at once; `register` answers the register call. */
@@ -138,14 +167,67 @@ describe("hub register", () => {
 
   it("registers through the shared helper (no redirects) and writes the token to the env file", async () => {
     let seen: RequestInit | undefined;
-    stub((init) => { seen = init; return json(200, { access_token: "hub-token", host: "h1" }); });
+    stub((init) => { seen = init; return json(200, { access_token: HUB_TOKEN, host: "h1" }); });
     const envFile = join(dir, "hub.env");
     const { exitCode, out } = await runCli(["hub", "register", "--relay", RELAY, "--host-name", "h1", "--env-file", envFile]);
     expect(exitCode).toBe(0);
     expect(out).toContain("Hub 'h1' registered");
     expect(seen?.redirect).toBe("error");
-    expect(readFileSync(envFile, "utf8")).toContain("hub-token");
-    expect(out).not.toContain("hub-token");
+    expect(readFileSync(envFile, "utf8")).toBe(`CONSTELLATION_HUB_TOKEN=${HUB_TOKEN}\nCONSTELLATION_HUB_ISSUER=${ISSUER}\n`);
+    expect(statSync(envFile).mode & 0o777).toBe(0o600);
+    expect(out).not.toContain(HUB_TOKEN);
+  });
+
+  it("requests the admin and register scopes", async () => {
+    let scope = "";
+    vi.stubGlobal("fetch", vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const u = String(url);
+      if (u === `${ISSUER}/d`) scope = new URLSearchParams(init?.body as URLSearchParams).get("scope") ?? "";
+      switch (u) {
+        case `${RELAY}/.well-known/oauth-protected-resource/mcp`: return json(200, { resource: `${RELAY}/mcp`, authorization_servers: [ISSUER] });
+        case `${ISSUER}/.well-known/oauth-authorization-server`:
+          return json(200, { issuer: ISSUER, device_authorization_endpoint: `${ISSUER}/d`, token_endpoint: `${ISSUER}/t` });
+        case `${ISSUER}/d`: return json(200, { device_code: "dc", user_code: "ABCD-2345", verification_uri: `${ISSUER}/oauth/device`, verification_uri_complete: `${ISSUER}/oauth/device?user_code=ABCD-2345`, expires_in: 900, interval: 5 });
+        case `${ISSUER}/t`: return json(200, { access_token: "at-admin", expires_in: 300 });
+        default: return json(200, { access_token: HUB_TOKEN, host: "h1" });
+      }
+    }));
+    const { exitCode, out } = await runCli(["hub", "register", "--relay", RELAY, "--host-name", "h1", "--env-file", join(dir, "hub.env")]);
+    expect(exitCode).toBe(0);
+    expect(scope).toBe("relay admin register");
+    expect(out).toContain("fresh sign-in");
+  });
+
+  it("refuses a token that is not 64 lowercase hex characters, without writing the env file", async () => {
+    stub(() => json(200, { access_token: `${HUB_TOKEN.slice(1)}\nPATH=/evil`, host: "h1" }));
+    const envFile = join(dir, "hub.env");
+    const { exitCode, err } = await runCli(["hub", "register", "--relay", RELAY, "--host-name", "h1", "--env-file", envFile]);
+    expect(exitCode).toBe(1);
+    expect(err).toContain("malformed");
+    expect(() => readFileSync(envFile)).toThrow();
+  });
+
+  it("keeps the env file's other lines when writing the token", async () => {
+    stub(() => json(200, { access_token: HUB_TOKEN, host: "h1" }));
+    const envFile = join(dir, "hub.env");
+    writeFileSync(envFile, "# mine\nFOO=bar\nCONSTELLATION_HUB_TOKEN=old\n");
+    await runCli(["hub", "register", "--relay", RELAY, "--host-name", "h1", "--env-file", envFile]);
+    expect(readFileSync(envFile, "utf8")).toBe(`# mine\nFOO=bar\nCONSTELLATION_HUB_TOKEN=${HUB_TOKEN}\nCONSTELLATION_HUB_ISSUER=${ISSUER}\n`);
+  });
+
+  it("pins a repeat registration to the recorded issuer unless --accept-new-issuer is given", async () => {
+    stub(() => json(200, { access_token: HUB_TOKEN, host: "h1" }));
+    const envFile = join(dir, "hub.env");
+    writeFileSync(envFile, "CONSTELLATION_HUB_ISSUER=https://previous-auth.example.com\n");
+    const refused = await runCli(["hub", "register", "--relay", RELAY, "--host-name", "h1", "--env-file", envFile]);
+    expect(refused.exitCode).toBe(1);
+    expect(refused.err).toContain("different authorization server");
+    expect(refused.err).toContain("--accept-new-issuer");
+    expect(readFileSync(envFile, "utf8")).toBe("CONSTELLATION_HUB_ISSUER=https://previous-auth.example.com\n");
+
+    const accepted = await runCli(["hub", "register", "--relay", RELAY, "--host-name", "h1", "--env-file", envFile, "--accept-new-issuer"]);
+    expect(accepted.exitCode).toBe(0);
+    expect(readFileSync(envFile, "utf8")).toContain(`CONSTELLATION_HUB_ISSUER=${ISSUER}`);
   });
 
   it("reports a network failure on the register call instead of crashing", async () => {
@@ -166,7 +248,7 @@ describe("hub register", () => {
   it("warns, and does not open the browser, for a verification URL off the issuer's origin", async () => {
     const { default: open } = await import("open");
     vi.mocked(open).mockClear();
-    stub(() => json(200, { access_token: "hub-token", host: "h1" }), "https://evil.example/x");
+    stub(() => json(200, { access_token: HUB_TOKEN, host: "h1" }), "https://evil.example/x");
     const { out } = await runCli(["hub", "register", "--relay", RELAY, "--host-name", "h1", "--env-file", join(dir, "hub.env")]);
     expect(out).toContain("WARNING");
     expect(open).not.toHaveBeenCalled();

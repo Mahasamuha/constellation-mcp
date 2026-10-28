@@ -36,7 +36,7 @@ model ExecutorToken {
   revokedAt        DateTime?         @map("revoked_at")
   expiresAt        DateTime?         @map("expires_at")
 
-  user      User?      @relation(fields: [userId], references: [id])
+  user      User?      @relation(fields: [userId], references: [id], onDelete: Restrict)
   executors Executor[]
 
   @@map("executor_tokens")
@@ -57,7 +57,7 @@ model Executor {
   lastHeartbeatAt      DateTime?         @map("last_heartbeat_at")
   lastDisconnectReason DisconnectReason? @map("last_disconnect_reason")
 
-  user             User?             @relation(fields: [userId], references: [id])
+  user             User?             @relation(fields: [userId], references: [id], onDelete: Restrict)
   executorToken    ExecutorToken     @relation(fields: [executorTokenId], references: [id])
   pathShares       PathShare[]
   relayFilters     RelayPathFilter[]

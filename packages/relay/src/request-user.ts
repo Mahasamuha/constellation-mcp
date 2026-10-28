@@ -16,3 +16,5 @@ export interface RequestUser {
 export const BASE_SCOPE = "relay";
 /** Step-up only: never in scopes_supported, obtained through a 403 insufficient_scope. */
 export const ADMIN_SCOPE = "admin";
+/** Fresh-sign-in only: consent to permanently connect a computer. Needed to register an executor. */
+export const REGISTER_SCOPE = "register";

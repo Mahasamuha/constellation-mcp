@@ -17,6 +17,8 @@ import {
   sanitizeForTerminal,
   deviceCodeLines,
   withLockFile,
+  confirm,
+  isSameOrigin,
   type DeviceAuthorization,
 } from "@constellation/shared";
 
@@ -44,18 +46,28 @@ function showCode(print: Print, heading: string, dc: DeviceAuthorization, openUr
 export function exitOnSignInError(err: unknown): never {
   // AsterismError messages are already stripped of control characters; others may carry a host or URL.
   console.error(err instanceof AsterismError ? `\n${err.message}` : `\nSign-in failed: ${sanitizeForTerminal((err as Error).message)}`);
+  if (err instanceof AsterismError && err.code === "issuer_changed") {
+    console.error("If you trust the change, run 'constellation relay login' (it asks before accepting a new authorization server).");
+  }
   return process.exit(1);
 }
 
 /**
  * Signs in to the relay's authorization server (device flow, scope `relay offline_access`, the
  * `cli` client) and persists the session. `print` is stdout for `relay login`, stderr when
- * re-signing in mid-command so a command's own output stays clean.
+ * re-signing in mid-command so a command's own output stays clean. `expectedIssuer` pins the
+ * authorization server: a relay that names another one ends the sign-in before it is contacted.
  */
-export async function signIn(relayUrl: string, dir: string, print: Print = console.log): Promise<RelaySession> {
+export async function signIn(
+  relayUrl: string,
+  dir: string,
+  print: Print = console.log,
+  expectedIssuer?: string
+): Promise<RelaySession> {
   const { endpoints, tokens } = await deviceSignIn(relayUrl, {
     kind: "cli",
     scope: SESSION_SCOPE,
+    ...(expectedIssuer ? { expectedIssuer } : {}),
     onCode: (dc, openUrl) => showCode(print, "Open the following URL to authenticate", dc, openUrl),
   }).catch(exitOnSignInError);
 
@@ -76,11 +88,14 @@ export async function signIn(relayUrl: string, dir: string, print: Print = conso
  * An admin access token for one command: a second device flow with scope `relay admin` and no
  * `offline_access` (asterism gives it 5 minutes, never refreshes it, and grants it only to
  * members of the admin group). Held in memory by the caller, never written to disk.
+ * `expectedIssuer` is the authorization server of the stored session: a relay that now names
+ * another one is refused rather than asked for an admin token.
  */
-export async function adminStepUp(relayUrl: string): Promise<string> {
+export async function adminStepUp(relayUrl: string, expectedIssuer?: string): Promise<string> {
   const { tokens } = await deviceSignIn(relayUrl, {
     kind: "cli",
     scope: ADMIN_SCOPE,
+    ...(expectedIssuer ? { expectedIssuer } : {}),
     onCode: (dc, openUrl) => showCode(console.error, "This needs admin access. Approve it to continue", dc, openUrl),
   }).catch((err) => {
     if (err instanceof AsterismError && err.code === "access_denied") {
@@ -175,7 +190,7 @@ export async function getValidSession(dir: string): Promise<RelaySession> {
 
   if (process.stdin.isTTY && process.stderr.isTTY) {
     console.error("Session expired. Signing in again.");
-    return signIn(session.relay_url, dir, console.error);
+    return signIn(session.relay_url, dir, console.error, session.issuer);
   }
   console.error("Session expired. Run 'constellation relay login' to sign in again.");
   return process.exit(1);
@@ -205,4 +220,41 @@ export async function revokeStoredSession(dir: string): Promise<void> {
   } catch (err) {
     console.error(`Could not revoke the sign-in at the authorization server (${sanitizeForTerminal((err as Error).message)}). You can revoke it in asterism's /grants page.`);
   }
+}
+
+/** Whether a person can answer a prompt: a terminal on both ends, and not the GUI's assume-yes mode. */
+function canPrompt(): boolean {
+  return Boolean(process.stdin.isTTY && process.stdout.isTTY && !process.env["CONSTELLATION_ASSUME_YES"]);
+}
+
+/**
+ * An explicit `relay login`. When a session for this relay already exists and the relay now names a
+ * different authorization server than the one it was issued by, shows both and asks before going on
+ * (refusing outright without a terminal, unless `acceptNewIssuer`). The sign-in itself is pinned to
+ * the server that was discovered (and confirmed), so it cannot change between the question and the
+ * device request.
+ */
+export async function login(relayUrl: string, dir: string, acceptNewIssuer = false): Promise<RelaySession> {
+  let existing: RelaySession | undefined;
+  try { existing = loadRelaySession(dir); } catch { /* no session yet */ }
+
+  let pin: string | undefined;
+  if (existing?.issuer && isSameOrigin(existing.relay_url, relayUrl)) {
+    const endpoints = await discoverAsterism(relayUrl).catch(exitOnSignInError);
+    pin = endpoints.issuer;
+    if (pin !== existing.issuer) {
+      console.error(`\n${relayUrl} now names a different authorization server than your current sign-in.`);
+      console.error(`  Signed in with: ${sanitizeForTerminal(existing.issuer)}`);
+      console.error(`  Relay now names: ${sanitizeForTerminal(pin)}`);
+      const accepted = acceptNewIssuer
+        || (canPrompt() && await confirm("Sign in to the new authorization server? Only do this if you expected the change."));
+      if (!accepted) {
+        console.error(canPrompt()
+          ? "Cancelled. Your existing session was kept."
+          : "Not signing in: this is not a terminal. Pass --accept-new-issuer if you trust the change. Your existing session was kept.");
+        return process.exit(1);
+      }
+    }
+  }
+  return signIn(relayUrl, dir, console.log, pin);
 }
