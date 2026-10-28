@@ -1,6 +1,6 @@
 services:
   relay:
-    image: mahasamuha/constellation-relay:1.0.0
+    image: mahasamuha/constellation-relay:2.0.0
     env_file: .env
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
