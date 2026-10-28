@@ -72,8 +72,9 @@ The fastest path is Railway: deploy a relay with one click, install the node bin
 #    - Generate a public domain under Settings → Networking
 #    - Deploy — railway.toml is detected automatically
 
-# 2. In asterism, register the relay as a resource server and add admins to the
-#    constellation-admins group
+# 2. In asterism, register the relay as a resource server, release the groups, email
+#    and constellation_username claims, restrict the admin scope to the
+#    constellation-admins group, and add admins to it. See docs/configuration.md.
 
 # 3. Initialize the node on each machine you want to expose
 constellation node init --relay https://<your-app>.up.railway.app

@@ -123,9 +123,9 @@ function jsonRes(status: number, body: unknown): Response {
 }
 
 const DEVICE_CODE_RESPONSE = {
-  device_code: "dc-1", user_code: "ABCD-1234",
+  device_code: "dc-1", user_code: "ABCD-2345",
   verification_uri: `${ISSUER}/oauth/device`,
-  verification_uri_complete: `${ISSUER}/oauth/device?user_code=ABCD-1234`,
+  verification_uri_complete: `${ISSUER}/oauth/device?user_code=ABCD-2345`,
   expires_in: 900, interval: 5,
 };
 
@@ -184,7 +184,7 @@ describe("node init — relay URL scheme validation", () => {
   it("rejects a plaintext http:// relay URL for a non-localhost host before doing anything else", async () => {
     const { exitCode, err } = await runCli(["node", "init", "--relay", "http://relay.example.com"], dir);
     expect(exitCode).toBe(1);
-    expect(err).toContain("ws://");
+    expect(err).toContain("http://");
     expect(() => loadNodeConfig(dir)).toThrow();
   });
 
@@ -193,7 +193,7 @@ describe("node init — relay URL scheme validation", () => {
     const { exitCode, err } = await runCli(["node", "init", "--relay", "http://localhost:3000"], dir);
     // Scheme validation passes; the command fails later on the (mocked) metadata request instead.
     expect(exitCode).toBe(1);
-    expect(err).not.toContain("ws://");
+    expect(err).not.toContain("Refusing to connect");
     expect(err).toContain("Failed to start sign-in");
   });
 
@@ -201,7 +201,7 @@ describe("node init — relay URL scheme validation", () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonRes(404, {})));
     const { exitCode, err } = await runCli(["node", "init", "--relay", RELAY], dir);
     expect(exitCode).toBe(1);
-    expect(err).not.toContain("ws://");
+    expect(err).not.toContain("Refusing to connect");
     expect(err).toContain("Failed to start sign-in");
   });
 });
@@ -282,14 +282,29 @@ describe("node auth device-code", () => {
   it("prints a JSON error (exit 0) for a non-localhost http:// relay, never reaching fetch", async () => {
     const { exitCode, out } = await runCli(["node", "auth", "device-code", "--relay", "http://relay.example.com"], dir);
     expect(exitCode).toBe(0);
-    expect(JSON.parse(out)).toMatchObject({ ok: false, error: expect.stringContaining("ws://") });
+    expect(JSON.parse(out)).toMatchObject({ ok: false, error: expect.stringContaining("http://") });
   });
 
   it("prints asterism's device-code response as JSON on success", async () => {
     stubBackends();
     const { exitCode, out } = await runCli(["node", "auth", "device-code", "--relay", RELAY], dir);
     expect(exitCode).toBe(0);
-    expect(JSON.parse(out)).toEqual({ ok: true, data: DEVICE_CODE_RESPONSE });
+    // Plus the issuer to pin and the only URL a caller may open.
+    expect(JSON.parse(out)).toEqual({
+      ok: true,
+      data: { ...DEVICE_CODE_RESPONSE, issuer: ISSUER, open_url: DEVICE_CODE_RESPONSE.verification_uri_complete },
+    });
+  });
+
+  it("emits open_url null when the verification URL is off the issuer's origin", async () => {
+    stubBackends({ deviceCode: () => jsonRes(200, { ...DEVICE_CODE_RESPONSE, verification_uri_complete: "https://evil.example/x" }) });
+    const { out } = await runCli(["node", "auth", "device-code", "--relay", RELAY], dir);
+    expect(JSON.parse(out)).toMatchObject({ ok: true, data: { open_url: null, issuer: ISSUER } });
+  });
+
+  it.each(["HTTP://relay.example.com", "ftp://relay.example.com", "file:///etc/passwd"])("refuses %s", async (relay) => {
+    const { out } = await runCli(["node", "auth", "device-code", "--relay", relay], dir);
+    expect(JSON.parse(out)).toMatchObject({ ok: false });
   });
 
   it("prints a JSON error when asterism rejects the request", async () => {
@@ -297,6 +312,13 @@ describe("node auth device-code", () => {
     const { exitCode, out } = await runCli(["node", "auth", "device-code", "--relay", RELAY], dir);
     expect(exitCode).toBe(0);
     expect(JSON.parse(out)).toMatchObject({ ok: false, error: expect.stringContaining("invalid_client") });
+  });
+
+  it.each(["my laptop", "caf\u00e9", "a/b"])("rejects host name %j before any request", async (name) => {
+    const calls = stubBackends();
+    const { out } = await runCli(["node", "auth", "device-code", "--relay", RELAY, "--host-name", name], dir);
+    expect(JSON.parse(out)).toMatchObject({ ok: false, error: expect.stringContaining("--host-name") });
+    expect(calls).toHaveLength(0);
   });
 
   it("prints a JSON error for an invalid host name", async () => {
@@ -307,15 +329,15 @@ describe("node auth device-code", () => {
 });
 
 describe("node auth complete", () => {
-  const completeArgs = ["node", "auth", "complete", "--relay", RELAY, "--device-code", "dc-1", "--interval", "1", "--expires-in", "30"];
+  const completeArgs = ["node", "auth", "complete", "--relay", RELAY, "--device-code", "dc-1", "--issuer", ISSUER, "--interval", "1", "--expires-in", "30"];
 
   it("prints a JSON error (exit 0) for a non-localhost http:// relay, never reaching fetch", async () => {
     const { exitCode, out } = await runCli(
-      ["node", "auth", "complete", "--relay", "http://relay.example.com", "--device-code", "dc-1", "--interval", "1", "--expires-in", "30"],
+      ["node", "auth", "complete", "--relay", "http://relay.example.com", "--device-code", "dc-1", "--issuer", ISSUER, "--interval", "1", "--expires-in", "30"],
       dir
     );
     expect(exitCode).toBe(0);
-    expect(JSON.parse(out)).toMatchObject({ status: "error", message: expect.stringContaining("ws://") });
+    expect(JSON.parse(out)).toMatchObject({ status: "error", message: expect.stringContaining("http://") });
   });
 
   it("polls, registers, persists node.yaml/paths.yaml, and prints success", async () => {
@@ -327,6 +349,48 @@ describe("node auth complete", () => {
     expect(cfg.node_token).toBe("tok-new");
     expect(cfg.host).toBe("new-host");
     expect(cfg.relay_url).toBe(RELAY);
+  });
+
+  it("refuses to poll when the relay now names a different issuer than the one the code came from", async () => {
+    const calls = stubBackends();
+    const args = completeArgs.map((a) => (a === ISSUER ? "https://old-auth.example.com" : a));
+    const { exitCode, out } = await runCli(args, dir);
+    expect(exitCode).toBe(0);
+    expect(JSON.parse(out)).toMatchObject({ status: "error", message: expect.stringContaining("different authorization server") });
+    expect(calls.some((c) => c.url.startsWith(ISSUER) )).toBe(false);
+    expect(() => loadNodeConfig(dir)).toThrow();
+  });
+
+  it("requires --issuer", async () => {
+    stubBackends();
+    const args = completeArgs.filter((a, i) => a !== "--issuer" && completeArgs[i - 1] !== "--issuer");
+    const { exitCode, err } = await runCli(args, dir);
+    expect(exitCode).not.toBe(0);
+    expect(err).toContain("--issuer");
+  });
+
+  it.each([["NaN", "30"], ["0", "30"], ["-1", "30"], ["1", "0"], ["1", "abc"], ["1.5", "30"]])(
+    "refuses --interval %s --expires-in %s without polling",
+    async (interval, expiresIn) => {
+      const calls = stubBackends();
+      const args = completeArgs.map((a) => (a === "1" ? interval : a === "30" ? expiresIn : a));
+      const { out } = await runCli(args, dir);
+      expect(JSON.parse(out)).toMatchObject({ status: "error", message: expect.stringContaining("positive whole numbers") });
+      expect(calls).toHaveLength(0);
+    }
+  );
+
+  it("does not follow a redirect from the register endpoint", async () => {
+    const calls = stubBackends();
+    const inner = globalThis.fetch;
+    let init2: RequestInit | undefined;
+    vi.stubGlobal("fetch", vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      if (String(url).endsWith("/api/executors/register")) init2 = init;
+      return inner(url, init);
+    }));
+    await runCli(completeArgs, dir);
+    expect(init2?.redirect).toBe("error");
+    expect(calls.length).toBeGreaterThan(0);
   });
 
   it("prints a JSON error when the user denies the request", async () => {
@@ -372,7 +436,7 @@ describe("node config set", () => {
       dir
     );
     expect(exitCode).toBe(1);
-    expect(err).toContain("ws://");
+    expect(err).toContain("http://");
     expect(loadNodeConfig(dir).relay_url).toBe("https://relay.example.com");
   });
 

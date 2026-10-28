@@ -16,7 +16,7 @@
 | Variable | Description |
 |---|---|
 | `DATABASE_URL` | PostgreSQL connection string (e.g. `postgresql://user:pass@localhost:5432/constellation`) |
-| `RELAY_URL` | Public origin of the relay — scheme and host (and port, if non-default) only; no path or trailing slash (e.g. `https://relay.example.com`). The relay refuses to start otherwise: a trailing slash, uppercase host, or explicit default port (e.g. `:443`) all fail the check. Used to construct the discovery and client metadata documents, and it sets the token audience (`${RELAY_URL}/mcp`) — must be the URL MCP clients can reach. Sub-path deployments are not supported. |
+| `RELAY_URL` | Public origin of the relay — scheme and host (and port, if non-default) only; no path or trailing slash (e.g. `https://relay.example.com`). Must be `https:`; `http:` is accepted only on a loopback host (`localhost`, `127.0.0.1`, `[::1]`). The relay refuses to start otherwise: a trailing slash, uppercase host, or explicit default port (e.g. `:443`) all fail the check. Used to construct the discovery and client metadata documents, and it sets the token audience (`${RELAY_URL}/mcp`) — must be the URL MCP clients can reach. Sub-path deployments are not supported. |
 | `ASTERISM_ISSUER` | Issuer URL of the [asterism](adr/0022-asterism-authorization-server.md) authorization server, exactly as asterism publishes it. Must be `https:` (`http:` is accepted on a loopback host for development). Access tokens must carry this `iss`. The relay refuses to start if it is unset or invalid. |
 | `TRUST_PROXY` | Comma-separated list of trusted reverse proxy IP addresses or CIDR ranges. Required unless `TRUST_PROXY_PRESET` is set. Must not be a number or boolean — use explicit IPs/CIDRs. Example: `127.0.0.1` |
 | `TRUST_PROXY_PRESET` | Shorthand alternative to `TRUST_PROXY`. Accepted values: `railway`, `fly`, `cloudflare-tunnel`. Overrides `TRUST_PROXY` if both are set. |
@@ -32,8 +32,30 @@ To connect a relay to asterism:
 1. Set `ASTERISM_ISSUER` and `RELAY_URL` on the relay.
 2. Register the relay in asterism as a resource server. asterism fetches the relay's RFC 9728 metadata at `${RELAY_URL}/.well-known/oauth-protected-resource/mcp`, which declares the `relay` scope and the step-up-only `admin` scope. The token audience is `${RELAY_URL}/mcp`.
 3. Create the `constellation-admins` group in asterism and add the people who should administer the relay.
+4. Set the released claims and the `admin` scope policy (below), before any user connects.
 
-**Admin** means the access token holds the `admin` scope. asterism issues that scope only to members of the `constellation-admins` group, and only on step-up (a `403 insufficient_scope` from the relay). It gates `POST /api/tokens/shared`, `GET /api/admin/hub-shares` and `GET /api/admin/activity`. There is no stored role and no admin bootstrap token.
+**Admin** means the access token holds the `admin` scope **and** its `groups` claim contains `ADMIN_GROUP` (default `constellation-admins`). asterism issues the scope only on step-up (a `403 insufficient_scope` from the relay), good for 5 minutes. The relay checks the group itself, so admin never depends on the asterism scope policy having been set. A stale `groups` claim can only deny admin, never grant it, because the scope is required too. An account with the scope but not the group gets a plain `403` (no step-up challenge, since stepping up cannot help). It gates `POST /api/tokens/shared`, `GET /api/admin/hub-shares`, `GET /api/admin/activity` and hub registration. There is no stored role and no admin bootstrap token.
+
+#### Operator runbook: configure asterism before users connect
+
+Run these in asterism (`<relay-url>` is `RELAY_URL`; the resource server identifier is `<relay-url>/mcp`):
+
+```sh
+docker compose exec asterism-proxy asterism-cli resource-server approve <relay-url>/mcp \
+  --name Constellation --release-claims groups,email,constellation_username
+docker compose exec asterism-proxy asterism-cli resource-server policy <relay-url>/mcp admin \
+  --short-lived --require-groups constellation-admins
+```
+
+`--short-lived` makes the `admin` scope a 5-minute step-up; `--require-groups` makes asterism issue it only to that group (Constellation checks the group as well).
+
+- **Set the released claims before users connect (I2).** asterism records the released claims on a grant when the user consents. A grant made before `groups` and `constellation_username` were released carries neither until the user re-consents, so such users get no group-based share access and no hub identity. Revoke those grants (the user's `/grants` page in asterism, or `asterism-cli deny-client add <client_id>` to revoke every grant of one client) so the next sign-in asks for consent again.
+- **Trust the claim sources (I3).**
+
+  > **Warning.** `groups` and `constellation_username` are only as trustworthy as the upstream source asterism copies them from. asterism's `OIDC_CLAIM_MAP` must never map either onto a claim a user can edit (`preferred_username`, `name`, `nickname`, `email`, ...). The identity provider attribute behind `constellation_username` must be admin-only (not user-editable) and unique per user. asterism does not enforce this. If it is misconfigured, users can pick another user's OS account on a hub or put themselves in any group.
+
+- **Group overrides are not a denylist.** When several of a user's groups match a share's overrides, the most permissive wins, so a group set to `none` does not deny a user who is also in a more permissive group. To deny someone, override by `sub`, or set the share's `default` to `none` and grant access explicitly.
+- **Keep group lists small.** asterism drops a claim whose JSON is longer than 4096 characters. A user with an oversize `groups` claim gets no `groups` at all in the token, which also means no admin. A `groups` claim with more than 256 entries, or an entry longer than 256 characters, is refused by the relay with `403 invalid_token_claims`.
 
 Sign-in, local accounts, user management, password resets and session revocation are done in asterism (its `/grants` page lists and revokes what each client may do). The relay creates a `users` row the first time it sees a token's `sub`.
 
@@ -43,6 +65,7 @@ Sign-in, local accounts, user management, password resets and session revocation
 
 | Variable | Default | Description |
 |---|---|---|
+| `ADMIN_GROUP` | `constellation-admins` | Group (in the token's `groups` claim) an account must belong to, in addition to holding the `admin` scope, to use admin endpoints and register a hub |
 | `PORT` | `3000` | TCP port the HTTP server binds to |
 | `NODE_ENV` | — | Passed to Express and Node.js internals (e.g. disables verbose error details in production). The `Strict-Transport-Security` header is sent unless `RELAY_URL` is `http://`. |
 | `ALLOWED_ORIGINS` | — | Comma-separated list of origins allowed to make cross-origin requests to the relay (e.g. the URL of a reverse proxy or browser-based tool in front of the relay). Defaults to no cross-origin access if unset. |
@@ -158,7 +181,7 @@ max_file_size_kb: 100
 |---|---|---|
 | `relay_url` | yes | Full HTTPS URL of the relay, no trailing slash |
 | `node_token` | yes | Bearer token used to authenticate the WebSocket connection. Managed by `constellation node init` and `constellation node rotate`. |
-| `host` | yes | Display name for this machine. Must be unique across all nodes on your account. |
+| `host` | yes | Display name for this machine. Must be unique across all nodes on your account. 1 to 63 characters: letters, digits, `.`, `_` and `-` only (no spaces). |
 | `max_file_size_kb` | no | Maximum KB the node will return in a single `read_file` call. Default: `100`. Range reads (`start_line`/`end_line`) are subject to the same cap per call. |
 
 ### `paths.yaml`

@@ -13,6 +13,9 @@ import {
   discoverAsterism,
   refreshTokens,
   resourceFor,
+  revokeRefreshToken,
+  sanitizeForTerminal,
+  deviceCodeLines,
   withLockFile,
   type DeviceAuthorization,
 } from "@constellation/shared";
@@ -21,6 +24,8 @@ import {
 const REFRESH_LIFETIME_MS = 30 * 86_400_000;
 /** An access token this close to expiring is refreshed rather than risked on a request. */
 const EXPIRY_SKEW_MS = 30_000;
+
+const REVOKE_TIMEOUT_MS = 5_000;
 
 const SESSION_SCOPE = "relay offline_access";
 const ADMIN_SCOPE = "relay admin";
@@ -31,15 +36,14 @@ export class SessionExpiredError extends Error {}
 type Print = (line: string) => void;
 
 function showCode(print: Print, heading: string, dc: DeviceAuthorization, openUrl: string | null): void {
-  print(`\n${heading} (opening browser automatically):`);
-  print(`  ${dc.verification_uri_complete}\n`);
-  print(`If the browser did not open, enter this code: ${dc.user_code}\n`);
+  for (const line of deviceCodeLines(heading, dc, openUrl)) print(line);
   if (openUrl) void open(openUrl).catch(() => { /* ignore */ });
 }
 
 /** Turns a failed device flow into a one-line exit; network errors surface with their cause. */
 export function exitOnSignInError(err: unknown): never {
-  console.error(err instanceof AsterismError ? `\n${err.message}` : `\nSign-in failed: ${(err as Error).message}`);
+  // AsterismError messages are already stripped of control characters; others may carry a host or URL.
+  console.error(err instanceof AsterismError ? `\n${err.message}` : `\nSign-in failed: ${sanitizeForTerminal((err as Error).message)}`);
   return process.exit(1);
 }
 
@@ -49,7 +53,7 @@ export function exitOnSignInError(err: unknown): never {
  * re-signing in mid-command so a command's own output stays clean.
  */
 export async function signIn(relayUrl: string, dir: string, print: Print = console.log): Promise<RelaySession> {
-  const { tokens } = await deviceSignIn(relayUrl, {
+  const { endpoints, tokens } = await deviceSignIn(relayUrl, {
     kind: "cli",
     scope: SESSION_SCOPE,
     onCode: (dc, openUrl) => showCode(print, "Open the following URL to authenticate", dc, openUrl),
@@ -58,6 +62,7 @@ export async function signIn(relayUrl: string, dir: string, print: Print = conso
   const now = Date.now();
   const session: RelaySession = {
     relay_url: relayUrl,
+    issuer: endpoints.issuer,
     access_token: tokens.access_token,
     access_token_expires_at: new Date(now + tokens.expires_in * 1000).toISOString(),
     refresh_token: tokens.refresh_token,
@@ -105,7 +110,12 @@ async function refreshSession(dir: string): Promise<RelaySession> {
     const expiry = session.refresh_token_expires_at ? new Date(session.refresh_token_expires_at).getTime() : Infinity;
     if (!session.refresh_token || expiry <= Date.now()) throw new SessionExpiredError();
 
-    const endpoints = await discoverAsterism(session.relay_url);
+    // A session from before the issuer was recorded cannot be tied to an authorization server, so
+    // it is not refreshed; signing in again records one.
+    if (!session.issuer) throw new SessionExpiredError();
+    // Pinned: if the relay now names another authorization server this throws issuer_changed and
+    // the session file is kept, so the refresh token never reaches the new one.
+    const endpoints = await discoverAsterism(session.relay_url, {}, session.issuer);
     let tokens;
     try {
       tokens = await refreshTokens(endpoints, {
@@ -124,6 +134,7 @@ async function refreshSession(dir: string): Promise<RelaySession> {
 
     const refreshed: RelaySession = {
       relay_url: session.relay_url,
+      issuer: session.issuer,
       access_token: tokens.access_token,
       access_token_expires_at: new Date(Date.now() + tokens.expires_in * 1000).toISOString(),
       refresh_token: tokens.refresh_token ?? session.refresh_token,
@@ -154,7 +165,10 @@ export async function getValidSession(dir: string): Promise<RelaySession> {
     return await refreshSession(dir);
   } catch (err) {
     if (!(err instanceof SessionExpiredError)) {
-      console.error(`Could not refresh the session: ${(err as Error).message}`);
+      console.error(`Could not refresh the session: ${sanitizeForTerminal((err as Error).message)}`);
+      if (err instanceof AsterismError && err.code === "issuer_changed") {
+        console.error("Your session was kept. Run 'constellation relay login' to sign in to the new authorization server.");
+      }
       return process.exit(1);
     }
   }
@@ -165,4 +179,30 @@ export async function getValidSession(dir: string): Promise<RelaySession> {
   }
   console.error("Session expired. Run 'constellation relay login' to sign in again.");
   return process.exit(1);
+}
+
+/**
+ * Best effort at logout: asks the authorization server that issued the session to revoke its
+ * refresh token (which ends the rotation chain), with a short timeout. Never throws; the caller
+ * deletes the session file either way. Only an authorization server recorded at sign-in is
+ * contacted, and only if it is still the one the relay names.
+ */
+export async function revokeStoredSession(dir: string): Promise<void> {
+  let session: RelaySession;
+  try {
+    session = loadRelaySession(dir);
+  } catch {
+    return;
+  }
+  if (!session.refresh_token || !session.issuer) return;
+  const deps = { timeoutMs: REVOKE_TIMEOUT_MS };
+  try {
+    const endpoints = await discoverAsterism(session.relay_url, deps, session.issuer);
+    await revokeRefreshToken(endpoints, {
+      clientId: clientIdFor(session.relay_url, "cli"),
+      refreshToken: session.refresh_token,
+    }, deps);
+  } catch (err) {
+    console.error(`Could not revoke the sign-in at the authorization server (${sanitizeForTerminal((err as Error).message)}). You can revoke it in asterism's /grants page.`);
+  }
 }

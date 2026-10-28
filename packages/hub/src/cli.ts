@@ -5,7 +5,7 @@ import { readFileSync, writeFileSync, chmodSync, mkdirSync, statSync, statfsSync
 import { dirname } from "node:path";
 import WebSocket from "ws";
 import open from "open";
-import { AsterismError, assertSecureRelayUrl, assertSecureHttpUrl, deviceSignIn, requestRotateViaControlChannel } from "@constellation/shared";
+import { AsterismError, relayWsUrl, assertSecureHttpUrl, deviceSignIn, registerExecutor, checkHostName, deviceCodeLines, sanitizeForTerminal as t, requestRotateViaControlChannel } from "@constellation/shared";
 import { loadHubConfig, validateHubConfig } from "./config.js";
 import { getpwnam } from "./identity.js";
 import { runHub, sourceEnvFile } from "./index.js";
@@ -76,19 +76,20 @@ export function registerHubCommands(program: Command): void {
         process.exit(1);
       }
 
-      if (!hostName || hostName.length > 63) {
-        console.error("Error: host name must be 1–63 characters");
+      const checkedHost = checkHostName(hostName ?? "");
+      if (!checkedHost.ok) {
+        console.error("Error:", checkedHost.error);
         process.exit(1);
       }
 
       try {
         assertSecureHttpUrl(relayUrl);
       } catch (err) {
-        console.error("Error:", (err as Error).message);
+        console.error("Error:", t((err as Error).message));
         process.exit(1);
       }
 
-      console.log(`\nRegistering hub '${hostName}' with relay: ${relayUrl}`);
+      console.log(`\nRegistering hub '${checkedHost.host}' with relay: ${relayUrl}`);
       console.log("An admin must approve this request in the browser.\n");
 
       // Hub registration is admin-only: the sign-in asks for the step-up `admin` scope, which the
@@ -100,9 +101,7 @@ export function registerHubCommands(program: Command): void {
           kind: "hub",
           scope: "relay admin",
           onCode: async (dc, openUrl) => {
-            console.log(`Share the following URL with an admin (opening browser automatically):`);
-            console.log(`  ${dc.verification_uri_complete}\n`);
-            console.log(`If the browser did not open, the admin should enter this code: ${dc.user_code}\n`);
+            for (const line of deviceCodeLines("Share the following URL with an admin", dc, openUrl, "the admin")) console.log(line);
             console.log("Waiting for admin approval...\n");
             if (openUrl) {
               try { await open(openUrl); } catch { /* ignore */ }
@@ -113,19 +112,14 @@ export function registerHubCommands(program: Command): void {
         if (err instanceof AsterismError && err.code === "access_denied") {
           console.error("\nAccess denied. Ensure the approving user is in the admin group.");
         } else {
-          console.error(`\n${(err as Error).message}`);
+          console.error(`\n${t((err as Error).message)}`);
         }
         process.exit(1);
       }
 
-      const regRes = await fetch(`${relayUrl}/api/executors/register`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
-        body: JSON.stringify({ type: "hub", host: hostName }),
-      });
-      const result = await regRes.json().catch(() => ({})) as { access_token?: string; host?: string; error?: string; error_description?: string };
-      if (!regRes.ok || !result.access_token || !result.host) {
-        console.error("The relay refused the registration:", result.error_description ?? result.error ?? `status ${regRes.status}`);
+      const result = await registerExecutor(relayUrl, accessToken, { type: "hub", host: checkedHost.host });
+      if (!result.ok) {
+        console.error(result.message);
         process.exit(1);
       }
 
@@ -133,7 +127,7 @@ export function registerHubCommands(program: Command): void {
       writeEnvToken(envFile, result.access_token);
       warnIfEnvFileInsecure(envFile);
 
-      console.log(`Hub '${result.host}' registered successfully.`);
+      console.log(`Hub '${t(result.host)}' registered successfully.`);
       console.log(`Token written to: ${envFile}`);
       console.log(`\nSet CONSTELLATION_HUB_TOKEN from this file before starting the hub,`);
       console.log(`or pass --env-file to 'constellation hub start'.`);
@@ -373,7 +367,7 @@ WantedBy=multi-user.target
         if (viaControl.ok) {
           console.log("Token rotated — the running hub has reconnected with the new token. No restart needed.");
         } else {
-          console.error("Error:", viaControl.error);
+          console.error("Error:", t(viaControl.error));
           process.exit(1);
         }
         return;
@@ -395,12 +389,11 @@ WantedBy=multi-user.target
         process.exit(1);
       }
 
-      const wsUrl = cfg.relay_url.replace(/^http/, "ws") + "/executor/connect";
-
+      let wsUrl: string;
       try {
-        assertSecureRelayUrl(wsUrl);
+        wsUrl = relayWsUrl(cfg.relay_url) + "/executor/connect";
       } catch (err) {
-        console.error("Error:", (err as Error).message);
+        console.error("Error:", t((err as Error).message));
         process.exit(1);
       }
 
@@ -425,7 +418,7 @@ WantedBy=multi-user.target
         });
         ws.on("error", (err) => {
           clearTimeout(timeout);
-          console.error("Error:", err.message);
+          console.error("Error:", t(err.message));
           resolve(null);
         });
       });

@@ -75,7 +75,7 @@ This maps onto how humans and agents tend to work with files differently: a huma
 
 All `/api/*` endpoints (except `POST /api/executors/register`, which applies the same check itself) require a valid Bearer token: a JWT access token issued by asterism for this relay, carrying the `relay` scope. See [Authorization](#authorization).
 
-**Admin-gated endpoints** additionally require the `admin` scope on the token. asterism issues it only to members of the `constellation-admins` group, and only on step-up: the relay answers `403 insufficient_scope` with a `WWW-Authenticate` challenge naming the scope, and the client asks asterism for a token with it.
+**Admin-gated endpoints** additionally require the `admin` scope on the token. asterism issues it only on step-up: the relay answers `403 insufficient_scope` with a `WWW-Authenticate` challenge naming the scope, and the client asks asterism for a token with it. The token's `groups` must also contain `ADMIN_GROUP` (default `constellation-admins`); otherwise the relay answers a plain `403` with no challenge. A token whose `groups` claim is malformed (not an array of at most 256 non-empty strings of at most 256 characters) is refused on every endpoint with `403 invalid_token_claims`.
 
 **Error responses** follow:
 ```json
@@ -347,7 +347,7 @@ CLI wrapper: `constellation relay hub-shares list [--executor <id>] [--json]` (r
 
 ### `POST /api/executors/register`
 
-Register a node or hub and mint its long-lived executor token. Requires a bearer access token (the `relay` scope; `type: "hub"` also requires `admin`). Body: `{ "type": "node" | "hub", "host": "<name>" }` (`host` is at most 63 characters). A hub registration revokes and replaces any existing hub token. Response `201`: `{ "access_token": "<executor token>", "token_type": "agent", "host": "<host>" }`. Replaces the old device-code registration.
+Register a node or hub and mint its long-lived executor token. Requires a bearer access token (the `relay` scope) issued to the matching Constellation client: `<RELAY_URL>/clients/node.json` for `type: "node"`, `<RELAY_URL>/clients/hub.json` for `type: "hub"`; any other client gets `403 invalid_client`. `type: "hub"` also requires `admin` (scope and group). Body: `{ "type": "node" | "hub", "host": "<name>" }` (`host` is 1 to 63 characters of letters, digits, `.`, `_` and `-`, after trimming). Registering a host that already exists revokes and replaces its token and closes that executor's live connection. Concurrent registrations of the same host are serialized; a lost race answers `409`. Response `201`: `{ "access_token": "<executor token>", "token_type": "agent", "host": "<host>" }`. Replaces the old device-code registration.
 
 ---
 
@@ -439,7 +439,7 @@ If the executor does not reconnect within 5 minutes, the new token is revoked an
 { "type": "rotate_token" }
 ```
 
-**`update_host`** — rename the node's host identifier. Fails if the name is already taken by another node on the same account.
+**`update_host`** — rename the node's host identifier (same rules as registration: 1 to 63 characters of letters, digits, `.`, `_` and `-`). Fails if the name is already taken by another node on the same account.
 ```json
 { "type": "update_host", "host": "new-name" }
 ```

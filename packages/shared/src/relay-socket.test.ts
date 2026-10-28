@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { WebSocketServer, type WebSocket as ServerSideSocket } from "ws";
-import { RelaySocket, type RelaySocketOptions, assertSecureRelayUrl } from "./relay-socket.js";
+import { RelaySocket, type RelaySocketOptions, assertSecureRelayUrl, assertSecureHttpUrl, relayWsUrl } from "./relay-socket.js";
 
 describe("assertSecureRelayUrl", () => {
   it("never throws for wss://, regardless of host", () => {
@@ -16,6 +16,45 @@ describe("assertSecureRelayUrl", () => {
 
   it("refuses ws:// to a remote host", () => {
     expect(() => assertSecureRelayUrl("ws://example.com:1234/connect")).toThrow(/non-localhost host/);
+  });
+});
+
+describe("scheme allowlist", () => {
+  it.each(["WS://example.com/x", "Ws://example.com/x", "http://example.com", "https://example.com", "ftp://example.com", "file:///etc/passwd", "javascript:alert(1)", "example.com", ""])(
+    "assertSecureRelayUrl refuses %j",
+    (url) => { expect(() => assertSecureRelayUrl(url)).toThrow(/Refusing to connect/); }
+  );
+
+  it.each(["HTTP://example.com", "Http://example.com", "hTTp://example.com:80/x", "ws://example.com", "wss://example.com", "ftp://example.com", "file:///etc/passwd", "data:text/plain,x", "example.com", ""])(
+    "assertSecureHttpUrl refuses %j",
+    (url) => { expect(() => assertSecureHttpUrl(url)).toThrow(/Refusing to connect/); }
+  );
+
+  it("treats an upper-case scheme like the lower-case one", () => {
+    expect(() => assertSecureHttpUrl("HTTPS://example.com")).not.toThrow();
+    expect(() => assertSecureHttpUrl("HTTP://localhost:3000")).not.toThrow();
+    expect(() => assertSecureRelayUrl("WSS://example.com")).not.toThrow();
+    expect(() => assertSecureRelayUrl("WS://127.0.0.1:3000")).not.toThrow();
+  });
+
+  it.each(["http://127.evil.com", "http://127.0.0.1.evil.com", "http://localhost.evil.com", "http://user@evil.com@localhost.x"])(
+    "does not treat %s as loopback",
+    (url) => { expect(() => assertSecureHttpUrl(url)).toThrow(/non-localhost/); }
+  );
+});
+
+describe("relayWsUrl", () => {
+  it("maps http(s) to ws(s) in any case and drops a trailing slash", () => {
+    expect(relayWsUrl("https://relay.example.com")).toBe("wss://relay.example.com");
+    expect(relayWsUrl("HTTPS://relay.example.com/")).toBe("wss://relay.example.com");
+    expect(relayWsUrl("http://localhost:3000")).toBe("ws://localhost:3000");
+    expect(relayWsUrl("wss://relay.example.com/base")).toBe("wss://relay.example.com/base");
+  });
+
+  it("refuses plaintext to a remote host and unknown schemes", () => {
+    expect(() => relayWsUrl("http://relay.example.com")).toThrow(/non-localhost/);
+    expect(() => relayWsUrl("ftp://relay.example.com")).toThrow(/Refusing to connect/);
+    expect(() => relayWsUrl("not a url")).toThrow(/not a valid URL/);
   });
 });
 

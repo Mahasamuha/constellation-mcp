@@ -22,7 +22,12 @@ import {
   AsterismError,
   clientIdFor,
   confirm,
-  assertSecureRelayUrl,
+  assertSecureHttpUrl,
+  checkHostName,
+  relayWsUrl,
+  sanitizeForTerminal as t,
+  deviceCodeLines,
+  registerExecutor,
   discoverAsterism,
   pollDeviceToken,
   requestDeviceAuthorization,
@@ -42,7 +47,7 @@ import {
   showLogs,
 } from "./service.js";
 import { runDaemon } from "../index.js";
-import { maskToken } from "./util.js";
+import { maskToken, parsePositiveInt } from "./util.js";
 
 export function registerNodeCommands(program: Command): void {
   const node = program
@@ -71,7 +76,7 @@ export function registerNodeCommands(program: Command): void {
       try {
         assertRelayUrl(relayUrl);
       } catch (err) {
-        console.error("Error:", (err as Error).message);
+        console.error("Error:", t((err as Error).message));
         process.exit(1);
       }
 
@@ -83,33 +88,31 @@ export function registerNodeCommands(program: Command): void {
 
       const started = await requestDeviceCode(relayUrl);
       if (!started.ok) {
-        console.error("Failed to start sign-in:", started.error);
+        console.error("Failed to start sign-in:", t(started.error));
         process.exit(1);
       }
-      const { dc, openUrl } = started;
+      const { dc, openUrl, issuer } = started;
 
-      console.log(`\nOpen the following URL to authenticate (opening browser automatically):`);
-      console.log(`  ${dc.verification_uri_complete}\n`);
-      console.log(`If the browser did not open, enter this code: ${dc.user_code}\n`);
+      for (const line of deviceCodeLines("Open the following URL to authenticate", dc, openUrl)) console.log(line);
 
       if (openUrl) {
         try { await open(openUrl); } catch { /* ignore */ }
       }
 
-      const outcome = await completeRegistration(relayUrl, dc, host.host);
+      const outcome = await completeRegistration(relayUrl, dc, host.host, issuer);
       if (outcome.kind === "timeout") {
         console.error("Timed out waiting for authentication.");
         process.exit(1);
       }
       if (outcome.kind === "error") {
-        console.error(`\n${outcome.message}`);
+        console.error(`\n${t(outcome.message)}`);
         process.exit(1);
       }
 
       const dir = getConfigDir();
       persistNodeRegistration(dir, relayUrl, outcome.access_token, outcome.host);
 
-      console.log(`\nNode registered as '${outcome.host}'.`);
+      console.log(`\nNode registered as '${t(outcome.host)}'.`);
       console.log(`Config written to: ${dir}`);
       console.log(`Add paths with: constellation node paths add <share> <path>`);
     });
@@ -142,7 +145,12 @@ export function registerNodeCommands(program: Command): void {
         return;
       }
       const started = await requestDeviceCode(opts.relay);
-      console.log(JSON.stringify(started.ok ? { ok: true, data: started.dc } : started));
+      // `issuer` goes back to `node auth complete`, which refuses to continue if the relay names a
+      // different authorization server by then. `open_url` is the only URL a caller may open: null
+      // when the verification URL is not on the issuer's origin.
+      console.log(JSON.stringify(started.ok
+        ? { ok: true, data: { ...started.dc, issuer: started.issuer, open_url: started.openUrl } }
+        : started));
     });
 
   auth
@@ -150,10 +158,11 @@ export function registerNodeCommands(program: Command): void {
     .description("Poll for device-code completion, register the node, and persist the result")
     .requiredOption("--relay <url>", "Relay URL")
     .requiredOption("--device-code <code>", "Device code from 'node auth device-code'")
+    .requiredOption("--issuer <url>", "Authorization server from 'node auth device-code'; refused if the relay names another")
     .requiredOption("--interval <seconds>", "Poll interval in seconds")
     .requiredOption("--expires-in <seconds>", "Device code expiry in seconds")
     .option("--host-name <name>", "Host name for this machine (same default as 'node init')")
-    .action(async (opts: { relay: string; deviceCode: string; interval: string; expiresIn: string; hostName?: string }) => {
+    .action(async (opts: { relay: string; deviceCode: string; issuer: string; interval: string; expiresIn: string; hostName?: string }) => {
       try {
         assertRelayUrl(opts.relay);
       } catch (err) {
@@ -166,10 +175,18 @@ export function registerNodeCommands(program: Command): void {
         return;
       }
 
+      const interval = parsePositiveInt(opts.interval);
+      const expiresIn = parsePositiveInt(opts.expiresIn);
+      if (interval === null || expiresIn === null) {
+        console.log(JSON.stringify({ status: "error", message: "--interval and --expires-in must be positive whole numbers of seconds" }));
+        return;
+      }
+
       const outcome = await completeRegistration(
         opts.relay,
-        { device_code: opts.deviceCode, interval: parseInt(opts.interval, 10), expires_in: parseInt(opts.expiresIn, 10) },
-        host.host
+        { device_code: opts.deviceCode, interval, expires_in: expiresIn },
+        host.host,
+        opts.issuer
       );
 
       if (outcome.kind === "timeout") {
@@ -278,7 +295,7 @@ export function registerNodeCommands(program: Command): void {
         if (viaControl.ok) {
           console.log("Token rotated — the running node has reconnected with the new token.");
         } else {
-          console.error("Error:", viaControl.error);
+          console.error("Error:", t(viaControl.error));
           process.exit(1);
         }
         return;
@@ -310,7 +327,7 @@ export function registerNodeCommands(program: Command): void {
       // WebSocket here would evict it (relay enforces one connection per executor).
       const viaControl = await requestUpdateHostViaControlChannel(dir, host);
       if (viaControl !== null) {
-        if (!viaControl.ok) { console.error("Error:", viaControl.error); process.exit(1); }
+        if (!viaControl.ok) { console.error("Error:", t(viaControl.error)); process.exit(1); }
         const cfg = loadNodeConfig(dir);
         writeNodeConfig(dir, { ...cfg, host });
         console.log(`Host renamed to '${host}'.`);
@@ -404,9 +421,9 @@ export function registerNodeCommands(program: Command): void {
       const update: Partial<NodeConfig> = {};
       if (opts.relayUrl) {
         try {
-          assertSecureRelayUrl(opts.relayUrl.replace(/^http/, "ws"));
+          assertRelayUrl(opts.relayUrl);
         } catch (err) {
-          console.error("Error:", (err as Error).message);
+          console.error("Error:", t((err as Error).message));
           process.exit(1);
         }
         update.relay_url = opts.relayUrl;
@@ -514,7 +531,7 @@ async function syncPaths(dir: string, candidatePaths?: PathEntry[]): Promise<voi
     // Daemon is running but not connected to the relay — fall through to direct
     // connection below (safe to open one since there is no live connection to evict).
     if (!viaControl.ok && viaControl.error !== "Not connected to relay") {
-      console.error("Error:", viaControl.error);
+      console.error("Error:", t(viaControl.error));
       process.exit(1);
     }
     if (viaControl.ok) return;
@@ -542,10 +559,10 @@ async function syncPaths(dir: string, candidatePaths?: PathEntry[]): Promise<voi
 // token is used once and thrown away; it is never written to disk.
 // ---------------------------------------------------------------------------
 
-/** Refuses a plaintext relay URL for a non-localhost host (the same rule covers the HTTP calls
- * here and the WebSocket the node opens later). */
+/** Refuses a relay URL that is not https, or http to localhost (the same rule covers the HTTP
+ * calls here and, via relayWsUrl, the WebSocket the node opens later). */
 function assertRelayUrl(relayUrl: string): void {
-  assertSecureRelayUrl(relayUrl.replace(/^http/, "ws"));
+  assertSecureHttpUrl(relayUrl);
 }
 
 type HostResult = { ok: true; host: string } | { ok: false; error: string };
@@ -556,11 +573,7 @@ function resolveHost(dir: string, flag: string | undefined): HostResult {
   const existing = (() => {
     try { return loadNodeConfig(dir).host; } catch { return undefined; }
   })();
-  const host = (flag ?? existing ?? hostname()).trim();
-  if (!host || host.length > 63) {
-    return { ok: false, error: "host name must be 1-63 characters (pass --host-name)" };
-  }
-  return { ok: true, host };
+  return checkHostName(flag ?? existing ?? hostname());
 }
 
 interface DeviceCodeInfo {
@@ -573,7 +586,7 @@ interface DeviceCodeInfo {
 }
 
 type DeviceCodeResult =
-  | { ok: true; dc: DeviceCodeInfo; openUrl: string | null }
+  | { ok: true; dc: DeviceCodeInfo; issuer: string; openUrl: string | null }
   | { ok: false; error: string };
 
 async function requestDeviceCode(relayUrl: string): Promise<DeviceCodeResult> {
@@ -584,7 +597,7 @@ async function requestDeviceCode(relayUrl: string): Promise<DeviceCodeResult> {
       scope: "relay",
       resource: resourceFor(relayUrl),
     });
-    return { ok: true, dc, openUrl: verificationUrlToOpen(endpoints, dc) };
+    return { ok: true, dc, issuer: endpoints.issuer, openUrl: verificationUrlToOpen(endpoints, dc) };
   } catch (err) {
     return { ok: false, error: (err as Error).message };
   }
@@ -595,39 +608,31 @@ type RegistrationOutcome =
   | { kind: "error"; message: string }
   | { kind: "success"; access_token: string; host: string };
 
-/** Waits for the user to approve the device code, then registers the node with the relay. */
+/** Waits for the user to approve the device code, then registers the node with the relay.
+ * `issuer` is the authorization server the code was requested from: if the relay names another
+ * by now, nothing is sent to it. */
 async function completeRegistration(
   relayUrl: string,
   dc: { device_code: string; interval: number; expires_in: number },
-  host: string
+  host: string,
+  issuer: string
 ): Promise<RegistrationOutcome> {
   let accessToken: string;
   try {
-    const endpoints = await discoverAsterism(relayUrl);
+    const endpoints = await discoverAsterism(relayUrl, {}, issuer);
     ({ access_token: accessToken } = await pollDeviceToken(endpoints, dc, {
       clientId: clientIdFor(relayUrl, "node"),
       resource: resourceFor(relayUrl),
     }));
   } catch (err) {
     if (err instanceof AsterismError && err.code === "expired_token") return { kind: "timeout" };
-    return { kind: "error", message: err instanceof AsterismError && err.code === "access_denied" ? "Access denied." : (err as Error).message };
+    return { kind: "error", message: err instanceof AsterismError && err.code === "access_denied" ? "Access denied." : t((err as Error).message) };
   }
 
-  try {
-    const res = await fetch(`${relayUrl}/api/executors/register`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
-      body: JSON.stringify({ type: "node", host }),
-    });
-    const body = await res.json().catch(() => ({})) as { access_token?: string; host?: string; error?: string; error_description?: string };
-    if (!res.ok || !body.access_token || !body.host) {
-      const reason = body.error_description ?? body.error ?? `status ${res.status}`;
-      return { kind: "error", message: `The relay refused the registration: ${reason}` };
-    }
-    return { kind: "success", access_token: body.access_token, host: body.host };
-  } catch (err) {
-    return { kind: "error", message: `Could not reach the relay to register: ${(err as Error).message}` };
-  }
+  const registered = await registerExecutor(relayUrl, accessToken, { type: "node", host });
+  return registered.ok
+    ? { kind: "success", access_token: registered.access_token, host: registered.host }
+    : { kind: "error", message: registered.message };
 }
 
 function persistNodeRegistration(dir: string, relayUrl: string, accessToken: string, host: string): void {
@@ -656,12 +661,11 @@ async function nodeControlCommand(
 ): Promise<object | null> {
   const cfg = loadNodeConfig(dir);
   const paths = loadPathsConfig(dir).paths;
-  const wsUrl = cfg.relay_url.replace(/^http/, "ws") + "/executor/connect";
-
+  let wsUrl: string;
   try {
-    assertSecureRelayUrl(wsUrl);
+    wsUrl = relayWsUrl(cfg.relay_url) + "/executor/connect";
   } catch (err) {
-    console.error("Error:", (err as Error).message);
+    console.error("Error:", t((err as Error).message));
     process.exit(1);
   }
 
@@ -708,7 +712,7 @@ async function nodeControlCommand(
     });
   }).then((r) => r as object | null)
     .catch((err: Error) => {
-      console.error("Error:", err.message);
+      console.error("Error:", t(err.message));
       process.exit(1);
     });
 }

@@ -19,6 +19,9 @@ const CLIENTS = {
   hub: "Constellation hub",
 } as const;
 
+/** Path of the placeholder redirect URI. Nothing may ever be routed here. */
+export const NO_REDIRECT_PATH = "/clients/no-redirect";
+
 export const clientMetadataRouter: IRouter = Router();
 
 /** Builds the CIMD document for `kind`, whose client_id is the URL it is served from. */
@@ -28,8 +31,11 @@ export function clientMetadata(relayUrl: string, kind: keyof typeof CLIENTS) {
     client_name: CLIENTS[kind],
     grant_types: ["authorization_code", "urn:ietf:params:oauth:grant-type:device_code", "refresh_token"],
     response_types: ["code"],
-    // Never used: these clients only run the device flow. asterism requires a non-empty list.
-    redirect_uris: ["http://127.0.0.1/callback"],
+    // Never used: these clients only run the device flow, but asterism requires a non-empty
+    // list. An https URI on the relay that is never served (see NO_REDIRECT_PATH), so an
+    // authorization-code redirect can't land on anything, unlike a loopback port that any
+    // local process could listen on.
+    redirect_uris: [`${relayUrl}${NO_REDIRECT_PATH}`],
     token_endpoint_auth_method: "none",
   };
 }

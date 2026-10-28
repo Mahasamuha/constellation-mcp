@@ -7,7 +7,7 @@ import {
   type Verifier,
   type VerifierConfig,
 } from "@mahasamuha/asterism-verify";
-import { requireEnv, groupsFromClaims, createLogger } from "@constellation/shared";
+import { requireEnv, groupsFromClaims, InvalidGroupsError, createLogger } from "@constellation/shared";
 import { prisma } from "./db.js";
 import { config } from "./config.js";
 import { ADMIN_SCOPE, BASE_SCOPE, type RequestUser } from "./request-user.js";
@@ -101,13 +101,28 @@ export async function authenticateRequest(req: Request, res: Response): Promise<
     return null;
   }
 
+  let groups: string[];
+  try {
+    groups = groupsFromClaims(principal.claims);
+  } catch (err) {
+    if (!(err instanceof InvalidGroupsError)) throw err;
+    // A malformed claim is an asterism or upstream problem; a new token won't fix it, so no
+    // challenge. The claim value is not logged: it is attacker- or admin-controlled text.
+    log.warn({ sub: principal.subject, clientId: principal.clientId }, "Refusing token with an invalid groups claim");
+    res.status(403).json({
+      error: "invalid_token_claims",
+      error_description: "The access token's groups claim is malformed",
+    });
+    return null;
+  }
+
   await ensureUserRow(principal.subject);
 
   return {
     id: principal.subject,
     clientId: principal.clientId,
     scopes: principal.scopes,
-    groups: groupsFromClaims(principal.claims),
+    groups,
     claims: principal.claims,
   };
 }
@@ -127,10 +142,14 @@ export async function requireBearerAuth(req: Request, res: Response, next: NextF
 }
 
 /**
- * Requires the `admin` scope on the verified token. Must run after requireBearerAuth.
- * asterism only issues `admin` (a short-lived step-up scope) to members of the admin group,
- * so this deliberately does not look at `groups`, which can be up to 24 hours stale.
- * A missing scope answers 403 asking for both scopes, so the step-up token still works for /api.
+ * Requires the `admin` scope on the verified token AND membership of `config.adminGroup`
+ * in its `groups`. Must run after requireBearerAuth.
+ * The scope is asterism's short-lived step-up (5 minutes), so admin keeps that bound. The
+ * group check means admin never depends on the asterism `requireGroups` policy for the
+ * `admin` scope having been set. Stale `groups` (up to 24 hours) can only deny, never
+ * grant, because the scope is required as well.
+ * A missing scope answers 403 asking for both scopes, so the step-up token still works for
+ * /api. A missing group answers a plain 403 with no challenge: stepping up cannot help.
  */
 export function requireAdmin(req: Request, res: Response, next: NextFunction): void {
   const user = (req as Partial<AuthenticatedRequest>).user;
@@ -141,6 +160,13 @@ export function requireAdmin(req: Request, res: Response, next: NextFunction): v
   }
   if (!user.scopes.includes(ADMIN_SCOPE)) {
     sendInsufficientScope(res, verifierConfig(), [BASE_SCOPE, ADMIN_SCOPE], "Admin scope required");
+    return;
+  }
+  if (!user.groups.includes(config.adminGroup)) {
+    res.status(403).json({
+      error: "forbidden",
+      error_description: `This account is not in the admin group (${config.adminGroup})`,
+    });
     return;
   }
   next();

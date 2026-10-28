@@ -19,6 +19,10 @@ The hub model rests on two assumptions:
 
 1. **The relay is a trusted intermediary.** Identity claims forwarded in the RPC envelope arrive from the relay, which verified the user's asterism access token. The hub trusts the `sub`, `groups` and claims as authoritative — the same trust model as SSSD or an LDAP client trusting a directory server.
 
+> **Upstream trust.** `constellation_username` and `groups` are only as trustworthy as their source. asterism's `OIDC_CLAIM_MAP` must never map them onto a user-editable claim, and the Authentik attribute behind `constellation_username` must be admin-only and unique per user. asterism does not enforce this.
+>
+> **`FORWARDED_CLAIMS`.** If the relay sets `FORWARDED_CLAIMS`, it must include every claim named in the hub's `identity.claims` (normally `constellation_username`). Otherwise the hub sees the claim as absent and falls through to `user_map`. `user_groups` is always forwarded in full.
+
 2. **The admin, not users, controls what is shared.** Shares (path mounts) are defined in the hub config by the operator. Users cannot register, modify, or remove shares. The hub connects to the relay with a service-level token that is not bound to any user.
 
 **Node vs. hub:**
@@ -204,10 +208,14 @@ Permissions are defined per-share in the config. The evaluation order:
 
 1. If the share is not in the admin config → reject.
 2. If `permissions.overrides` contains a `sub` entry for the user's asterism `sub` → use that access level. A `sub` entry wins outright.
-3. Otherwise, if the user's `groups` match one or more `group` entries → use the most permissive of them (`read-write` over `read-only` over `none`). A group entry can restrict as well as grant, because the default may be more permissive than the group's level; to deny a group everything, give it `none` and make sure no other matching group grants more.
+3. Otherwise, if the user's `groups` match one or more `group` entries → use the most permissive of them (`read-write` over `read-only` over `none`). A group entry can restrict as well as grant, because the default may be more permissive than the group's level. **A `none` group is not a denylist**: a user who is also in any group granting more still gets the more permissive level. To deny someone, use a `sub` override (which wins outright), or set `default: none` and grant access only to the groups that should have it.
 4. Otherwise use `permissions.default`.
 
-Each override has exactly one of `sub` or `group`. The old `oidc_sub` key is a config error (naming the share and index); re-key it to `sub` (the asterism user id) or `group`.
+Each override has exactly one of `sub` or `group`. `sub` overrides and `identity.user_map` entries are keyed on asterism's user id. Recreating or relinking a user in asterism produces a new id and silently orphans them (a `none` override stops applying; a mapping stops resolving). That is another reason to prefer `default: none` plus grants over denying by `sub`.
+
+A `groups` claim that is present but malformed (not an array, more than 256 entries, or an entry that is empty, not a string, or over 256 characters) refuses the request ("Malformed request") and writes an audit record; it is never truncated or filtered, because dropping an entry could drop a deny. A token with no `groups` claim means no groups.
+
+Malformed security-relevant config is an error at load: a non-array `permissions.overrides`, an `identity.user_map` entry without a string `sub` and `local_username`, a non-array or non-string `identity.claims`, and malformed `subnode_uid` / `subnode_gid` ranges and block lists. The old `oidc_sub` key is a config error (naming the share and index); re-key it to `sub` (the asterism user id) or `group`.
 
 Access levels:
 - `read-only` — permits read, search, and listing tools; blocks write tools (`write_file`, `edit_file`, `create_directory`, `delete`, `move`, `copy`).

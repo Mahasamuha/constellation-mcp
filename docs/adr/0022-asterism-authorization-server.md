@@ -29,9 +29,11 @@ tokens that a resource server verifies with `@mahasamuha/asterism-verify`.
   longer serves authorization server metadata, `/oauth/*` or `/activate*`.
 - **The relay is registered in asterism as a resource server.** asterism fetches the
   relay's metadata, which declares the `relay` scope and the step-up-only `admin` scope.
-- **Admin is a scope.** `requireAdmin` checks for the `admin` scope in the token.
-  asterism issues it only to members of the `constellation-admins` group and only on
-  step-up (a `403 insufficient_scope`). This replaces `User.role`, `ADMIN_GROUPS`,
+- **Admin is a scope plus a group.** `requireAdmin` requires the `admin` scope and
+  membership of `ADMIN_GROUP` (default `constellation-admins`) in the token's `groups`.
+  asterism issues the scope only on step-up (a `403 insufficient_scope`, 5 minutes), and
+  the group check means admin does not depend on asterism's `requireGroups` policy having
+  been set. Stale groups can only deny, never grant, because the scope is required too. This replaces `User.role`, `ADMIN_GROUPS`,
   `RELAY_ADMIN_TOKEN` and the `adminUntil` window.
 - **Client registration is CIMD.** The CLI, node and hub identify themselves with Client
   ID Metadata Documents served by the relay at `/clients/cli.json`, `/clients/node.json`
@@ -75,6 +77,9 @@ and the identity provider.
 
 ## Consequences
 
+- Only the node client may register a node and only the hub client a hub
+  (`POST /api/executors/register` checks the token's `client_id`), so a token issued to a
+  third-party MCP client cannot mint an executor token.
 - Access tokens are short-lived and not individually revocable at the relay. Revoking a
   grant in asterism takes effect when the current token expires.
 - The relay depends on asterism being reachable to fetch signing keys (cached). A
@@ -85,7 +90,13 @@ and the identity provider.
     `ADMIN_SESSION_DURATION`, `RELAY_ADMIN_TOKEN`, `OAUTH_*` and the
     `RATE_LIMIT_OAUTH_PER_15MIN`, `RATE_LIMIT_DEVICE_POLL_PER_15MIN` and
     `RATE_LIMIT_DEVICE_AUTH_PER_15MIN` settings.
-  - Register the relay in asterism as a resource server.
+  - Register the relay in asterism as a resource server, release the `groups`, `email` and
+    `constellation_username` claims, and set the `admin` scope policy
+    `--require-groups constellation-admins`, all before users connect (grants made earlier
+    carry no such claims until the user re-consents). `groups` and
+    `constellation_username` are only as trustworthy as their upstream source: never map
+    them onto a user-editable claim in `OIDC_CLAIM_MAP`. See
+    [Configuration](../configuration.md#operator-runbook-configure-asterism-before-users-connect).
   - Existing clients and executors must sign in again.
 - Migration `0006_asterism_resource_server` drops the `auth_codes`, `device_codes`,
   `oauth_clients`, `oauth_sessions`, `local_users` and `login_failures` tables, the

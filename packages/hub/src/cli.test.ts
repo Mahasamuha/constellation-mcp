@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { Command } from "commander";
 import { join } from "node:path";
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { startControlServer, type RotatableConnection } from "@constellation/shared";
 import { registerHubCommands } from "./cli.js";
 import { makeTempDir, cleanTempDir } from "./test/fixtures.js";
@@ -11,6 +11,13 @@ class ExitError extends Error {
     super(`process.exit(${code})`);
   }
 }
+
+vi.mock("open", () => ({ default: vi.fn(async () => undefined) }));
+// Instant polling; the mock targets cli-util because asterism-client imports sleep from there.
+vi.mock("../../shared/src/cli-util.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../shared/src/cli-util.js")>();
+  return { ...actual, sleep: async () => {} };
+});
 
 let dir: string;
 
@@ -99,5 +106,89 @@ describe("hub rotate-token — prefers the control channel over a second connect
 
     expect(exitCode).toBe(1);
     expect(err).toContain("CONSTELLATION_HUB_TOKEN is not set");
+  });
+});
+
+describe("hub register", () => {
+  const RELAY = "https://relay.example.com";
+  const ISSUER = "https://auth.example.com";
+  const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+
+  /** A relay and an asterism that approve at once; `register` answers the register call. */
+  function stub(register: (init: RequestInit | undefined) => Response | Error, verificationUri = `${ISSUER}/oauth/device?user_code=ABCD-2345`) {
+    vi.stubGlobal("fetch", vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      switch (String(url)) {
+        case `${RELAY}/.well-known/oauth-protected-resource/mcp`: return json(200, { resource: `${RELAY}/mcp`, authorization_servers: [ISSUER] });
+        case `${ISSUER}/.well-known/oauth-authorization-server`:
+          return json(200, { issuer: ISSUER, device_authorization_endpoint: `${ISSUER}/d`, token_endpoint: `${ISSUER}/t` });
+        case `${ISSUER}/d`:
+          return json(200, { device_code: "dc", user_code: "ABCD-2345", verification_uri: `${ISSUER}/oauth/device`, verification_uri_complete: verificationUri, expires_in: 900, interval: 5 });
+        case `${ISSUER}/t`: return json(200, { access_token: "at-admin", expires_in: 300 });
+        case `${RELAY}/api/executors/register`: {
+          const r = register(init);
+          if (r instanceof Error) throw r;
+          return r;
+        }
+        default: throw new Error(`unexpected fetch ${String(url)}`);
+      }
+    }));
+  }
+
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it("registers through the shared helper (no redirects) and writes the token to the env file", async () => {
+    let seen: RequestInit | undefined;
+    stub((init) => { seen = init; return json(200, { access_token: "hub-token", host: "h1" }); });
+    const envFile = join(dir, "hub.env");
+    const { exitCode, out } = await runCli(["hub", "register", "--relay", RELAY, "--host-name", "h1", "--env-file", envFile]);
+    expect(exitCode).toBe(0);
+    expect(out).toContain("Hub 'h1' registered");
+    expect(seen?.redirect).toBe("error");
+    expect(readFileSync(envFile, "utf8")).toContain("hub-token");
+    expect(out).not.toContain("hub-token");
+  });
+
+  it("reports a network failure on the register call instead of crashing", async () => {
+    stub(() => new TypeError("fetch failed"));
+    const { exitCode, err } = await runCli(["hub", "register", "--relay", RELAY, "--host-name", "h1", "--env-file", join(dir, "hub.env")]);
+    expect(exitCode).toBe(1);
+    expect(err).toContain("Could not reach the relay to register");
+  });
+
+  it("strips control characters from the relay's refusal", async () => {
+    stub(() => json(403, { error: "forbidden", error_description: "\u001b[2Jnope" }));
+    const { exitCode, err } = await runCli(["hub", "register", "--relay", RELAY, "--host-name", "h1", "--env-file", join(dir, "hub.env")]);
+    expect(exitCode).toBe(1);
+    expect(err).toContain("nope");
+    expect(err).not.toContain("\u001b");
+  });
+
+  it("warns, and does not open the browser, for a verification URL off the issuer's origin", async () => {
+    const { default: open } = await import("open");
+    vi.mocked(open).mockClear();
+    stub(() => json(200, { access_token: "hub-token", host: "h1" }), "https://evil.example/x");
+    const { out } = await runCli(["hub", "register", "--relay", RELAY, "--host-name", "h1", "--env-file", join(dir, "hub.env")]);
+    expect(out).toContain("WARNING");
+    expect(open).not.toHaveBeenCalled();
+  });
+
+  it("rejects a host name the relay would refuse, before sign-in", async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    const { exitCode, err } = await runCli(["hub", "register", "--relay", RELAY, "--host-name", "my host"]);
+    expect(exitCode).toBe(1);
+    expect(err).toContain("--host-name");
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("refuses an upper-case or unknown scheme before any request", async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    for (const relay of ["HTTP://relay.example.com", "ftp://relay.example.com"]) {
+      const { exitCode, err } = await runCli(["hub", "register", "--relay", relay, "--host-name", "h1"]);
+      expect(exitCode).toBe(1);
+      expect(err).toContain("Refusing to connect");
+    }
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 });

@@ -231,9 +231,13 @@ function parseShares(parsed: Record<string, unknown>): ShareConfig[] {
     }
 
     const overrides: ShareOverride[] = [];
-    if (Array.isArray(perms["overrides"])) {
-      for (let j = 0; j < perms["overrides"].length; j++) {
-        const ov = perms["overrides"][j] as Record<string, unknown>;
+    const rawOverrides = perms["overrides"];
+    if (rawOverrides !== undefined && rawOverrides !== null && !Array.isArray(rawOverrides)) {
+      throw new Error(`hub config: shares[${i}].permissions.overrides must be an array`);
+    }
+    if (Array.isArray(rawOverrides)) {
+      for (let j = 0; j < rawOverrides.length; j++) {
+        const ov = rawOverrides[j] as Record<string, unknown>;
         if (typeof ov !== "object" || ov === null) {
           throw new Error(`hub config: shares[${i}].permissions.overrides[${j}] must be a mapping`);
         }
@@ -265,25 +269,46 @@ function parseShares(parsed: Record<string, unknown>): ShareConfig[] {
   });
 }
 
+function present(v: unknown): boolean {
+  return v !== undefined && v !== null;
+}
+
+// A dropped block-list entry or range bound would silently widen who may be impersonated,
+// so malformed values here are errors rather than being skipped.
+function parseNumberList(v: unknown, where: string): number[] {
+  if (!Array.isArray(v) || !v.every((n) => typeof n === "number" && Number.isFinite(n))) {
+    throw new Error(`hub config: ${where} must be an array of numbers`);
+  }
+  return [...v] as number[];
+}
+
+function parseUidRange(v: unknown, where: string): UidRange {
+  if (typeof v !== "object" || v === null || Array.isArray(v)) {
+    throw new Error(`hub config: ${where} must be a mapping with min and/or max`);
+  }
+  const r = v as Record<string, unknown>;
+  const out: UidRange = {};
+  for (const k of ["min", "max"] as const) {
+    if (!present(r[k])) continue;
+    if (typeof r[k] !== "number") throw new Error(`hub config: ${where}.${k} must be a number`);
+    out[k] = r[k] as number;
+  }
+  return out;
+}
+
 function parseSubnodeUid(raw: Record<string, unknown>): SubnodeUidConfig {
   const cfg: SubnodeUidConfig = {};
 
-  if (raw["allowed_range"]) {
-    const ar = raw["allowed_range"] as Record<string, unknown>;
-    cfg.allowed_range = {};
-    if (typeof ar["min"] === "number") cfg.allowed_range.min = ar["min"];
-    if (typeof ar["max"] === "number") cfg.allowed_range.max = ar["max"];
+  if (present(raw["allowed_range"])) {
+    cfg.allowed_range = parseUidRange(raw["allowed_range"], "subnode_uid.allowed_range");
   }
 
-  if (raw["blocked_range"]) {
-    const br = raw["blocked_range"] as Record<string, unknown>;
-    cfg.blocked_range = {};
-    if (typeof br["min"] === "number") cfg.blocked_range.min = br["min"];
-    if (typeof br["max"] === "number") cfg.blocked_range.max = br["max"];
+  if (present(raw["blocked_range"])) {
+    cfg.blocked_range = parseUidRange(raw["blocked_range"], "subnode_uid.blocked_range");
   }
 
-  if (Array.isArray(raw["blocked_uids"])) {
-    cfg.blocked_uids = (raw["blocked_uids"] as unknown[]).filter((v): v is number => typeof v === "number");
+  if (present(raw["blocked_uids"])) {
+    cfg.blocked_uids = parseNumberList(raw["blocked_uids"], "subnode_uid.blocked_uids");
   }
 
   return cfg;
@@ -301,8 +326,8 @@ function parseSubnodeWorkers(raw: Record<string, unknown>): SubnodeWorkersConfig
 function parseSubnodeGid(raw: Record<string, unknown>): SubnodeGidConfig {
   const cfg: SubnodeGidConfig = {};
 
-  if (Array.isArray(raw["blocked_gids"])) {
-    cfg.blocked_gids = (raw["blocked_gids"] as unknown[]).filter((v): v is number => typeof v === "number");
+  if (present(raw["blocked_gids"])) {
+    cfg.blocked_gids = parseNumberList(raw["blocked_gids"], "subnode_gid.blocked_gids");
   }
 
   return cfg;
@@ -316,24 +341,36 @@ function parseIdentity(raw: Record<string, unknown>): IdentityConfig {
     );
   }
 
-  const claims = Array.isArray(raw["claims"])
-    ? (raw["claims"] as unknown[]).filter((c): c is string => typeof c === "string")
-    : [];
+  // A dropped claim name would silently skip tier 1 and fall through to user_map.
+  const rawClaims = raw["claims"];
+  if (present(rawClaims) && (!Array.isArray(rawClaims) || !rawClaims.every((c) => typeof c === "string" && c.length > 0))) {
+    throw new Error("hub config: identity.claims must be an array of non-empty strings");
+  }
+  const claims: string[] = present(rawClaims) ? [...(rawClaims as string[])] : [];
 
   const user_map: IdentityConfig["user_map"] = [];
   if (Array.isArray(raw["user_map"])) {
     (raw["user_map"] as unknown[]).forEach((e, i) => {
-      const em = (typeof e === "object" && e !== null ? e : {}) as Record<string, unknown>;
+      if (typeof e !== "object" || e === null) {
+        throw new Error(`hub config: identity.user_map[${i}] must be a mapping with sub and local_username`);
+      }
+      const em = e as Record<string, unknown>;
       if ("oidc_sub" in em) {
         throw new Error(
           `hub config: identity.user_map[${i}] uses the removed key oidc_sub. ` +
           `Constellation no longer sees the upstream OIDC subject; re-key it to 'sub' (the asterism user id).`
         );
       }
-      if (typeof em["sub"] === "string" && em["sub"] && typeof em["local_username"] === "string") {
-        user_map.push({ sub: em["sub"], local_username: em["local_username"] });
+      if (typeof em["sub"] !== "string" || !em["sub"]) {
+        throw new Error(`hub config: identity.user_map[${i}].sub must be a non-empty string`);
       }
+      if (typeof em["local_username"] !== "string") {
+        throw new Error(`hub config: identity.user_map[${i}].local_username must be a string`);
+      }
+      user_map.push({ sub: em["sub"], local_username: em["local_username"] });
     });
+  } else if (present(raw["user_map"])) {
+    throw new Error("hub config: identity.user_map must be an array");
   }
 
   return { claims, user_map };

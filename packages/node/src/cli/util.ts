@@ -25,3 +25,10 @@ export function maskToken(token: string): string {
   if (token.length <= 8) return "****";
   return token.slice(0, 8) + "****";
 }
+
+/** A string of digits that is a positive whole number, else null (NaN, zero, negatives, "5x", "1e3"). */
+export function parsePositiveInt(value: string): number | null {
+  if (!/^\d+$/.test(value)) return null;
+  const n = Number(value);
+  return Number.isSafeInteger(n) && n > 0 ? n : null;
+}

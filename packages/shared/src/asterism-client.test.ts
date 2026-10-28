@@ -5,6 +5,8 @@ import {
   discoverAsterism,
   pollDeviceToken,
   refreshTokens,
+  revokeRefreshToken,
+  registerExecutor,
   requestDeviceAuthorization,
   verificationUrlToOpen,
   type AsterismEndpoints,
@@ -19,8 +21,8 @@ const ENDPOINTS: AsterismEndpoints = {
   tokenEndpoint: `${ISSUER}/oauth/token`,
 };
 const DC: DeviceAuthorization = {
-  device_code: "dev", user_code: "ABCD-1234", verification_uri: `${ISSUER}/oauth/device`,
-  verification_uri_complete: `${ISSUER}/oauth/device?user_code=ABCD-1234`, expires_in: 900, interval: 5,
+  device_code: "dev", user_code: "ABCD-2345", verification_uri: `${ISSUER}/oauth/device`,
+  verification_uri_complete: `${ISSUER}/oauth/device?user_code=ABCD-2345`, expires_in: 900, interval: 5,
 };
 
 function json(status: number, body: unknown): Response {
@@ -94,12 +96,82 @@ describe("discoverAsterism", () => {
   });
 });
 
+describe("discoverAsterism — pinning and origins", () => {
+  const prm = { resource: `${RELAY}/mcp`, authorization_servers: [ISSUER] };
+  const asMeta = { issuer: ISSUER, device_authorization_endpoint: ENDPOINTS.deviceAuthorizationEndpoint, token_endpoint: ENDPOINTS.tokenEndpoint };
+
+  it("refuses a different issuer than the pinned one, before contacting it", async () => {
+    const { fetch, calls } = queue(json(200, prm));
+    await expect(discoverAsterism(RELAY, { fetch }, "https://other.example.com"))
+      .rejects.toMatchObject({ code: "issuer_changed", message: expect.stringContaining("different authorization server") });
+    expect(calls).toHaveLength(1);
+  });
+
+  it("accepts the pinned issuer", async () => {
+    const { fetch } = queue(json(200, prm), json(200, asMeta));
+    await expect(discoverAsterism(RELAY, { fetch }, ISSUER)).resolves.toMatchObject({ issuer: ISSUER });
+  });
+
+  it("accepts a loopback http issuer only for a loopback relay", async () => {
+    const local = "http://localhost:4000";
+    const issuer = "http://localhost:5000";
+    const meta = { issuer, device_authorization_endpoint: `${issuer}/d`, token_endpoint: `${issuer}/t` };
+    const ok = queue(json(200, { resource: `${local}/mcp`, authorization_servers: [issuer] }), json(200, meta));
+    await expect(discoverAsterism(local, ok)).resolves.toMatchObject({ issuer });
+
+    const bad = queue(json(200, { resource: `${RELAY}/mcp`, authorization_servers: [issuer] }));
+    await expect(discoverAsterism(RELAY, bad)).rejects.toMatchObject({ code: "invalid_metadata" });
+    expect(bad.calls).toHaveLength(1);
+  });
+
+  it.each(["device_authorization_endpoint", "token_endpoint", "revocation_endpoint"])("requires %s to share the issuer's origin", async (key) => {
+    const { fetch } = queue(json(200, prm), json(200, { ...asMeta, [key]: "https://evil.example.com/x" }));
+    await expect(discoverAsterism(RELAY, { fetch })).rejects.toMatchObject({ code: "invalid_metadata" });
+  });
+
+  it("reports the revocation endpoint when advertised", async () => {
+    const { fetch } = queue(json(200, prm), json(200, { ...asMeta, revocation_endpoint: `${ISSUER}/oauth/revoke` }));
+    await expect(discoverAsterism(RELAY, { fetch })).resolves.toMatchObject({ revocationEndpoint: `${ISSUER}/oauth/revoke` });
+  });
+
+  it("refuses an unknown scheme or odd spelling of http before fetching", async () => {
+    const { fetch, calls } = queue();
+    await expect(discoverAsterism("HTTP://relay.example.com", { fetch })).rejects.toThrow(/Refusing to connect/);
+    await expect(discoverAsterism("ftp://relay.example.com", { fetch })).rejects.toThrow(/Refusing to connect/);
+    expect(calls).toHaveLength(0);
+  });
+});
+
 describe("requestDeviceAuthorization", () => {
   it("sends client_id, scope and resource", async () => {
     const { fetch, calls } = queue(json(200, DC));
     const dc = await requestDeviceAuthorization(ENDPOINTS, { clientId: "cid", scope: "relay offline_access", resource: `${RELAY}/mcp` }, { fetch });
-    expect(dc.user_code).toBe("ABCD-1234");
+    expect(dc.user_code).toBe("ABCD-2345");
     expect(Object.fromEntries(calls[0]!.body!)).toEqual({ client_id: "cid", scope: "relay offline_access", resource: `${RELAY}/mcp` });
+  });
+
+  it("rejects a malformed user code, expires_in and the like", async () => {
+    const ask = (body: unknown) => requestDeviceAuthorization(ENDPOINTS, { clientId: "c", scope: "x", resource: "r" }, { fetch: queue(json(200, body)).fetch });
+    await expect(ask({ ...DC, user_code: "\u001b[2JABCD-2345" })).rejects.toMatchObject({ code: "invalid_response" });
+    await expect(ask({ ...DC, user_code: "ABCD-1111" })).rejects.toMatchObject({ code: "invalid_response" });
+    await expect(ask({ ...DC, expires_in: 0 })).rejects.toMatchObject({ code: "invalid_response" });
+    await expect(ask({ ...DC, expires_in: -5 })).rejects.toMatchObject({ code: "invalid_response" });
+  });
+
+  it("clamps the interval to 1-60 seconds and defaults a non-number", async () => {
+    const ask = (interval: unknown) => requestDeviceAuthorization(ENDPOINTS, { clientId: "c", scope: "x", resource: "r" }, { fetch: queue(json(200, { ...DC, interval })).fetch });
+    expect((await ask(0)).interval).toBe(1);
+    expect((await ask(-3)).interval).toBe(1);
+    expect((await ask(100000)).interval).toBe(60);
+    expect((await ask("5")).interval).toBe(5);
+  });
+
+  it("strips control characters from a server-supplied error description", async () => {
+    const { fetch } = queue(json(400, { error: "invalid_scope", error_description: "\u001b[2Jpay\u202eevil\u0007" }));
+    const err = await requestDeviceAuthorization(ENDPOINTS, { clientId: "c", scope: "x", resource: "r" }, { fetch }).catch((e: Error) => e);
+    expect((err as Error).message).toContain("payevil");
+    // eslint-disable-next-line no-control-regex -- asserting control characters were stripped
+    expect((err as Error).message).not.toMatch(/[\u0000-\u001f\u202e]/);
   });
 
   it("surfaces the error code", async () => {
@@ -158,6 +230,52 @@ describe("pollDeviceToken", () => {
     await expect(p).resolves.toMatchObject({ access_token: "at" });
   });
 
+  it("clamps the interval it waits to 1-60 seconds", async () => {
+    const wait = async (interval: number) => {
+      const sleeps: number[] = [];
+      const q = queue(json(200, token));
+      await pollDeviceToken(ENDPOINTS, { ...DC, interval }, params, { fetch: q.fetch, sleep: async (ms) => { sleeps.push(ms); }, now: () => 0 });
+      return sleeps[0];
+    };
+    expect(await wait(0)).toBe(1000);
+    expect(await wait(NaN)).toBe(5000);
+    expect(await wait(9999)).toBe(60_000);
+  });
+
+  it("never lets slow_down push the interval past 60 seconds", async () => {
+    const sleeps: number[] = [];
+    const q = queue(json(400, { error: "slow_down" }), json(200, token));
+    await pollDeviceToken(ENDPOINTS, { ...DC, interval: 58 }, params, { fetch: q.fetch, sleep: async (ms) => { sleeps.push(ms); }, now: () => 0 });
+    expect(sleeps).toEqual([58_000, 60_000]);
+  });
+
+  it.each([NaN, 0, -1, Infinity])("refuses expires_in %s", async (expires_in) => {
+    const q = queue();
+    await expect(pollDeviceToken(ENDPOINTS, { ...DC, expires_in }, params, { fetch: q.fetch, sleep: async () => {}, now: () => 0 }))
+      .rejects.toMatchObject({ code: "invalid_response" });
+    expect(q.calls).toHaveLength(0);
+  });
+
+  it("rethrows a non-network failure instead of retrying it", async () => {
+    const q = queue(json(200, token));
+    const bad = { ...ENDPOINTS, tokenEndpoint: "http://auth.example.com/oauth/token" };
+    await expect(pollDeviceToken(bad, DC, params, { fetch: q.fetch, sleep: async () => {}, now: () => 0 })).rejects.toThrow(/Refusing to connect/);
+    expect(q.calls).toHaveLength(0);
+  });
+
+  it("does not retry a redirect", async () => {
+    const redirect = Object.assign(new TypeError("fetch failed"), { cause: new Error("unexpected redirect") });
+    const q = queue(redirect, json(200, token));
+    await expect(pollDeviceToken(ENDPOINTS, DC, params, { fetch: q.fetch, sleep: async () => {}, now: () => 0 })).rejects.toMatchObject({ code: "invalid_response" });
+    expect(q.calls).toHaveLength(1);
+  });
+
+  it("retries 429 and timeouts", async () => {
+    const timeout = Object.assign(new Error("The operation was aborted due to timeout"), { name: "TimeoutError" });
+    const { p } = run([json(429, {}), timeout, json(200, token)]);
+    await expect(p).resolves.toMatchObject({ access_token: "at" });
+  });
+
   it("gives up with expired_token once the code's lifetime passes", async () => {
     let t = 0;
     const q = queue(json(400, { error: "authorization_pending" }));
@@ -180,5 +298,64 @@ describe("refreshTokens", () => {
     const { fetch } = queue(json(400, { error: "invalid_grant", error_description: "Refresh token already used" }));
     await expect(refreshTokens(ENDPOINTS, { clientId: "c", resource: "r", refreshToken: "x" }, { fetch }))
       .rejects.toMatchObject({ code: "invalid_grant" });
+  });
+});
+
+describe("revokeRefreshToken", () => {
+  const withRevocation = { ...ENDPOINTS, revocationEndpoint: `${ISSUER}/oauth/revoke` };
+
+  it("posts token and client_id to the revocation endpoint", async () => {
+    const { fetch, calls } = queue(new Response(null, { status: 200 }));
+    await expect(revokeRefreshToken(withRevocation, { clientId: "cid", refreshToken: "rt" }, { fetch })).resolves.toBe(true);
+    expect(calls[0]!.url).toBe(`${ISSUER}/oauth/revoke`);
+    expect(Object.fromEntries(calls[0]!.body!)).toEqual({ token: "rt", token_type_hint: "refresh_token", client_id: "cid" });
+  });
+
+  it("does nothing when the server advertises no revocation endpoint", async () => {
+    const { fetch, calls } = queue();
+    await expect(revokeRefreshToken(ENDPOINTS, { clientId: "cid", refreshToken: "rt" }, { fetch })).resolves.toBe(false);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("throws on a failure status", async () => {
+    const { fetch } = queue(json(400, { error: "invalid_client" }));
+    await expect(revokeRefreshToken(withRevocation, { clientId: "cid", refreshToken: "rt" }, { fetch })).rejects.toBeInstanceOf(AsterismError);
+  });
+});
+
+describe("registerExecutor", () => {
+  const ok = { access_token: "node-token", host: "laptop" };
+
+  it("posts the type and host with the access token and refuses redirects", async () => {
+    const seen: Array<{ url: string; init?: RequestInit }> = [];
+    const fetch = vi.fn(async (url: string | URL | Request, init?: RequestInit) => { seen.push({ url: String(url), init }); return json(200, ok); }) as unknown as typeof globalThis.fetch;
+    await expect(registerExecutor(RELAY, "at", { type: "node", host: "laptop" }, { fetch })).resolves.toEqual({ ok: true, ...ok });
+    expect(seen[0]!.url).toBe(`${RELAY}/api/executors/register`);
+    expect(seen[0]!.init!.redirect).toBe("error");
+    expect((seen[0]!.init!.headers as Record<string, string>)["Authorization"]).toBe("Bearer at");
+    expect(JSON.parse(seen[0]!.init!.body as string)).toEqual({ type: "node", host: "laptop" });
+  });
+
+  it("refuses a plaintext remote relay without sending the token", async () => {
+    const { fetch, calls } = queue();
+    const r = await registerExecutor("http://relay.example.com", "at", { type: "hub", host: "h" }, { fetch });
+    expect(r).toMatchObject({ ok: false, message: expect.stringContaining("Refusing to connect") });
+    expect(calls).toHaveLength(0);
+  });
+
+  it("reports a refusal, with control characters stripped", async () => {
+    const { fetch } = queue(json(403, { error: "insufficient_scope", error_description: "\u001b[2Jneeds admin" }));
+    const r = await registerExecutor(RELAY, "at", { type: "hub", host: "h" }, { fetch });
+    expect(r).toEqual({ ok: false, message: "The relay refused the registration: [2Jneeds admin" });
+  });
+
+  it("reports a network failure or redirect instead of throwing", async () => {
+    const { fetch } = queue(new TypeError("fetch failed"));
+    await expect(registerExecutor(RELAY, "at", { type: "node", host: "h" }, { fetch })).resolves.toMatchObject({ ok: false, message: expect.stringContaining("Could not reach") });
+  });
+
+  it("reports a malformed success body", async () => {
+    const { fetch } = queue(new Response("<html>", { status: 200 }));
+    await expect(registerExecutor(RELAY, "at", { type: "node", host: "h" }, { fetch })).resolves.toMatchObject({ ok: false, message: expect.stringContaining("status 200") });
   });
 });

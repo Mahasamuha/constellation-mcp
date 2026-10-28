@@ -1,10 +1,12 @@
 import { vi, describe, it, expect, beforeEach } from "vitest";
 import { WebSocket } from "ws";
 
-vi.mock("@constellation/shared", () => {
+vi.mock("@constellation/shared", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@constellation/shared")>();
   const noop = () => {};
   const log = { info: noop, warn: noop, error: noop, debug: noop };
   return {
+    HOST_NAME_PATTERN: actual.HOST_NAME_PATTERN,
     createLogger: () => ({ ...log, child: () => log }),
     hashToken: (t: string) => `hashed:${t}`,
     generateToken: () => "generated-token",
@@ -97,6 +99,16 @@ describe("handleUpdateHost", () => {
     expect(sent).toEqual([
       { type: "update_host_error", error: 'Host name "taken-host" is already registered' },
     ]);
+  });
+
+  it("rejects a host name outside the shared rule without writing", async () => {
+    const { conn, sent } = mockConn();
+
+    await handleUpdateHost(conn, { type: "update_host", host: "my laptop" });
+
+    expect(db.executor.update).not.toHaveBeenCalled();
+    expect(conn.host).toBe("old-host");
+    expect(sent).toEqual([expect.objectContaining({ type: "update_host_error" })]);
   });
 
   it("rethrows an unrelated database error instead of treating it as a naming conflict", async () => {

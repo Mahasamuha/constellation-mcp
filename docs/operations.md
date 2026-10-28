@@ -145,7 +145,32 @@ Upgrade notes for the move to asterism as the authorization server
   `RELAY_ADMIN_TOKEN` and the `OAUTH_*` and OAuth/device rate-limit settings;
   they are ignored.
 - Register the relay in asterism as a resource server, and put administrators
-  in asterism's `constellation-admins` group.
+  in asterism's `constellation-admins` group. Constellation also enforces the
+  group itself (`ADMIN_GROUP`, default `constellation-admins`): an admin needs
+  the `admin` scope and that group.
+- Configure asterism before users connect (full commands and warnings in
+  [Configuration](configuration.md#operator-runbook-configure-asterism-before-users-connect)):
+  `asterism-cli resource-server approve <relay-url>/mcp --release-claims groups,email,constellation_username`,
+  then `asterism-cli resource-server policy <relay-url>/mcp admin --short-lived --require-groups constellation-admins`.
+  Grants made before the claims were released carry no `groups` or
+  `constellation_username` until the user re-consents; revoke them in asterism
+  (`/grants`).
+- **Trust the claim sources.** `groups` and `constellation_username` are only
+  as trustworthy as their upstream source. asterism's `OIDC_CLAIM_MAP` must
+  never map them onto a user-editable claim (`preferred_username`, `name`,
+  `nickname`, `email`, ...), and the identity provider attribute behind
+  `constellation_username` must be admin-only and unique per user. asterism
+  does not enforce this; a misconfiguration lets users choose their OS account
+  on a hub or join groups.
+- Group overrides on a share use the most permissive matching group, so a group
+  set to `none` is not a denylist; deny by `sub`, or use `default: none` plus
+  grants. A `groups` claim over 4096 characters is dropped by asterism, so keep
+  group lists small.
+- `RELAY_URL` must be `https:` (`http:` only on loopback). Migration
+  `0007_hub_host_unique` adds a unique index on user-less (hub) executors by
+  host and fails if two hub executors already share a host; delete the stale
+  row first. Host names are now limited to 1-63 characters of letters, digits,
+  `.`, `_` and `-`; existing names outside that set keep working until renamed.
 - Take a database backup first. Migration `0006_asterism_resource_server`
   drops the OAuth server tables (`auth_codes`, `device_codes`, `oauth_clients`,
   `oauth_sessions`, `local_users`, `login_failures`) and the email, role and

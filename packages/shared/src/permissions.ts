@@ -31,6 +31,15 @@ function rank(access: string): number {
  * default does.
  */
 export function evaluatePermissionBlob(blob: PermissionBlob, subject: PermissionSubject): string {
+  return knownAccess(resolveAccess(blob, subject));
+}
+
+/** Any access value other than the three known levels is "none", so a typo never grants. */
+function knownAccess(access: string): string {
+  return Object.hasOwn(ACCESS_RANK, access) ? access : "none";
+}
+
+function resolveAccess(blob: PermissionBlob, subject: PermissionSubject): string {
   const overrides = blob.overrides ?? [];
   if (subject.sub) {
     const bySub = overrides.find((o) => o.sub !== undefined && o.sub === subject.sub);
@@ -44,18 +53,29 @@ export function evaluatePermissionBlob(blob: PermissionBlob, subject: Permission
   return best ?? (blob.default || "none");
 }
 
-/** Most groups read from one token. Asterism releases them as-is, so cap what we trust. */
+/** Most groups accepted from one token, and the longest name. */
 export const MAX_GROUPS = 256;
-const MAX_GROUP_LENGTH = 256;
+export const MAX_GROUP_LENGTH = 256;
+
+/** A `groups` claim is present but unusable. Callers refuse the request. */
+export class InvalidGroupsError extends Error {}
 
 /**
  * Reads the `groups` claim from an access token's claims (or an envelope's `user_claims`).
- * Returns only non-empty strings, at most MAX_GROUPS of them; any other shape yields [].
+ * An absent claim is no groups. A present one must be an array of at most MAX_GROUPS
+ * non-empty strings of at most MAX_GROUP_LENGTH characters, or this throws
+ * InvalidGroupsError: a group override can deny, so dropping or truncating entries could
+ * silently widen access.
  */
 export function groupsFromClaims(claims: Record<string, unknown>): string[] {
+  if (!Object.hasOwn(claims, "groups") || claims["groups"] === undefined) return [];
   const raw = claims["groups"];
-  if (!Array.isArray(raw)) return [];
-  return raw
-    .filter((g): g is string => typeof g === "string" && g.length > 0 && g.length <= MAX_GROUP_LENGTH)
-    .slice(0, MAX_GROUPS);
+  if (!Array.isArray(raw)) throw new InvalidGroupsError("groups claim is not an array");
+  if (raw.length > MAX_GROUPS) throw new InvalidGroupsError(`groups claim has more than ${MAX_GROUPS} entries`);
+  for (const g of raw) {
+    if (typeof g !== "string" || g.length === 0 || g.length > MAX_GROUP_LENGTH) {
+      throw new InvalidGroupsError("groups claim has an entry that is not a non-empty string of at most 256 characters");
+    }
+  }
+  return [...raw] as string[];
 }

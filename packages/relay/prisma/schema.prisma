@@ -66,6 +66,7 @@ model Executor {
   // Partial unique indexes defined in raw migration SQL (Prisma does not support WHERE on @@unique):
   //   executors_user_id_host_key:           UNIQUE (user_id, host) WHERE user_id IS NOT NULL
   //   executors_executor_token_id_host_key: UNIQUE (executor_token_id, host)
+  //   executors_hub_host_key:               UNIQUE (host) WHERE user_id IS NULL
   @@map("executors")
 }
 

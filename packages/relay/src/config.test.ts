@@ -1,5 +1,44 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+async function assertOrigin(relayUrl: string) {
+  vi.resetModules();
+  vi.stubEnv("RELAY_URL", relayUrl);
+  return (await import("./config.js")).assertRelayUrlIsOrigin();
+}
+
+describe("assertRelayUrlIsOrigin", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("accepts https, and http only on loopback", async () => {
+    await expect(assertOrigin("https://relay.example.com")).resolves.toBeUndefined();
+    await expect(assertOrigin("http://localhost:3000")).resolves.toBeUndefined();
+    await expect(assertOrigin("http://127.0.0.1:3000")).resolves.toBeUndefined();
+    await expect(assertOrigin("http://[::1]:3000")).resolves.toBeUndefined();
+  });
+
+  it("refuses plaintext http on a non-loopback host", async () => {
+    await expect(assertOrigin("http://relay.example.com")).rejects.toThrow("https");
+    await expect(assertOrigin("http://10.0.0.5:3000")).rejects.toThrow("https");
+  });
+
+  it("still refuses a path or trailing slash", async () => {
+    await expect(assertOrigin("https://relay.example.com/")).rejects.toThrow("bare origin");
+  });
+});
+
+describe("config.adminGroup", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("defaults to constellation-admins and reads ADMIN_GROUP", async () => {
+    vi.resetModules();
+    vi.stubEnv("ADMIN_GROUP", "");
+    expect((await import("./config.js")).config.adminGroup).toBe("constellation-admins");
+    vi.resetModules();
+    vi.stubEnv("ADMIN_GROUP", "ops");
+    expect((await import("./config.js")).config.adminGroup).toBe("ops");
+  });
+});
+
 describe("assertAsterismConfig", () => {
   afterEach(() => vi.unstubAllEnvs());
 

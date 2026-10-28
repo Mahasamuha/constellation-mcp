@@ -2,16 +2,14 @@ import { Router, Request, Response, NextFunction, IRouter } from "express";
 import { prisma } from "./db.js";
 import { ExecutorTokenType } from "./generated/prisma/client.js";
 import { requireBearerAuth, requireAdmin, type AuthenticatedRequest } from "./middleware.js";
-import { generateToken, hashToken, createLogger } from "@constellation/shared";
+import { generateToken, hashToken, createLogger, clientIdFor, requireEnv } from "@constellation/shared";
+import { Prisma } from "./generated/prisma/client.js";
+import { getConnection } from "./registry.js";
+import { validateHostName } from "./host-name.js";
 
 const log = createLogger("executors");
 
 export const executorsRouter: IRouter = Router();
-
-/** Matches the cap enforced by update_host's RPC (hub.ts). Without it an approved request would
- * permanently store an arbitrarily long Executor.host that surfaces forever in
- * list_hosts, /api/executors and the activity log. */
-const MAX_HOST_LENGTH = 63;
 
 type Middleware = (req: Request, res: Response, next: NextFunction) => unknown;
 
@@ -44,40 +42,89 @@ export async function registerExecutor(req: Request, res: Response): Promise<voi
     return;
   }
 
+  // Only the client that matches the executor type may register one. Any `relay` token
+  // would otherwise do, including one a third-party MCP client (e.g. Claude.ai) holds.
+  const expectedClientId = clientIdFor(requireEnv("RELAY_URL"), type);
+  const user = (req as AuthenticatedRequest).user;
+  if (user.clientId !== expectedClientId) {
+    res.status(403).json({
+      error: "invalid_client",
+      error_description: `Registering a ${type} requires a token issued to the Constellation ${type} client (${expectedClientId})`,
+    });
+    return;
+  }
+
   // A hub is shared across users, so only an admin token may register one.
   if (type === "hub" && !(await passes(requireAdmin, req, res))) return;
 
-  const host = typeof body["host"] === "string" ? body["host"].trim() : "";
-  if (!host) {
-    res.status(400).json({ error: "invalid_request", error_description: "host is required" });
+  const validated = validateHostName(body["host"]);
+  if ("error" in validated) {
+    res.status(400).json({ error: "invalid_request", error_description: validated.error });
     return;
   }
-  if (host.length > MAX_HOST_LENGTH) {
-    res.status(400).json({ error: "invalid_request", error_description: `host must be ${MAX_HOST_LENGTH} characters or fewer` });
-    return;
-  }
+  const host = validated.host;
 
-  const userId = (req as AuthenticatedRequest).user.id;
+  const userId = user.id;
   const token = generateToken();
   const tokenHash = hashToken(token);
 
-  await prisma.$transaction(async (tx) => {
-    if (type === "hub") {
-      // Revoke any existing active HUB token for this host.
+  // Set when this registration replaced an executor's token, so its live connection (which
+  // authenticated with the revoked token) can be dropped once the new token is committed.
+  let replacedExecutorId: string | undefined;
+
+  try {
+    await prisma.$transaction(async (tx) => {
+      // Serialize registrations of the same (owner, host): the find-then-create below is
+      // otherwise a race, and the hub case has no unique index to catch it. ":" cannot
+      // appear in a host name, so the key is unambiguous.
+      const lockKey = `${type === "hub" ? "hub" : userId}:${host}`;
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`;
+
+      if (type === "hub") {
+        // Replace the existing hub executor for this host, revoking its token. A row whose
+        // token was already revoked is reused too: a second user-less row for the host would
+        // break executors_hub_host_key.
+        const existing = await tx.executor.findFirst({
+          where: { userId: null, host, executorToken: { tokenType: ExecutorTokenType.HUB } },
+          select: { executorTokenId: true, id: true },
+        });
+        if (existing) {
+          replacedExecutorId = existing.id;
+          await tx.executorToken.update({ where: { id: existing.executorTokenId }, data: { revokedAt: new Date() } });
+        }
+
+        const executorToken = await tx.executorToken.create({
+          data: { userId: null, tokenType: ExecutorTokenType.HUB, tokenHash, approvedByUserId: userId },
+          select: { id: true },
+        });
+
+        if (existing) {
+          await tx.executor.update({
+            where: { id: existing.id },
+            data: { executorTokenId: executorToken.id, lastHeartbeatAt: null, lastDisconnectReason: null },
+          });
+        } else {
+          await tx.executor.create({ data: { userId: null, executorTokenId: executorToken.id, host } });
+        }
+        return;
+      }
+
+      // The userId_host compound unique was replaced by partial unique indexes
+      // (executors_user_id_host_key) which Prisma cannot express natively. Use
+      // findFirst + create/update instead of upsert.
       const existing = await tx.executor.findFirst({
-        where: {
-          userId: null,
-          host,
-          executorToken: { tokenType: ExecutorTokenType.HUB, revokedAt: null },
-        },
-        select: { executorTokenId: true, id: true },
+        where: { userId, host },
+        select: { id: true, executorTokenId: true },
       });
+
+      // Revoke the existing token if re-registering the same host.
       if (existing) {
+        replacedExecutorId = existing.id;
         await tx.executorToken.update({ where: { id: existing.executorTokenId }, data: { revokedAt: new Date() } });
       }
 
       const executorToken = await tx.executorToken.create({
-        data: { userId: null, tokenType: ExecutorTokenType.HUB, tokenHash, approvedByUserId: userId },
+        data: { userId, tokenHash },
         select: { id: true },
       });
 
@@ -87,38 +134,20 @@ export async function registerExecutor(req: Request, res: Response): Promise<voi
           data: { executorTokenId: executorToken.id, lastHeartbeatAt: null, lastDisconnectReason: null },
         });
       } else {
-        await tx.executor.create({ data: { userId: null, executorTokenId: executorToken.id, host } });
+        await tx.executor.create({ data: { userId, executorTokenId: executorToken.id, host } });
       }
+    });
+  } catch (err) {
+    // The partial unique indexes backstop the advisory lock.
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {
+      res.status(409).json({ error: "conflict", error_description: `Host name "${host}" is already registered` });
       return;
     }
+    throw err;
+  }
 
-    // The userId_host compound unique was replaced by partial unique indexes
-    // (executors_user_id_host_key) which Prisma cannot express natively. Use
-    // findFirst + create/update instead of upsert.
-    const existing = await tx.executor.findFirst({
-      where: { userId, host },
-      select: { id: true, executorTokenId: true },
-    });
-
-    // Revoke the existing token if re-registering the same host.
-    if (existing) {
-      await tx.executorToken.update({ where: { id: existing.executorTokenId }, data: { revokedAt: new Date() } });
-    }
-
-    const executorToken = await tx.executorToken.create({
-      data: { userId, tokenHash },
-      select: { id: true },
-    });
-
-    if (existing) {
-      await tx.executor.update({
-        where: { id: existing.id },
-        data: { executorTokenId: executorToken.id, lastHeartbeatAt: null, lastDisconnectReason: null },
-      });
-    } else {
-      await tx.executor.create({ data: { userId, executorTokenId: executorToken.id, host } });
-    }
-  });
+  // The old token is revoked, but an open socket stays authenticated until it drops.
+  if (replacedExecutorId) getConnection(replacedExecutorId)?.ws.terminate();
 
   log.info({ userId, host, type }, type === "hub" ? "Hub registered" : "Executor registered");
 

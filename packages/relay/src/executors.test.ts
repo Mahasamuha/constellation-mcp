@@ -1,14 +1,20 @@
 import { vi, describe, it, expect, beforeEach } from "vitest";
 
-vi.mock("@constellation/shared", () => {
+vi.mock("@constellation/shared", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@constellation/shared")>();
   const noop = () => {};
   const log = { info: noop, warn: noop, error: noop, debug: noop };
   return {
+    HOST_NAME_PATTERN: actual.HOST_NAME_PATTERN,
     createLogger: () => ({ ...log, child: () => log }),
     hashToken: (t: string) => `hashed:${t}`,
     generateToken: () => "generated-token",
+    requireEnv: () => "https://relay.example.com",
+    clientIdFor: (relay: string, kind: string) => `${relay}/clients/${kind}.json`,
   };
 });
+
+vi.mock("./registry.js", () => ({ getConnection: vi.fn() }));
 
 vi.mock("./middleware.js", () => ({
   requireBearerAuth: vi.fn(),
@@ -24,12 +30,19 @@ vi.mock("./db.js", () => {
     user: { upsert: vi.fn() },
     executor: { findFirst: vi.fn(), update: vi.fn(), create: vi.fn() },
     executorToken: { update: vi.fn(), create: vi.fn() },
+    $executeRaw: vi.fn(),
   };
   return { prisma: { ...tx, $transaction: vi.fn(async (cb: (t: unknown) => unknown) => cb(tx)) } };
 });
 
 import { prisma } from "./db.js";
 import { registerExecutor } from "./executors.js";
+import { getConnection } from "./registry.js";
+import { Prisma } from "./generated/prisma/client.js";
+
+const getConn = getConnection as unknown as ReturnType<typeof vi.fn>;
+const NODE_CLIENT = "https://relay.example.com/clients/node.json";
+const HUB_CLIENT = "https://relay.example.com/clients/hub.json";
 
 const db = prisma as unknown as {
   user: { upsert: ReturnType<typeof vi.fn> };
@@ -47,13 +60,16 @@ function mockRes() {
   };
 }
 
-function mockReq(body: unknown, scopes: string[] = ["relay"]) {
-  return { body, user: { id: "user-1", clientId: "c", scopes, groups: [], claims: {} } };
+function mockReq(body: unknown, scopes: string[], clientId: string) {
+  return { body, user: { id: "user-1", clientId, scopes, groups: [], claims: {} } };
 }
 
-async function register(body: unknown, scopes?: string[]) {
+// The client defaults to the one registering that type, so tests only name it when it's wrong.
+async function register(body: unknown, scopes?: string[], clientId?: string) {
   const res = mockRes();
-  await registerExecutor(mockReq(body, scopes) as never, res as never);
+  const type = (body as { type?: string } | undefined)?.type;
+  const client = clientId ?? (type === "hub" ? HUB_CLIENT : NODE_CLIENT);
+  await registerExecutor(mockReq(body, scopes ?? ["relay"], client) as never, res as never);
   return res;
 }
 
@@ -132,12 +148,70 @@ describe("POST /api/executors/register", () => {
     await register({ type: "hub", host: "hub-1" }, ["relay", "admin"]);
 
     expect(db.executor.findFirst).toHaveBeenCalledWith(expect.objectContaining({
-      where: { userId: null, host: "hub-1", executorToken: { tokenType: "HUB", revokedAt: null } },
+      where: { userId: null, host: "hub-1", executorToken: { tokenType: "HUB" } },
     }));
     expect(db.executorToken.update).toHaveBeenCalledWith({ where: { id: "token-old-hub" }, data: { revokedAt: expect.any(Date) } });
     expect(db.executor.update).toHaveBeenCalledWith({
       where: { id: "exec-h" },
       data: { executorTokenId: "token-new", lastHeartbeatAt: null, lastDisconnectReason: null },
     });
+  });
+
+  it("refuses a node registration from a token issued to another client", async () => {
+    for (const clientId of ["https://claude.ai/oauth/client.json", HUB_CLIENT, "https://relay.example.com/clients/cli.json"]) {
+      const res = await register({ type: "node", host: "laptop" }, ["relay"], clientId);
+      expect(res.statusCode).toBe(403);
+      expect(res.body).toMatchObject({ error: "invalid_client" });
+    }
+    expect(db.executorToken.create).not.toHaveBeenCalled();
+  });
+
+  it("refuses a hub registration from the node client, even with the admin scope", async () => {
+    const res = await register({ type: "hub", host: "hub-1" }, ["relay", "admin"], NODE_CLIENT);
+    expect(res.statusCode).toBe(403);
+    expect(res.body).toMatchObject({ error: "invalid_client" });
+    expect(db.executorToken.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects host names outside letters, digits, dot, underscore and hyphen", async () => {
+    for (const host of ["my laptop", "a/b", "<script>"]) {
+      expect((await register({ type: "node", host })).statusCode).toBe(400);
+    }
+    expect(db.executorToken.create).not.toHaveBeenCalled();
+  });
+
+  it("takes a per-(owner, host) advisory lock before looking the executor up", async () => {
+    db.executor.findFirst.mockResolvedValue(null);
+    await register({ type: "node", host: "laptop" });
+    await register({ type: "hub", host: "hub-1" }, ["relay", "admin"]);
+    const tx = db as unknown as { $executeRaw: ReturnType<typeof vi.fn> };
+    expect(tx.$executeRaw).toHaveBeenCalledTimes(2);
+    const keys = tx.$executeRaw.mock.calls.map((c) => c[1]);
+    expect(keys).toEqual(["user-1:laptop", "hub:hub-1"]);
+    expect(tx.$executeRaw.mock.invocationCallOrder[0]!).toBeLessThan(db.executor.findFirst.mock.invocationCallOrder[0]!);
+  });
+
+  it("answers 409 on a unique violation instead of 500", async () => {
+    db.executor.findFirst.mockResolvedValue(null);
+    db.executor.create.mockRejectedValue(
+      new Prisma.PrismaClientKnownRequestError("Unique constraint failed", { code: "P2002", clientVersion: "test" })
+    );
+    const res = await register({ type: "node", host: "laptop" });
+    expect(res.statusCode).toBe(409);
+  });
+
+  it("terminates the live connection of an executor whose token was replaced", async () => {
+    const terminate = vi.fn();
+    getConn.mockReturnValue({ ws: { terminate } });
+    db.executor.findFirst.mockResolvedValue({ id: "exec-1", executorTokenId: "token-old" });
+    await register({ type: "node", host: "laptop" });
+    expect(getConn).toHaveBeenCalledWith("exec-1");
+    expect(terminate).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not look for a connection on a first registration", async () => {
+    db.executor.findFirst.mockResolvedValue(null);
+    await register({ type: "node", host: "laptop" });
+    expect(getConn).not.toHaveBeenCalled();
   });
 });

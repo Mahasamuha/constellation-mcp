@@ -255,11 +255,11 @@ User accounts, admin roles and sessions are managed in asterism, not here: use a
 constellation relay --relay <url> login
 ```
 
-Runs the OAuth device flow against the relay's authorization server (scope `relay offline_access`). Writes the session to `relay-session.yaml`. Relay URL defaults to the one in `node.yaml` if not specified.
+Runs the OAuth device flow against the relay's authorization server (scope `relay offline_access`). Writes the session to `relay-session.yaml`, including `issuer`, the authorization server that issued it. Later refreshes go only to that issuer: if the relay starts naming a different one, the command refuses, keeps the session and tells you to run `relay login` deliberately. A session written before `issuer` was recorded needs a new `relay login`. Relay URL defaults to the one in `node.yaml` if not specified.
 
 ### `relay logout`
 
-Deletes `relay-session.yaml`. Does not revoke the grant; do that in asterism's `/grants` page.
+Revokes the refresh token at asterism's revocation endpoint (best effort, short timeout; `client_id` is sent), then deletes `relay-session.yaml`. If revocation fails a note is printed and the file is still deleted; the grant itself stays, and you can end it in asterism's `/grants` page.
 
 ### `relay status`
 
@@ -595,7 +595,7 @@ Delete a file or directory. If the target is a directory and `recursive` is abse
 
 The relay is an OAuth resource server; [asterism](adr/0022-asterism-authorization-server.md) is the authorization server. Every `/api/*` endpoint (and `POST /api/executors/register`) requires an asterism-issued JWT access token as `Authorization: Bearer <token>`, with audience `<RELAY_URL>/mcp` and the `relay` scope. Get one with `constellation relay login`.
 
-Admin-only endpoints (`POST /api/tokens/shared`, `GET /api/admin/hub-shares`, `GET /api/admin/activity`, and `POST /api/executors/register` with `type: "hub"`) additionally need the `admin` scope in the token. `admin` is step-up only: asterism grants it only to members of the `constellation-admins` group, and only when a client asks for it with `scope=relay admin`. A token without it gets a `403 insufficient_scope` whose `WWW-Authenticate` header asks for `scope="relay admin"`. The CLI does this for you with a second device sign-in; the admin token is not stored.
+Admin-only endpoints (`POST /api/tokens/shared`, `GET /api/admin/hub-shares`, `GET /api/admin/activity`, and `POST /api/executors/register` with `type: "hub"`) additionally need the `admin` scope in the token. `admin` is step-up only: asterism grants it only when a client asks for it with `scope=relay admin`. The token's `groups` must also contain the relay's `ADMIN_GROUP` (default `constellation-admins`); without it the relay answers a plain `403`. A token without the scope gets a `403 insufficient_scope` whose `WWW-Authenticate` header asks for `scope="relay admin"`. The CLI does this for you with a second device sign-in; the admin token is not stored.
 
 All error responses follow:
 ```json

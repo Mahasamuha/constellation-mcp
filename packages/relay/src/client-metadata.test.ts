@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { clientMetadata, clientMetadataRouter } from "./client-metadata.js";
+import { clientMetadata, clientMetadataRouter, NO_REDIRECT_PATH } from "./client-metadata.js";
 
 const RELAY = "https://relay.example.com";
 const KINDS = ["cli", "node", "hub"] as const;
@@ -30,15 +30,23 @@ describe("client metadata documents", () => {
     expect(doc["response_types"]).toContain("code");
     expect(doc["grant_types"]).toEqual(["authorization_code", "urn:ietf:params:oauth:grant-type:device_code", "refresh_token"]);
     expect(doc["token_endpoint_auth_method"]).toBe("none");
-    // http is only allowed on loopback; no fragment.
+    // http is only allowed on loopback; no fragment. The URI is on the relay and never served.
     const redirects = doc["redirect_uris"] as string[];
-    expect(redirects).toEqual(["http://127.0.0.1/callback"]);
+    expect(redirects).toEqual([`${RELAY}${NO_REDIRECT_PATH}`]);
     for (const r of redirects) {
       const u = new URL(r);
       expect(u.hash).toBe("");
       expect(u.protocol === "https:" || ["localhost", "127.0.0.1", "[::1]"].includes(u.hostname)).toBe(true);
     }
     expect(Buffer.byteLength(JSON.stringify(doc))).toBeLessThan(5 * 1024);
+  });
+
+  it("never serves the placeholder redirect URI", () => {
+    const paths = (clientMetadataRouter as unknown as { stack: Array<{ route?: { path: string } }> }).stack
+      .map((l) => l.route?.path);
+    expect(NO_REDIRECT_PATH).toBe("/clients/no-redirect");
+    expect(paths).not.toContain(NO_REDIRECT_PATH);
+    expect(paths.every((p) => p !== undefined && /^\/clients\/(cli|node|hub)\.json$/.test(p))).toBe(true);
   });
 
   it("gives each client a distinct id and name", () => {

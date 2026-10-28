@@ -33,7 +33,7 @@ always sent in full and is not subject to `forwarded_claims`, because a group ov
 can restrict access as well as grant it; a hub missing a group would over-grant against
 the default. `user_claims` is still filtered by `forwarded_claims` when that is set. The
 hub refuses an RPC whose `user_sub` is missing or not a non-empty string, and one whose
-`user_groups` is not an array. There is no fallback. There is also no protocol version
+`user_groups` is not an array, or is an array that is oversize (over 256 entries) or has an invalid entry (empty, non-string, over 256 characters). It is never truncated or filtered. An absent `groups` claim at the relay means an empty list. There is no fallback. There is also no protocol version
 negotiation between relay and hub; they upgrade together, and the hub's refusal makes a
 mixed deployment fail loudly.
 
@@ -109,6 +109,21 @@ change is more machinery than the hub's refusal of a malformed envelope, given t
 and hubs are deployed by the same operator.
 
 ## Consequences
+
+- Group overrides resolve to the most permissive matching group, so a `none` group is not
+  a denylist. Deny by `sub`, or use `default: none` plus grants.
+- `sub` overrides and `user_map` entries are keyed on asterism's user id. Recreating or
+  relinking a user in asterism produces a new id and silently orphans them; prefer
+  `default: none`.
+- If the relay sets `FORWARDED_CLAIMS`, it must include every claim in the hub's
+  `identity.claims` (normally `constellation_username`); otherwise the hub sees it as
+  absent and falls through to `user_map`.
+- `constellation_username` and `groups` are only as trustworthy as their upstream source.
+  asterism's `OIDC_CLAIM_MAP` must never map them onto a user-editable claim, and the
+  Authentik attribute behind `constellation_username` must be admin-only and unique per
+  user. asterism does not enforce this.
+- Malformed security-relevant hub config (non-array `overrides`, bad `user_map` entry,
+  non-array `identity.claims`, malformed UID/GID block lists) fails at load.
 
 - Operators must re-key `oidc_sub` entries in hub configs (share overrides and
   `user_map`) to `sub` or `group` before upgrading, and remove

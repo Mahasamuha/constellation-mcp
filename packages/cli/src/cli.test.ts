@@ -411,8 +411,8 @@ function stubBackend(overrides: Partial<Pick<Backend, "token" | "api">> = {}): B
     }
     if (u === `${ISSUER}/oauth/device/code`) {
       return jsonRes(200, {
-        device_code: "dc-1", user_code: "ABCD-1234", verification_uri: `${ISSUER}/oauth/device`,
-        verification_uri_complete: `${ISSUER}/oauth/device?user_code=ABCD-1234`, expires_in: 900, interval: 5,
+        device_code: "dc-1", user_code: "ABCD-2345", verification_uri: `${ISSUER}/oauth/device`,
+        verification_uri_complete: `${ISSUER}/oauth/device?user_code=ABCD-2345`, expires_in: 900, interval: 5,
       });
     }
     if (u === `${ISSUER}/oauth/token`) return backend.token(form);
@@ -437,7 +437,7 @@ describe("relay login", () => {
 
     expect(exitCode).toBe(0);
     expect(out).toContain(`Logged in to ${RELAY}`);
-    expect(out).toContain("ABCD-1234");
+    expect(out).toContain("ABCD-2345");
 
     const device = backend.calls.find((c) => c.url === `${ISSUER}/oauth/device/code`)!;
     expect(device.form).toEqual({ client_id: `${RELAY}/clients/cli.json`, scope: "relay offline_access", resource: `${RELAY}/mcp` });
@@ -445,7 +445,7 @@ describe("relay login", () => {
     expect(token.form).toMatchObject({ client_id: `${RELAY}/clients/cli.json`, resource: `${RELAY}/mcp`, device_code: "dc-1" });
 
     const session = loadRelaySession(dir);
-    expect(session).toMatchObject({ relay_url: RELAY, access_token: "at-device", refresh_token: "rt-first" });
+    expect(session).toMatchObject({ relay_url: RELAY, issuer: ISSUER, access_token: "at-device", refresh_token: "rt-first" });
     // Absolute 30 days from sign-in.
     const days = (new Date(session.refresh_token_expires_at!).getTime() - Date.now()) / 86_400_000;
     expect(days).toBeGreaterThan(29.9);
@@ -457,7 +457,7 @@ describe("relay login", () => {
     vi.mocked(open).mockClear();
     stubBackend();
     await runCli(["relay", "--relay", RELAY, "login"], dir);
-    expect(open).toHaveBeenCalledWith(`${ISSUER}/oauth/device?user_code=ABCD-1234`);
+    expect(open).toHaveBeenCalledWith(`${ISSUER}/oauth/device?user_code=ABCD-2345`);
   });
 
   it("exits 1 with a clear message when the sign-in is denied", async () => {
@@ -478,6 +478,7 @@ describe("relay status — expired session with a refresh token", () => {
   beforeEach(() => {
     writeRelaySession(dir, {
       relay_url: RELAY,
+      issuer: ISSUER,
       access_token: "tok_old",
       access_token_expires_at: issuedAt(-3_600_000),
       refresh_token: "refresh_abc",
@@ -537,6 +538,7 @@ describe("relay status — expired session with a refresh token", () => {
   it("skips the refresh and reports expiry once past the 30-day absolute lifetime", async () => {
     writeRelaySession(dir, {
       relay_url: RELAY,
+      issuer: ISSUER,
       access_token: "tok_old",
       access_token_expires_at: issuedAt(-3_600_000),
       refresh_token: "refresh_abc",
@@ -567,8 +569,8 @@ describe("relay status — expired session with a refresh token", () => {
       expect(exitCode).toBe(0);
       expect(err).toContain("Signing in again");
       // The code and URL go to stderr here, so a command's own stdout (e.g. --json) stays clean.
-      expect(err).toContain("ABCD-1234");
-      expect(out).not.toContain("ABCD-1234");
+      expect(err).toContain("ABCD-2345");
+      expect(out).not.toContain("ABCD-2345");
       expect(loadRelaySession(dir).refresh_token).toBe("rt-new");
       expect(backend.calls.find((c) => c.url === `${RELAY}/api/status`)!.auth).toBe("Bearer at-new-login");
     } finally {
@@ -577,12 +579,179 @@ describe("relay status — expired session with a refresh token", () => {
   });
 });
 
+describe("relay status — pinned authorization server", () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  const expired = (extra: Record<string, unknown> = {}) => writeRelaySession(dir, {
+    relay_url: RELAY, issuer: ISSUER, access_token: "tok_old", access_token_expires_at: issuedAt(-3_600_000),
+    refresh_token: "refresh_abc", refresh_token_expires_at: issuedAt(20 * 86_400_000), ...extra,
+  });
+
+  it("refuses to refresh when the relay now names a different issuer, and keeps the session", async () => {
+    expired({ issuer: "https://old-auth.example.com" });
+    const backend = stubBackend();
+    const { exitCode, err } = await runCli(["relay", "status"], dir);
+    expect(exitCode).toBe(1);
+    expect(err).toContain("different authorization server");
+    expect(err).toContain("relay login");
+    // The refresh token never left: no token request, and the file is untouched.
+    expect(backend.calls.some((c) => c.url.endsWith("/oauth/token"))).toBe(false);
+    expect(backend.calls.some((c) => c.url.startsWith(ISSUER))).toBe(false);
+    expect(loadRelaySession(dir).refresh_token).toBe("refresh_abc");
+  });
+
+  it("does not start a new sign-in on its own when the issuer changed, even at a terminal", async () => {
+    const setTty = (v: boolean | undefined) => {
+      Object.defineProperty(process.stdin, "isTTY", { value: v, configurable: true });
+      Object.defineProperty(process.stderr, "isTTY", { value: v, configurable: true });
+    };
+    expired({ issuer: "https://old-auth.example.com" });
+    const backend = stubBackend();
+    setTty(true);
+    try {
+      const { exitCode } = await runCli(["relay", "status"], dir);
+      expect(exitCode).toBe(1);
+      expect(backend.calls.some((c) => c.url.endsWith("/oauth/device/code"))).toBe(false);
+    } finally {
+      setTty(undefined);
+    }
+  });
+
+  it("treats a session written before the issuer was recorded as needing sign-in", async () => {
+    expired({ issuer: undefined });
+    const backend = stubBackend();
+    const { exitCode, err } = await runCli(["relay", "status"], dir);
+    expect(exitCode).toBe(1);
+    expect(err).toContain("Session expired");
+    expect(backend.calls.some((c) => c.url.endsWith("/oauth/token"))).toBe(false);
+  });
+});
+
+describe("relay login — server-supplied text", () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it("warns instead of printing a bare off-origin URL, and does not open it", async () => {
+    const { default: open } = await import("open");
+    vi.mocked(open).mockClear();
+    stubBackend();
+    const real = globalThis.fetch;
+    vi.stubGlobal("fetch", vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      if (String(url) === `${ISSUER}/oauth/device/code`) {
+        return jsonRes(200, {
+          device_code: "dc-1", user_code: "ABCD-2345", verification_uri: "https://evil.example/x",
+          verification_uri_complete: "https://evil.example/x\u001b[2J", expires_in: 900, interval: 5,
+        });
+      }
+      return real(url, init);
+    }));
+    const { exitCode, out } = await runCli(["relay", "--relay", RELAY, "login"], dir);
+    expect(exitCode).toBe(0);
+    expect(open).not.toHaveBeenCalled();
+    expect(out).toContain("WARNING");
+    expect(out).not.toContain("\u001b");
+  });
+
+  it("refuses a user code that is not asterism's format", async () => {
+    const real = stubBackend();
+    void real;
+    const inner = globalThis.fetch;
+    vi.stubGlobal("fetch", vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      if (String(url) === `${ISSUER}/oauth/device/code`) {
+        return jsonRes(200, {
+          device_code: "dc-1", user_code: "\u001b[2JFAKE", verification_uri: `${ISSUER}/oauth/device`,
+          verification_uri_complete: `${ISSUER}/oauth/device`, expires_in: 900, interval: 5,
+        });
+      }
+      return inner(url, init);
+    }));
+    const { exitCode, out, err } = await runCli(["relay", "--relay", RELAY, "login"], dir);
+    expect(exitCode).toBe(1);
+    expect(err).toContain("malformed user_code");
+    expect(out).not.toContain("FAKE");
+  });
+
+  it("strips control characters from an error description", async () => {
+    stubBackend({ token: () => jsonRes(400, { error: "invalid_scope\u001b[2J", error_description: "x" }) });
+    const { err } = await runCli(["relay", "--relay", RELAY, "login"], dir);
+    expect(err).not.toContain("\u001b");
+  });
+
+  it("strips control characters from a relay API error body", async () => {
+    writeRelaySession(dir, { relay_url: RELAY, issuer: ISSUER, access_token: "t", access_token_expires_at: issuedAt(3_600_000) });
+    stubBackend({ api: () => jsonRes(500, { error: "\u001b[2J\u0085\u202eboom" }) });
+    const { err } = await runCli(["relay", "status"], dir);
+    expect(err).toContain("boom");
+    // eslint-disable-next-line no-control-regex -- asserting control characters were stripped
+    expect(err).not.toMatch(/[\u001b\u0085\u202e]/);
+  });
+});
+
+describe("relay logout — revocation", () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  const session = () => writeRelaySession(dir, {
+    relay_url: RELAY, issuer: ISSUER, access_token: "t", access_token_expires_at: issuedAt(3_600_000),
+    refresh_token: "rt-live", refresh_token_expires_at: issuedAt(20 * 86_400_000),
+  });
+  const withRevocation = (backend: Backend, revoke: (form: Record<string, string>) => Response) => {
+    const inner = globalThis.fetch;
+    vi.stubGlobal("fetch", vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const u = String(url);
+      if (u === `${ISSUER}/.well-known/oauth-authorization-server`) {
+        return jsonRes(200, { issuer: ISSUER, device_authorization_endpoint: `${ISSUER}/oauth/device/code`, token_endpoint: `${ISSUER}/oauth/token`, revocation_endpoint: `${ISSUER}/oauth/revoke` });
+      }
+      if (u === `${ISSUER}/oauth/revoke`) {
+        const form = init?.body instanceof URLSearchParams ? Object.fromEntries(init.body) : {};
+        backend.calls.push({ url: u, form, auth: null, method: "POST" });
+        return revoke(form);
+      }
+      return inner(url, init);
+    }));
+  };
+
+  it("revokes the refresh token at asterism with the cli client_id, then deletes the file", async () => {
+    session();
+    const backend = stubBackend();
+    withRevocation(backend, () => new Response(null, { status: 200 }));
+    const { exitCode, out } = await runCli(["relay", "logout"], dir);
+    expect(exitCode).toBe(0);
+    expect(out).toContain("Logged out.");
+    const revoke = backend.calls.find((c) => c.url === `${ISSUER}/oauth/revoke`)!;
+    expect(revoke.form).toMatchObject({ token: "rt-live", client_id: `${RELAY}/clients/cli.json` });
+    expect(existsSync(relaySessionPath(dir))).toBe(false);
+  });
+
+  it("still deletes the file, with a note, when revocation fails", async () => {
+    session();
+    const backend = stubBackend();
+    withRevocation(backend, () => jsonRes(500, {}));
+    const { exitCode, out, err } = await runCli(["relay", "logout"], dir);
+    expect(exitCode).toBe(0);
+    expect(out).toContain("Logged out.");
+    expect(err).toContain("Could not revoke");
+    expect(existsSync(relaySessionPath(dir))).toBe(false);
+  });
+
+  it("does not send the token anywhere if the relay now names another issuer", async () => {
+    writeRelaySession(dir, {
+      relay_url: RELAY, issuer: "https://old-auth.example.com", access_token: "t", access_token_expires_at: issuedAt(3_600_000),
+      refresh_token: "rt-live",
+    });
+    const backend = stubBackend();
+    withRevocation(backend, () => new Response(null, { status: 200 }));
+    const { exitCode } = await runCli(["relay", "logout"], dir);
+    expect(exitCode).toBe(0);
+    expect(backend.calls.some((c) => c.form["token"] === "rt-live")).toBe(false);
+    expect(existsSync(relaySessionPath(dir))).toBe(false);
+  });
+});
+
 describe("relay status — concurrent refreshes", () => {
   afterEach(() => { vi.unstubAllGlobals(); });
 
   it("spends the refresh token once when two CLI processes race", async () => {
     writeRelaySession(dir, {
-      relay_url: RELAY, access_token: "tok_old", access_token_expires_at: issuedAt(-3_600_000),
+      relay_url: RELAY, issuer: ISSUER, access_token: "tok_old", access_token_expires_at: issuedAt(-3_600_000),
       refresh_token: "refresh_abc", refresh_token_expires_at: issuedAt(20 * 86_400_000),
     });
     const backend = stubBackend();

@@ -229,6 +229,13 @@ export function buildConfigUpdatePaths(
  */
 export interface RelaySession {
   relay_url: string;
+  /**
+   * The authorization server this session was issued by, recorded at sign-in. A refresh goes only
+   * to this issuer: if the relay later names a different one, the refresh is refused instead of
+   * handing the refresh token to it. Absent in a session written before this field existed;
+   * such a session cannot be refreshed and needs a new sign-in.
+   */
+  issuer?: string;
   access_token: string;
   access_token_expires_at: string; // ISO 8601
   refresh_token?: string;
@@ -257,6 +264,7 @@ export function loadRelaySession(dir: string): RelaySession {
     relay_url,
     access_token,
     access_token_expires_at,
+    issuer: parsed.issuer || undefined,
     refresh_token: parsed.refresh_token || undefined,
     refresh_token_expires_at: parsed.refresh_token_expires_at || undefined,
   };

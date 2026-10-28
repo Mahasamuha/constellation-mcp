@@ -53,6 +53,7 @@ Pre-configured Compose files for standard and Cloudflare Tunnel deployments are 
 
 | Variable | Description |
 |---|---|
+| `ADMIN_GROUP` | Group an account must be in, besides holding the `admin` scope, to administer the relay (default `constellation-admins`). |
 | `ASTERISM_ISSUER` | Issuer URL of your [asterism](https://github.com/Mahasamuha/constellation-mcp/blob/main/docs/adr/0022-asterism-authorization-server.md) authorization server (`https:`). asterism handles sign-in and accounts; register the relay in asterism as a resource server. |
 
 ### Common Optional Variables

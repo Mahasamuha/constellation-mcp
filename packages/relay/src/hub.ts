@@ -5,6 +5,7 @@ import { ExecutorTokenType, Prisma } from "./generated/prisma/client.js";
 import { logEvent } from "./activity.js";
 import { hashToken, generateToken, createLogger, type RpcError, type RpcResponse, type RpcEnvelope as BaseRpcEnvelope } from "@constellation/shared";
 import { config } from "./config.js";
+import { validateHostName } from "./host-name.js";
 import {
   type ConnectedExecutor,
   registerConnection,
@@ -462,17 +463,12 @@ export async function handleUpdateHost(conn: ConnectedExecutor, msg: UpdateHostM
     send(conn.ws, { type: "update_host_error", error: "Hubs use a fixed host (machine ID); update_host is not supported" });
     return;
   }
-  const newHost = typeof msg.host === "string" ? msg.host.trim() : "";
-
-  if (!newHost) {
-    send(conn.ws, { type: "update_host_error", error: "host must be a non-empty string" });
+  const validated = validateHostName(msg.host);
+  if ("error" in validated) {
+    send(conn.ws, { type: "update_host_error", error: validated.error });
     return;
   }
-
-  if (newHost.length > 63) {
-    send(conn.ws, { type: "update_host_error", error: "Host name must be 63 characters or fewer" });
-    return;
-  }
+  const newHost = validated.host;
 
   // No separate conflict check beforehand — the write doesn't depend on the row's
   // current host, so there's nothing for a check-then-write race to act on. Attempt

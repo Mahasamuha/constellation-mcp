@@ -26,34 +26,72 @@ function isLocalHostname(hostname: string): boolean {
   return /^127(\.\d{1,3}){3}$/.test(hostname);
 }
 
-/**
- * Throws if `wsUrl` is a plaintext ws:// URL targeting a non-localhost host.
- * The bearer token sent in the Authorization header must never cross the
- * network unencrypted. Call this before constructing *any* WebSocket
- * connection to a relay — the long-lived RelaySocket connection below and
- * every short-lived CLI control-plane connection (token rotation, rename,
- * sync) alike. A second, independently-constructed WebSocket that skips this
- * check defeats the whole point of enforcing it here.
- */
-export function assertSecureRelayUrl(wsUrl: string): void {
-  if (!wsUrl.startsWith("ws://")) return;
-  const hostname = new URL(wsUrl).hostname;
-  if (isLocalHostname(hostname)) return;
-  throw new Error(
-    `Refusing to connect: relay URL uses ws:// for a non-localhost host (${hostname}). Use wss:// to protect the access token.`
-  );
+/** True if `url` parses and its host is loopback (any scheme). */
+export function isLoopbackUrl(url: string): boolean {
+  try {
+    return isLocalHostname(new URL(url).hostname);
+  } catch {
+    return false;
+  }
 }
 
-/** Throws if `httpUrl` is a plaintext http:// URL targeting a non-localhost host.
- * Bearer tokens sent in Authorization headers must never cross the network
- * unencrypted. Call this before any fetch() that carries an access token. */
+/**
+ * The one place that decides whether a URL may carry a bearer token: it must parse (so the
+ * scheme match is case-insensitive and cannot be sidestepped with odd spellings), its protocol
+ * must be on the allowlist, and the plaintext protocol is allowed only for loopback hosts.
+ */
+function assertSecureUrl(raw: string, secure: string, plain: string, what: string): URL {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error("Refusing to connect: relay URL is not a valid URL.");
+  }
+  if (url.protocol === secure) return url;
+  if (url.protocol === plain) {
+    if (isLocalHostname(url.hostname)) return url;
+    throw new Error(
+      `Refusing to connect: relay URL uses ${plain}// for a non-localhost host (${url.hostname}). Use ${secure}// to protect the access token.`
+    );
+  }
+  throw new Error(`Refusing to connect: relay URL must use ${secure}// (or ${plain}// to localhost) for ${what}, not ${url.protocol}`);
+}
+
+/**
+ * Throws unless `wsUrl` is wss://, or ws:// to a localhost host. The bearer token sent in the
+ * Authorization header must never cross the network unencrypted. Call this before constructing
+ * *any* WebSocket connection to a relay — the long-lived RelaySocket connection below and
+ * every short-lived CLI control-plane connection (token rotation, rename, sync) alike. A
+ * second, independently-constructed WebSocket that skips this check defeats the whole point of
+ * enforcing it here.
+ */
+export function assertSecureRelayUrl(wsUrl: string): void {
+  assertSecureUrl(wsUrl, "wss:", "ws:", "a WebSocket connection");
+}
+
+/** Throws unless `httpUrl` is https://, or http:// to a localhost host. Bearer tokens sent in
+ * Authorization headers must never cross the network unencrypted. Call this before any fetch()
+ * that carries an access token. */
 export function assertSecureHttpUrl(httpUrl: string): void {
-  if (!httpUrl.startsWith("http://")) return;
-  const hostname = new URL(httpUrl).hostname;
-  if (isLocalHostname(hostname)) return;
-  throw new Error(
-    `Refusing to connect: relay URL uses http:// for a non-localhost host (${hostname}). Use https:// to protect the access token.`
-  );
+  assertSecureUrl(httpUrl, "https:", "http:", "an HTTP request");
+}
+
+/**
+ * The ws(s) form of a relay's http(s) base URL, with the same checks as assertSecureRelayUrl.
+ * Takes http:, https:, ws: or wss: and nothing else. Use this instead of rewriting the scheme
+ * by string, which is case-sensitive and passes unknown schemes through.
+ */
+export function relayWsUrl(relayUrl: string): string {
+  let url: URL;
+  try {
+    url = new URL(relayUrl);
+  } catch {
+    throw new Error("Refusing to connect: relay URL is not a valid URL.");
+  }
+  if (url.protocol === "http:") url.protocol = "ws:";
+  else if (url.protocol === "https:") url.protocol = "wss:";
+  assertSecureRelayUrl(url.href);
+  return url.href.replace(/\/$/, "");
 }
 
 /** Returns true if `targetUrl` shares the same origin as `relayUrl`.
@@ -159,12 +197,11 @@ export abstract class RelaySocket {
   private connect(): void {
     if (this.stopped) return;
 
-    const wsUrl = this.getRelayUrl().replace(/^http/, "ws");
-
+    let wsUrl: string;
     try {
-      assertSecureRelayUrl(wsUrl);
+      wsUrl = relayWsUrl(this.getRelayUrl());
     } catch (err) {
-      this.log.error({ url: wsUrl }, (err as Error).message);
+      this.log.error({ url: this.getRelayUrl() }, (err as Error).message);
       this.scheduleReconnect();
       return;
     }

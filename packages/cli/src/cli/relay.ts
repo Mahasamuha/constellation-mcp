@@ -6,8 +6,8 @@ import {
   deleteRelaySession,
   type RelaySession,
 } from "@constellation/node/config";
-import { confirm, type ExecutorEntry, assertSecureHttpUrl } from "@constellation/shared";
-import { adminStepUp, getValidSession, signIn } from "./session.js";
+import { confirm, type ExecutorEntry, assertSecureHttpUrl, sanitizeForTerminal as t } from "@constellation/shared";
+import { adminStepUp, getValidSession, revokeStoredSession, signIn } from "./session.js";
 
 // ---------------------------------------------------------------------------
 // API response types
@@ -69,7 +69,7 @@ function resolveRelayUrl(flagUrl: string | undefined, getConfigDir: () => string
   try {
     assertSecureHttpUrl(url);
   } catch (err) {
-    console.error("Error:", (err as Error).message);
+    console.error("Error:", t((err as Error).message));
     process.exit(1);
   }
   return url;
@@ -81,7 +81,7 @@ async function safeFetch(url: string, options?: RequestInit): Promise<Response> 
   try {
     return await fetch(url, options);
   } catch (err) {
-    console.error(`Could not reach ${new URL(url).host}: ${(err as Error).message}`);
+    console.error(`Could not reach ${t(new URL(url).host)}: ${t((err as Error).message)}`);
     return process.exit(1);
   }
 }
@@ -188,10 +188,10 @@ export async function die(res: Response): Promise<never> {
     if (error === "insufficient_scope") {
       console.error("This operation requires admin privileges, and your account or this command's token lacks them.");
     } else if (res.status === 401) {
-      console.error(`API error 401: ${JSON.stringify(body)}`);
+      console.error(`API error 401: ${t(JSON.stringify(body))}`);
       console.error("The relay did not accept the stored sign-in. Run 'constellation relay login' to sign in again.");
     } else {
-      console.error(`API error ${res.status}: ${JSON.stringify(body)}`);
+      console.error(`API error ${res.status}: ${t(JSON.stringify(body))}`);
     }
   } catch {
     console.error(`API error ${res.status}`);
@@ -242,8 +242,9 @@ export function registerRelayCommands(program: Command): void {
 
   relay
     .command("logout")
-    .description("Remove stored relay session")
-    .action(() => {
+    .description("Revoke the stored sign-in at the authorization server, then remove the relay session")
+    .action(async () => {
+      await revokeStoredSession(cfgDir());
       deleteRelaySession(cfgDir());
       console.log("Logged out.");
     });
@@ -260,9 +261,9 @@ export function registerRelayCommands(program: Command): void {
       const data = await apiGet<{ status: string; uptime_seconds: number; version: string }>(
         session, "/api/status"
       );
-      console.log(`Status:  ${data.status}`);
+      console.log(`Status:  ${t(data.status)}`);
       console.log(`Uptime:  ${formatUptime(data.uptime_seconds)}`);
-      console.log(`Version: ${data.version}`);
+      console.log(`Version: ${t(data.version)}`);
     });
 
   // -------------------------------------------------------------------------
@@ -283,9 +284,9 @@ export function registerRelayCommands(program: Command): void {
       const res = await apiGet<PaginatedResponse<ExecutorEntry>>(session, `/api/executors${qs}`);
       if (opts.json) { console.log(JSON.stringify(res.data, null, 2)); warnIfMore(res); return; }
       for (const a of res.data) {
-        console.log(`${a.host} (${a.id})`);
-        console.log(`  Status: ${a.online ? "online" : "offline"}${a.last_heartbeat_at ? `  last seen ${a.last_heartbeat_at}` : ""}`);
-        for (const s of a.shares) console.log(`  ${s.share} → ${s.reported_path}`);
+        console.log(`${t(a.host)} (${t(a.id)})`);
+        console.log(`  Status: ${a.online ? "online" : "offline"}${a.last_heartbeat_at ? `  last seen ${t(a.last_heartbeat_at)}` : ""}`);
+        for (const s of a.shares) console.log(`  ${t(s.share)} → ${t(s.reported_path)}`);
       }
       warnIfMore(res);
     });
@@ -321,7 +322,7 @@ export function registerRelayCommands(program: Command): void {
       const res = await apiGet<PaginatedResponse<ShareEntry>>(session, `/api/shares${qs}`);
       if (opts.json) { console.log(JSON.stringify(res.data, null, 2)); warnIfMore(res); return; }
       for (const s of res.data) {
-        console.log(`${s.share}  (${s.host})  →  ${s.reported_path}`);
+        console.log(`${t(s.share)}  (${t(s.host)})  →  ${t(s.reported_path)}`);
       }
       warnIfMore(res);
     });
@@ -344,8 +345,8 @@ export function registerRelayCommands(program: Command): void {
       const res = await apiGet<PaginatedResponse<FilterEntry>>(session, `/api/filters${qs}`);
       if (opts.json) { console.log(JSON.stringify(res.data, null, 2)); warnIfMore(res); return; }
       for (const f of res.data) {
-        const scope = f.scope_executor_id ? ` [executor: ${f.scope_executor_id}]` : "";
-        console.log(`${f.id}  ${f.pattern_type}:${f.pattern}${scope}  (${f.created_at})`);
+        const scope = f.scope_executor_id ? ` [executor: ${t(f.scope_executor_id)}]` : "";
+        console.log(`${t(f.id)}  ${t(f.pattern_type)}:${t(f.pattern)}${scope}  (${t(f.created_at)})`);
       }
       warnIfMore(res);
     });
@@ -365,7 +366,7 @@ export function registerRelayCommands(program: Command): void {
       const body: Record<string, string> = { pattern, pattern_type: opts.type };
       if (opts.executor) body["executor_id"] = opts.executor;
       const data = await apiPost<{ id: string }>(session, "/api/filters", body);
-      console.log(`Filter created: ${data.id}`);
+      console.log(`Filter created: ${t(data.id)}`);
     });
 
   filters
@@ -407,14 +408,14 @@ export function registerRelayCommands(program: Command): void {
       let lastExecutorId = "";
       for (const s of data.data) {
         if (s.executor_id !== lastExecutorId) {
-          console.log(`\nExecutor: ${s.executor_host} (${s.executor_id})`);
+          console.log(`\nExecutor: ${t(s.executor_host)} (${t(s.executor_id)})`);
           lastExecutorId = s.executor_id;
         }
         const overrides = s.permission_blob.overrides ?? [];
         const overrideStr = overrides.length > 0
           ? `  overrides: ${overrides.map((o) => `${"sub" in o ? o.sub : `group:${o.group}`}=${o.access}`).join(", ")}`
           : "";
-        console.log(`  ${s.share}  →  ${s.reported_path}  [default: ${s.permission_blob.default}]${overrideStr}`);
+        console.log(`  ${t(s.share)}  →  ${t(s.reported_path)}  [default: ${t(s.permission_blob.default)}]${t(overrideStr)}`);
       }
       warnIfMore(data);
     });
@@ -456,10 +457,10 @@ export function registerRelayCommands(program: Command): void {
       console.log("");
       console.log("=== HUB TOKEN (shown once) ===");
       console.log("");
-      console.log(data.token);
+      console.log(t(data.token));
       console.log("");
-      console.log(`Token ID:   ${data.token_id}`);
-      console.log(`Created at: ${data.created_at}`);
+      console.log(`Token ID:   ${t(data.token_id)}`);
+      console.log(`Created at: ${t(data.created_at)}`);
       console.log("");
       console.log("Store this token as CONSTELLATION_HUB_TOKEN in the hub's environment.");
       console.log("It will not be shown again. Revoke via: constellation relay executors revoke <executor-id>");

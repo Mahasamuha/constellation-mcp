@@ -30,6 +30,19 @@ The account needs `CAP_SETUID` and `CAP_SETGID` to drop privileges into each use
 
 Hub registration needs an access token with the `admin` scope. asterism grants that scope only to members of the `constellation-admins` group, and only on a step-up sign-in. There is nothing to configure on the relay: add the account that will approve the hub to `constellation-admins` in your identity provider (for example Authentik), so asterism sees the membership.
 
+The relay checks the group itself (`ADMIN_GROUP`, default `constellation-admins`) as well as the `admin` scope, so the account must be in that group even if asterism's scope policy was never set. On the asterism side, release the claims the hub uses and restrict the scope, before users connect:
+
+```sh
+docker compose exec asterism-proxy asterism-cli resource-server approve <relay-url>/mcp \
+  --name Constellation --release-claims groups,email,constellation_username
+docker compose exec asterism-proxy asterism-cli resource-server policy <relay-url>/mcp admin \
+  --short-lived --require-groups constellation-admins
+```
+
+Grants made before the claims were released carry no `groups` or `constellation_username` until the user re-consents; revoke them in asterism's `/grants`.
+
+> **Warning.** `groups` and `constellation_username` are only as trustworthy as their upstream source. asterism's `OIDC_CLAIM_MAP` must never map them onto a claim users can edit (`preferred_username`, `name`, `nickname`, `email`, ...), and the identity provider attribute behind `constellation_username` must be admin-only and unique per user. asterism does not enforce this; if it is wrong, users can pick their OS account or join groups. See [Configuration](docs/configuration.md#operator-runbook-configure-asterism-before-users-connect).
+
 The approving person is whoever signs in at step 3. They do not have to be the person running the command, but they must be in the group; otherwise the sign-in is denied and `hub register` exits with "Access denied".
 
 ---

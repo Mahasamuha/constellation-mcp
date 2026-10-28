@@ -419,6 +419,22 @@ describe("HubSocket — user_sub / user_groups handling", () => {
     expect(pool.dispatch).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["an entry that is not a string", ["eng", 7]],
+    ["an empty entry", ["eng", ""]],
+    ["an over-long entry", ["x".repeat(257)]],
+    ["too many entries", Array.from({ length: 257 }, (_, i) => `g${i}`)],
+  ])("refuses an RPC whose user_groups has %s, and audits it without the values", async (_label, user_groups) => {
+    const conn = await connect(docs([{ group: "banned", access: "none" }], "read-write"));
+    const response = await call(conn, { user_sub: "sub-1", user_groups });
+    expect(response).toEqual({ request_id: "req-1", error: { message: "Malformed request: user_groups is not a valid group list" } });
+    expect(resolveIdentity).not.toHaveBeenCalled();
+    expect(pool.dispatch).not.toHaveBeenCalled();
+    const [entry] = await auditLines();
+    expect(entry).toMatchObject({ outcome: "exec_error", user_sub: "sub-1" });
+    expect(JSON.stringify(entry)).not.toContain("xxxx");
+  });
+
   it("passes the sub to identity resolution and records it in the audit log", async () => {
     const conn = await connect(docs([], "read-write"));
     const response = await call(conn, { user_sub: "sub-1", user_groups: ["eng"], user_claims: { constellation_username: "alice" } });

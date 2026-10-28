@@ -13,6 +13,10 @@ function isRelayUrlSecure(): boolean {
   }
 }
 
+function isLoopbackHost(hostname: string): boolean {
+  return ["localhost", "127.0.0.1", "[::1]"].includes(hostname);
+}
+
 /**
  * Throws if RELAY_URL is set to anything other than a bare origin (no path, query,
  * fragment, or trailing slash). Every well-known URL and OAuth endpoint is built as
@@ -31,6 +35,11 @@ export function assertRelayUrlIsOrigin(): void {
   if (parsed.origin !== relayUrl) {
     throw new Error(`RELAY_URL must be a bare origin with no path or trailing slash (e.g. ${parsed.origin})`);
   }
+  // It is the token audience and the base of every client_id and redirect: plaintext
+  // would let a network attacker rewrite them. http: is for local development only.
+  if (parsed.protocol !== "https:" && !(parsed.protocol === "http:" && isLoopbackHost(parsed.hostname))) {
+    throw new Error("RELAY_URL must be an https: URL (http: is allowed only on a loopback host)");
+  }
 }
 
 /**
@@ -47,8 +56,7 @@ export function assertAsterismConfig(): void {
   } catch {
     throw new Error("ASTERISM_ISSUER is not a valid URL");
   }
-  const loopback = ["localhost", "127.0.0.1", "[::1]"].includes(parsed.hostname);
-  if (parsed.protocol !== "https:" && !(parsed.protocol === "http:" && loopback)) {
+  if (parsed.protocol !== "https:" && !(parsed.protocol === "http:" && isLoopbackHost(parsed.hostname))) {
     throw new Error("ASTERISM_ISSUER must be an https: URL (http: is allowed only on a loopback host)");
   }
   if (!process.env["RELAY_URL"]) throw new Error("RELAY_URL is required (the token audience is its /mcp URL)");
@@ -59,6 +67,8 @@ export const config = {
   // asterism's ISSUER_URL, exactly as asterism publishes it. Access tokens must carry this `iss`.
   // Required at startup (assertAsterismConfig); the token audience is `${RELAY_URL}/mcp`.
   asterismIssuer: process.env["ASTERISM_ISSUER"] ?? "",
+  // The group an account must belong to, besides holding the `admin` scope, to use admin routes.
+  adminGroup: process.env["ADMIN_GROUP"]?.trim() || "constellation-admins",
   secureCookies: isRelayUrlSecure(),
   // Comma-separated list of token claim names to forward in RPC envelopes.
   // Empty = forward all claims from the access token.

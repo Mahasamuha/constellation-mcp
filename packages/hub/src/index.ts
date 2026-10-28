@@ -6,6 +6,7 @@ import {
   createLogger,
   MAX_SHARE_INSTRUCTIONS_LENGTH,
   groupsFromClaims,
+  InvalidGroupsError,
   type PermissionSubject,
   RelaySocket,
   startControlServer,
@@ -367,7 +368,28 @@ export class HubSocket extends RelaySocket implements RotatableConnection {
       });
       return { request_id, error: { message } };
     }
-    const subject: PermissionSubject = { sub: userSub, groups: groupsFromClaims({ groups: rawGroups }) };
+    let groups: string[];
+    try {
+      groups = groupsFromClaims({ groups: rawGroups });
+    } catch (err) {
+      if (!(err instanceof InvalidGroupsError)) throw err;
+      // The values are not logged: they come from the token and may be large or hostile.
+      const message = "Malformed request: user_groups is not a valid group list";
+      this.log.warn({ request_id, tool, share }, message);
+      this.audit.write({
+        ts: new Date().toISOString(),
+        hub_name: this.cfg.hub_name,
+        request_id,
+        user_sub: userSub,
+        local_username: null,
+        share,
+        tool,
+        outcome: "exec_error",
+        error: message,
+      });
+      return { request_id, error: { message } };
+    }
+    const subject: PermissionSubject = { sub: userSub, groups };
 
     // Coerce user_claims to a safe object — a compromised relay could send null,
     // which would throw inside resolveIdentity and bypass all audit writes.

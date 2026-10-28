@@ -176,6 +176,47 @@ shares:
     expect(() => loadHubConfig(path)).toThrow(/invalid access level/);
   });
 
+  it.each([
+    ["permissions.overrides is not an array", "      overrides: {group: eng, access: none}\n", /shares\[0\]\.permissions\.overrides must be an array/],
+  ])("rejects a config where %s", async (_l, extra, re) => {
+    const path = await writeConfig(`${BASE_YAML}${extra}`);
+    expect(() => loadHubConfig(path)).toThrow(re);
+  });
+
+  it.each([
+    ["a missing sub", "    - local_username: alice\n", /identity\.user_map\[0\]\.sub/],
+    ["a numeric sub", "    - sub: 5\n      local_username: alice\n", /identity\.user_map\[0\]\.sub/],
+    ["a missing local_username", "    - sub: s\n", /identity\.user_map\[0\]\.local_username/],
+    ["a non-mapping entry", "    - just-a-string\n", /identity\.user_map\[0\]/],
+  ])("rejects an identity.user_map entry with %s", async (_l, entry, re) => {
+    const path = await writeConfig(`${BASE_YAML}\nidentity:\n  user_map:\n${entry}`);
+    expect(() => loadHubConfig(path)).toThrow(re);
+  });
+
+  it.each([
+    ["a string", "claims: uid"],
+    ["an array with a non-string", "claims: [uid, 5]"],
+    ["an array with an empty string", "claims: [uid, '']"],
+  ])("rejects identity.claims that is %s", async (_l, line) => {
+    const path = await writeConfig(`${BASE_YAML}\nidentity:\n  ${line}\n`);
+    expect(() => loadHubConfig(path)).toThrow(/identity\.claims must be an array of non-empty strings/);
+  });
+
+  it.each([
+    ["blocked_uids: [1, abc]", /subnode_uid\.blocked_uids/],
+    ["blocked_uids: 5", /subnode_uid\.blocked_uids/],
+    ["allowed_range: {min: '1000', max: 2000}", /subnode_uid\.allowed_range\.min must be a number/],
+    ["blocked_range: 5", /subnode_uid\.blocked_range must be a mapping/],
+  ])("rejects malformed subnode_uid (%s)", async (line, re) => {
+    const path = await writeConfig(`${BASE_YAML}\nsubnode_uid:\n  ${line}\n`);
+    expect(() => loadHubConfig(path)).toThrow(re);
+  });
+
+  it("rejects a malformed subnode_gid.blocked_gids", async () => {
+    const path = await writeConfig(`${BASE_YAML}\nsubnode_gid:\n  blocked_gids: [27, sudo]\n`);
+    expect(() => loadHubConfig(path)).toThrow(/subnode_gid\.blocked_gids/);
+  });
+
   it("rejects a legacy oidc_sub key in identity.user_map", async () => {
     const path = await writeConfig(`${BASE_YAML}\nidentity:\n  user_map:\n    - oidc_sub: s\n      local_username: alice\n`);
     expect(() => loadHubConfig(path)).toThrow(/identity\.user_map\[0\].*oidc_sub.*'sub'/);

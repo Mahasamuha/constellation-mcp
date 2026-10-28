@@ -30,7 +30,7 @@ const WRITE_TOOLS = new Set([
  *   2. A per-sub override wins outright if present.
  *   3. Otherwise the most permissive matching group override applies.
  *   4. Otherwise the default access level applies.
- *   5. "none" always rejects; "read-only" blocks write tools; "read-write" allows all.
+ *   5. Anything but "read-only" or "read-write" (including "none") rejects; "read-only" blocks write tools; "read-write" allows all.
  */
 export function checkPermission(
   subject: PermissionSubject,
@@ -45,7 +45,8 @@ export function checkPermission(
 
   const access = evaluatePermissionBlob(shareConfig.permissions, subject) as AccessLevel;
 
-  if (access === "none") {
+  // Allowlist rather than special-casing "none": anything unrecognised is denied.
+  if (access !== "read-only" && access !== "read-write") {
     return { permitted: false, reason: `Access to share '${share}' is denied` };
   }
 

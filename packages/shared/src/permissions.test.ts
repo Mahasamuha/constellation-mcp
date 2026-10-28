@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { evaluatePermissionBlob, groupsFromClaims, MAX_GROUPS } from "./permissions.js";
+import { evaluatePermissionBlob, groupsFromClaims, InvalidGroupsError, MAX_GROUPS, MAX_GROUP_LENGTH } from "./permissions.js";
 
 describe("evaluatePermissionBlob", () => {
   const blob = {
@@ -43,21 +43,47 @@ describe("evaluatePermissionBlob", () => {
   });
 });
 
+describe("evaluatePermissionBlob — unknown access values", () => {
+  it("maps an unknown default to none", () => {
+    expect(evaluatePermissionBlob({ default: "admin" }, { sub: "x", groups: [] })).toBe("none");
+    expect(evaluatePermissionBlob({ default: "toString" }, { sub: "x", groups: [] })).toBe("none");
+  });
+
+  it("maps an unknown sub override to none", () => {
+    expect(evaluatePermissionBlob({ default: "read-write", overrides: [{ sub: "u", access: "rw" }] }, { sub: "u", groups: [] })).toBe("none");
+  });
+
+  it("maps an unknown group override to none", () => {
+    expect(evaluatePermissionBlob({ default: "read-write", overrides: [{ group: "g", access: "full" }] }, { sub: "x", groups: ["g"] })).toBe("none");
+  });
+});
+
 describe("groupsFromClaims", () => {
-  it("returns non-empty strings only", () => {
-    expect(groupsFromClaims({ groups: ["a", "", 3, null, "b", { x: 1 }] })).toEqual(["a", "b"]);
+  it("returns a valid list unchanged", () => {
+    expect(groupsFromClaims({ groups: ["a", "b"] })).toEqual(["a", "b"]);
+    expect(groupsFromClaims({ groups: ["x".repeat(MAX_GROUP_LENGTH)] })).toHaveLength(1);
   });
 
-  it("returns [] for any non-array shape", () => {
-    for (const groups of ["a", { 0: "a" }, 5, null, undefined]) {
-      expect(groupsFromClaims({ groups })).toEqual([]);
-    }
+  it("returns [] when the claim is absent", () => {
     expect(groupsFromClaims({})).toEqual([]);
+    expect(groupsFromClaims({ groups: undefined })).toEqual([]);
   });
 
-  it("caps the count and drops over-long names", () => {
-    const many = Array.from({ length: MAX_GROUPS + 10 }, (_, i) => `g${i}`);
-    expect(groupsFromClaims({ groups: many })).toHaveLength(MAX_GROUPS);
-    expect(groupsFromClaims({ groups: ["x".repeat(257), "ok"] })).toEqual(["ok"]);
+  it("throws for any present non-array shape", () => {
+    for (const groups of ["a", { 0: "a" }, 5, null]) {
+      expect(() => groupsFromClaims({ groups })).toThrow(InvalidGroupsError);
+    }
+  });
+
+  it("throws rather than dropping an invalid entry", () => {
+    for (const bad of ["", 3, null, { x: 1 }, "x".repeat(MAX_GROUP_LENGTH + 1)]) {
+      expect(() => groupsFromClaims({ groups: ["a", bad] })).toThrow(InvalidGroupsError);
+    }
+  });
+
+  it("throws rather than truncating an oversize list", () => {
+    const many = Array.from({ length: MAX_GROUPS + 1 }, (_, i) => `g${i}`);
+    expect(() => groupsFromClaims({ groups: many })).toThrow(InvalidGroupsError);
+    expect(groupsFromClaims({ groups: many.slice(0, MAX_GROUPS) })).toHaveLength(MAX_GROUPS);
   });
 });

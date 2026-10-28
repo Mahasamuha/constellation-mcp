@@ -119,6 +119,15 @@ describe("requireBearerAuth", () => {
     expect(upsert).not.toHaveBeenCalled();
   });
 
+  it("answers 403 invalid_token_claims, with no challenge, for a malformed groups claim", async () => {
+    verify.mockResolvedValue(principal({ claims: { groups: "constellation-admins" } }));
+    const res = await get("/me");
+    expect(res.status).toBe(403);
+    expect(res.headers.get("www-authenticate")).toBeNull();
+    expect(await res.json()).toMatchObject({ error: "invalid_token_claims" });
+    expect(upsert).not.toHaveBeenCalled();
+  });
+
   it("answers 500 when the users upsert fails", async () => {
     verify.mockResolvedValue(principal());
     upsert.mockRejectedValue(new Error("db down"));
@@ -155,8 +164,8 @@ describe("users row", () => {
 });
 
 describe("requireAdmin", () => {
-  it("passes when the token carries the admin scope", async () => {
-    verify.mockResolvedValue(principal({ scopes: ["relay", "admin"] }));
+  it("passes when the token carries the admin scope and the admin group", async () => {
+    verify.mockResolvedValue(principal({ scopes: ["relay", "admin"], claims: { groups: ["constellation-admins"] } }));
     const res = await get("/admin");
     expect(res.status).toBe(200);
   });
@@ -168,6 +177,19 @@ describe("requireAdmin", () => {
     const header = res.headers.get("www-authenticate") ?? "";
     expect(header).toContain('error="insufficient_scope"');
     expect(header).toContain('scope="relay admin"');
+  });
+
+  it("answers a plain 403 with no step-up challenge when the admin scope lacks the admin group", async () => {
+    verify.mockResolvedValue(principal({ scopes: ["relay", "admin"], claims: { groups: ["staff"] } }));
+    const res = await get("/admin");
+    expect(res.status).toBe(403);
+    expect(res.headers.get("www-authenticate")).toBeNull();
+    expect(await res.json()).toMatchObject({ error_description: expect.stringContaining("not in the admin group") });
+  });
+
+  it("denies the admin scope with no groups claim at all", async () => {
+    verify.mockResolvedValue(principal({ scopes: ["relay", "admin"], claims: {} }));
+    expect((await get("/admin")).status).toBe(403);
   });
 
   it("does not authorize by the groups claim", async () => {
