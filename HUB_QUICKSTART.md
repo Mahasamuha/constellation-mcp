@@ -9,7 +9,7 @@ A hub runs as a system service on a multi-user machine (dev server, NAS, domain 
 ## Prerequisites
 
 - Linux with systemd
-- A running relay configured to use asterism as its authorization server
+- A running relay configured to use [asterism](https://github.com/Mahasamuha/asterism-proxy) as its authorization server, with asterism federated to an OIDC identity provider (for example Authentik). asterism's local accounts carry no groups or claims, so they can neither approve a hub nor map to an OS account by claim. See [Running asterism](docs/configuration.md#running-asterism)
 - The `constellation` binary installed on the shared machine (`sudo dpkg -i constellation-cli_*_amd64.deb`)
 - A dedicated low-privilege service account (e.g. `constellation`)
 - asterism configured to release a user attribute as the `constellation_username` claim — see [Identity resolution](#identity-resolution)
@@ -30,7 +30,7 @@ The account needs `CAP_SETUID` and `CAP_SETGID` to drop privileges into each use
 
 Hub registration needs an access token with the `admin` scope. asterism grants that scope only to members of the `constellation-admins` group, and only on a step-up sign-in. There is nothing to configure on the relay: add the account that will approve the hub to `constellation-admins` in your identity provider (for example Authentik), so asterism sees the membership.
 
-The relay checks the group itself (`ADMIN_GROUP`, default `constellation-admins`) as well as the `admin` scope, so the account must be in that group even if asterism's scope policy was never set. On the asterism side, release the claims the hub uses and restrict the scope, before users connect:
+The relay checks the group itself (`ADMIN_GROUP`, default `constellation-admins`) as well as the `admin` scope, so the account must be in that group even if asterism's scope policy was never set. On the asterism side, release the claims the hub uses and restrict the scope, before users connect. Run these from the compose project that runs asterism (the relay's `docker/standard/` or `docker/cloudflare-tunnel/` if you use the bundled `asterism` profile):
 
 ```sh
 docker compose exec asterism-proxy asterism-cli resource-server approve <relay-url>/mcp \

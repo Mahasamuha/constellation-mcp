@@ -33,5 +33,54 @@ services:
       retries: 5
     restart: unless-stopped
 
+  # Optional bundled asterism authorization server. Off unless the "asterism"
+  # profile is enabled (COMPOSE_PROFILES=asterism in .env, or --profile asterism).
+  # It needs its own public HTTPS hostname (ASTERISM_ISSUER): point your reverse
+  # proxy at 127.0.0.1:4000. Its settings live in asterism.env, not .env, so the
+  # relay never sees asterism's secrets and the two never share TRUST_PROXY.
+  asterism-proxy:
+    image: mahasamuha/asterism-proxy:sha-615579d
+    profiles: [asterism]
+    ports:
+      - "127.0.0.1:4000:3000"
+    env_file:
+      - path: asterism.env
+        required: false
+    environment:
+      ISSUER_URL: ${ASTERISM_ISSUER}
+      PORT: 3000
+    networks: [default, asterism-db]
+    depends_on:
+      asterism-postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  # asterism's own database, on an internal network the relay is not attached to.
+  asterism-postgres:
+    image: postgres:16.14
+    profiles: [asterism]
+    env_file:
+      - path: asterism.env
+        required: false
+    volumes:
+      - asterism-pgdata:/var/lib/postgresql/data
+    networks: [asterism-db]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+networks:
+  asterism-db:
+    internal: true
+
 volumes:
   pgdata:
+  asterism-pgdata:

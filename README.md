@@ -27,6 +27,7 @@ On a client that supports the [MCP Apps extension](docs/relay.md#mcp-apps) to th
 
 - Docker and Docker Compose (relay)
 - A publicly accessible address (domain or IP) for the relay — required for node and MCP client connectivity
+- An [asterism](https://github.com/Mahasamuha/asterism-proxy) authorization server for sign-in, on its own HTTPS hostname. The relay's compose files can run one for you (see below). Connect it to an OIDC identity provider such as Authentik if you need admins, hubs or group-based access: asterism's local accounts carry no groups
 
 ## Installation
 
@@ -37,12 +38,15 @@ On a client that supports the [MCP Apps extension](docs/relay.md#mcp-apps) to th
 cd docker/standard
 cp .env.example .env
 # Edit .env — set RELAY_URL and ASTERISM_ISSUER
+# To run asterism here too: uncomment COMPOSE_PROFILES=asterism in .env, then
+#   cp asterism.env.example asterism.env   # and fill it in
+# asterism listens on 127.0.0.1:4000; route ASTERISM_ISSUER's hostname to it
 docker compose up -d
 ```
 
 Alternatively, use [`docker/cloudflare-tunnel/`](docker/cloudflare-tunnel/) for a no-open-ports setup via Cloudflare Tunnel, or deploy to Railway — see [Quick Start](#quick-start) below.
 
-Register the relay in [asterism](docs/adr/0022-asterism-authorization-server.md) as a resource server; asterism handles sign-in and accounts. Migrations apply automatically on every start.
+Register the relay in [asterism](https://github.com/Mahasamuha/asterism-proxy) as a resource server; asterism handles sign-in and accounts. See [Running asterism](docs/configuration.md#running-asterism) and the [operator runbook](docs/configuration.md#operator-runbook-configure-asterism-before-users-connect). Migrations apply automatically on every start.
 
 ### Client (node)
 
@@ -58,7 +62,7 @@ A system tray GUI is also available for desktop machines — see [GitHub Release
 
 ## Quick Start
 
-The fastest path is Railway: deploy a relay with one click, install the node binary on your machines, and add the relay URL to your MCP client. No DNS and no reverse proxy; you need an asterism instance for sign-in.
+The fastest path is Railway: deploy a relay with one click, install the node binary on your machines, and add the relay URL to your MCP client. No DNS and no reverse proxy; you need an [asterism](https://github.com/Mahasamuha/asterism-proxy) instance for sign-in, hosted separately (for example with its Docker image, `mahasamuha/asterism-proxy`).
 
 ```bash
 # 1. Deploy relay to Railway
@@ -73,8 +77,9 @@ The fastest path is Railway: deploy a relay with one click, install the node bin
 #    - Deploy — railway.toml is detected automatically
 
 # 2. In asterism, register the relay as a resource server, release the groups, email
-#    and constellation_username claims, restrict the admin scope to the
-#    constellation-admins group, and add admins to it. See docs/configuration.md.
+#    and constellation_username claims, and restrict the admin scope to the
+#    constellation-admins group. Add admins to that group in your identity
+#    provider. See docs/configuration.md.
 
 # 3. Initialize the node on each machine you want to expose
 constellation node init --relay https://<your-app>.up.railway.app
@@ -100,7 +105,7 @@ Running self-hosted in production? See [docs/operations.md](docs/operations.md) 
 | Variable | Description | Default |
 |---|---|---|
 | `RELAY_URL` | Public base URL of the relay, no trailing slash | — |
-| `ASTERISM_ISSUER` | Issuer URL of the asterism authorization server (`https:`) | — |
+| `ASTERISM_ISSUER` | Issuer URL of the [asterism](https://github.com/Mahasamuha/asterism-proxy) authorization server (`https:`) | — |
 | `DATABASE_URL` | PostgreSQL connection string | — |
 | `TRUST_PROXY` | Trusted reverse proxy IPs/CIDRs (e.g. `127.0.0.1`) | — |
 | `TRUST_PROXY_PRESET` | Shorthand: `railway`, `fly`, or `cloudflare-tunnel` (overrides `TRUST_PROXY`) | — |

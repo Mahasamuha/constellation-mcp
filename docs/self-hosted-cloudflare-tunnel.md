@@ -10,6 +10,7 @@ Run a Constellation relay on your own machine with a stable public HTTPS URL —
 
 - Docker and Docker Compose installed
 - A free [Cloudflare account](https://dash.cloudflare.com/sign-up)
+- An [asterism](https://github.com/Mahasamuha/asterism-proxy) authorization server for sign-in, either one you already run or the one bundled in this compose project ([below](#optional-run-asterism-in-the-same-compose-project)), plus an OIDC identity provider such as Authentik if you need admins, hubs or group-based access (see [Running asterism](configuration.md#running-asterism))
 - ~10 minutes
 
 ## Setup
@@ -49,11 +50,25 @@ Fill in the required values:
 RELAY_URL=https://relay.example.com      # your tunnel URL from step 2
 CLOUDFLARE_TUNNEL_TOKEN=<paste token>    # from step 1
 POSTGRES_PASSWORD=<replace with a strong password>   # .env.example ships a placeholder — change it
-ASTERISM_ISSUER=https://auth.example.com # your asterism instance (https)
+ASTERISM_ISSUER=https://auth.example.com # your asterism instance (https, its own hostname)
 TRUST_PROXY_PRESET=cloudflare-tunnel     # already set in .env.example
 ```
 
 `DATABASE_URL` isn't set directly — `docker-compose.yml` builds it from `POSTGRES_USER`, `POSTGRES_PASSWORD`, and `POSTGRES_DB`. Make sure `POSTGRES_PASSWORD` is changed from the `.env.example` placeholder before going further.
+
+### Optional: run asterism in the same compose project
+
+Skip this if you already run asterism elsewhere.
+
+1. In the tunnel's **Public Hostname** tab, add a second route for asterism: the host of `ASTERISM_ISSUER` (e.g. `auth.example.com`), service type `HTTP`, URL `asterism-proxy:3000`. asterism publishes no host port; cloudflared reaches it over the compose network.
+2. In `.env`, uncomment `COMPOSE_PROFILES=asterism`.
+3. Copy and fill in asterism's settings:
+
+   ```bash
+   cp asterism.env.example asterism.env
+   ```
+
+   Set `COOKIE_SECRET` (`openssl rand -hex 32`), change the database password in both `POSTGRES_PASSWORD` and `DATABASE_URL`, and configure your identity provider (`OIDC_ISSUER`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`). Leave `TRUST_PROXY=1`. asterism's issuer is taken from `ASTERISM_ISSUER` in `.env`.
 
 ### 4. Start the relay
 
@@ -61,11 +76,20 @@ TRUST_PROXY_PRESET=cloudflare-tunnel     # already set in .env.example
 docker compose up -d
 ```
 
-This starts three containers: `postgres`, `relay`, and `cloudflared`.
+This starts three containers: `postgres`, `relay`, and `cloudflared`, plus `asterism-proxy` and `asterism-postgres` with the `asterism` profile.
 
 ### 5. Register the relay in asterism
 
-In asterism, register the relay as a resource server using your tunnel URL. asterism fetches the relay's metadata at `https://relay.example.com/.well-known/oauth-protected-resource/mcp`, which declares the `relay` scope and the step-up-only `admin` scope. Add the people who should administer the relay to asterism's `constellation-admins` group. Accounts are created and managed in asterism.
+Register the relay as a resource server using your tunnel URL, release the claims Constellation uses and restrict the `admin` scope, before anyone connects. With the bundled asterism, run from this directory:
+
+```bash
+docker compose exec asterism-proxy asterism-cli resource-server approve https://relay.example.com/mcp \
+  --name Constellation --release-claims groups,email,constellation_username
+docker compose exec asterism-proxy asterism-cli resource-server policy https://relay.example.com/mcp admin \
+  --short-lived --require-groups constellation-admins
+```
+
+asterism fetches the relay's metadata at `https://relay.example.com/.well-known/oauth-protected-resource/mcp`, which declares the `relay` scope and the fresh-sign-in-only `admin` and `register` scopes. Add the people who should administer the relay to the `constellation-admins` group in your identity provider; asterism copies groups from there. Read the warnings in the [operator runbook](configuration.md#operator-runbook-configure-asterism-before-users-connect) before going further.
 
 ## Updating
 
