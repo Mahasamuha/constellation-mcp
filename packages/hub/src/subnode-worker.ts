@@ -89,6 +89,10 @@ let shuttingDown = false;
 let inFlight = 0;
 
 function send(msg: SubnodeReady | SubnodeResponse): void {
+  // After the hub disconnects, process.send() emits an unhandled "error" on
+  // process (ERR_IPC_CHANNEL_CLOSED), which would crash a worker that is
+  // finishing in-flight work. Nobody is listening for the response anyway.
+  if (!process.connected) return;
   process.send!(msg);
 }
 

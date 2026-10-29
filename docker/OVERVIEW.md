@@ -13,7 +13,7 @@ Nodes connect outbound to the relay over WebSocket — no inbound ports required
 ```yaml
 services:
   relay:
-    image: mahasamuha/constellation-relay:2.0.0
+    image: mahasamuha/constellation-relay:2.0.1
     ports:
       - "3000:3000"
     environment:

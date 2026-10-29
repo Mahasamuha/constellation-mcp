@@ -28,6 +28,14 @@ class FakeChild extends EventEmitter {
    * succeeds, matching real OS signal semantics where SIGKILL can't be caught.
    */
   ignoreSigterm = false;
+  /**
+   * Simulates a worker that has setuid()'d to another account: every signal
+   * fails with EPERM, reported the way Node's ChildProcess.kill() does it — a
+   * synchronous "error" event and a false return, not a throw.
+   */
+  signalsDenied = false;
+  connected = true;
+  disconnectCalls = 0;
   /** The most recent "init" message sent to this worker — lets tests assert what
    * SubnodePool actually threads through (e.g. max_file_size_kb from HubConfig). */
   lastInit: Record<string, unknown> | null = null;
@@ -64,7 +72,24 @@ class FakeChild extends EventEmitter {
     return this.requests.has(requestId);
   }
 
+  /** Mirrors the real worker: an IPC disconnect makes it exit cleanly, unless wedged. */
+  disconnect(): void {
+    this.disconnectCalls++;
+    this.connected = false;
+    if (this.ignoreSigterm) return;
+    queueMicrotask(() => {
+      if (this.exited) return;
+      this.exitCode = 0;
+      this.exited = true;
+      this.emit("exit", this.exitCode, null);
+    });
+  }
+
   kill(signal?: string): boolean {
+    if (this.signalsDenied && !this.exited) {
+      this.emit("error", Object.assign(new Error("kill EPERM"), { code: "EPERM", errno: -1, syscall: "kill" }));
+      return false;
+    }
     this.killed = true;
     if (this.exited) return true;
     if (signal === "SIGTERM" && this.ignoreSigterm) return true;
@@ -541,6 +566,62 @@ describe("SubnodePool.dispatch", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("stops a worker it cannot signal (EPERM) by closing its IPC channel, without an error loop", async () => {
+    const pool = new SubnodePool(makeConfig({ subnode_rpc_timeout_seconds: 1 }), {});
+
+    const d1 = pool.dispatch(identity, "list_directory", "docs", {}, "req-1", []);
+    await waitUntil(() => forkedChildren[0]?.hasPending("req-1") ?? false);
+    const child = forkedChildren[0]!;
+    child.signalsDenied = true;
+    const errorListener = vi.fn();
+    child.on("error", errorListener);
+
+    // RPC timeout removes the worker: SIGTERM fails with EPERM, the disconnect
+    // makes it exit. Before the fix, the EPERM "error" re-entered removeWorker
+    // and re-sent SIGTERM until the stack overflowed.
+    const r1 = await d1;
+    expect(isDispatchError(r1)).toBe(true);
+    expect((r1 as { kind: string }).kind).toBe("timeout");
+    await waitUntil(() => child.exited);
+
+    expect(child.disconnectCalls).toBe(1);
+    expect(errorListener).toHaveBeenCalledTimes(1);
+    expect(child.exitCode).toBe(0);
+
+    // The next dispatch spawns a fresh worker.
+    const d2 = pool.dispatch(identity, "list_directory", "docs", {}, "req-2", []);
+    await waitUntil(() => forkedChildren.length === 2 && forkedChildren[1]!.hasPending("req-2"));
+    forkedChildren[1]!.respond("req-2");
+    expect(isDispatchError(await d2)).toBe(false);
+
+    await pool.shutdown(0);
+  });
+
+  it("does not treat an EPERM from kill() as a worker failure", async () => {
+    const pool = new SubnodePool(makeConfig(), {});
+
+    const d1 = pool.dispatch(identity, "list_directory", "docs", {}, "req-1", []);
+    await waitUntil(() => forkedChildren[0]?.hasPending("req-1") ?? false);
+    forkedChildren[0]!.respond("req-1");
+    await d1;
+
+    const child = forkedChildren[0]!;
+    child.signalsDenied = true;
+    child.ignoreSigterm = true; // stays alive, so a later exit can't mask a removal
+    child.kill("SIGTERM");
+
+    // EPERM is ignored by the pool: the worker is still pooled and serves the next request.
+    const d2 = pool.dispatch(identity, "list_directory", "docs", {}, "req-2", []);
+    await waitUntil(() => child.hasPending("req-2"));
+    child.respond("req-2");
+    expect(isDispatchError(await d2)).toBe(false);
+    expect(forkedChildren.length).toBe(1);
+
+    child.signalsDenied = false;
+    child.ignoreSigterm = false;
+    await pool.shutdown(0);
   });
 
   describe("max_concurrent_subnodes", () => {
