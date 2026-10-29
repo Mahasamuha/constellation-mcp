@@ -17,7 +17,7 @@
 |---|---|
 | `DATABASE_URL` | PostgreSQL connection string (e.g. `postgresql://user:pass@localhost:5432/constellation`) |
 | `RELAY_URL` | Public origin of the relay — scheme and host (and port, if non-default) only; no path or trailing slash (e.g. `https://relay.example.com`). Must be `https:`; `http:` is accepted only on a loopback host (`localhost`, `127.0.0.1`, `[::1]`). The relay refuses to start otherwise: a trailing slash, uppercase host, or explicit default port (e.g. `:443`) all fail the check. Used to construct the discovery and client metadata documents, and it sets the token audience (`${RELAY_URL}/mcp`) — must be the URL MCP clients can reach. Sub-path deployments are not supported. |
-| `ASTERISM_ISSUER` | Issuer URL of the [asterism](adr/0022-asterism-authorization-server.md) authorization server, exactly as asterism publishes it. Must be `https:` (`http:` is accepted on a loopback host for development). Access tokens must carry this `iss`. The relay refuses to start if it is unset or invalid. |
+| `ASTERISM_ISSUER` | Issuer URL of the [asterism](https://github.com/Mahasamuha/asterism-proxy) authorization server ([Running asterism](#running-asterism)), exactly as asterism publishes it. Must be `https:` (`http:` is accepted on a loopback host for development). Access tokens must carry this `iss`. The relay refuses to start if it is unset or invalid. |
 | `TRUST_PROXY` | Comma-separated list of trusted reverse proxy IP addresses or CIDR ranges. Required unless `TRUST_PROXY_PRESET` is set. Must not be a number or boolean — use explicit IPs/CIDRs. Example: `127.0.0.1` |
 | `TRUST_PROXY_PRESET` | Shorthand alternative to `TRUST_PROXY`. Accepted values: `railway`, `fly`, `cloudflare-tunnel`. Overrides `TRUST_PROXY` if both are set. |
 
@@ -25,20 +25,30 @@ Exactly one of `TRUST_PROXY` or `TRUST_PROXY_PRESET` must be set. The relay refu
 
 ### Authorization (asterism)
 
-The relay is an OAuth resource server. [asterism](adr/0022-asterism-authorization-server.md) is the authorization server: it owns sign-in, local accounts, groups, consent, grants and revocation, and it issues the JWT access tokens the relay verifies. There is no `AUTH_MODE`, no OIDC client configuration and no setup wizard in the relay.
+The relay is an OAuth resource server. [asterism](https://github.com/Mahasamuha/asterism-proxy) is the authorization server ([ADR 0022](adr/0022-asterism-authorization-server.md)): it owns sign-in, local accounts, groups, consent, grants and revocation, and it issues the JWT access tokens the relay verifies. There is no `AUTH_MODE`, no OIDC client configuration and no setup wizard in the relay.
 
 To connect a relay to asterism:
 
-1. Set `ASTERISM_ISSUER` and `RELAY_URL` on the relay.
-2. Register the relay in asterism as a resource server. asterism fetches the relay's RFC 9728 metadata at `${RELAY_URL}/.well-known/oauth-protected-resource/mcp`, which declares the `relay` scope and the fresh-sign-in-only `admin` and `register` scopes. The token audience is `${RELAY_URL}/mcp`.
-3. Create the `constellation-admins` group in asterism and add the people who should administer the relay.
-4. Set the released claims and the `admin` scope policy (below), before any user connects.
+1. Run asterism (see [Running asterism](#running-asterism)) and connect it to your identity provider.
+2. Set `ASTERISM_ISSUER` and `RELAY_URL` on the relay.
+3. Register the relay in asterism as a resource server. asterism fetches the relay's RFC 9728 metadata at `${RELAY_URL}/.well-known/oauth-protected-resource/mcp`, which declares the `relay` scope and the fresh-sign-in-only `admin` and `register` scopes. The token audience is `${RELAY_URL}/mcp`.
+4. Create the `constellation-admins` group in your identity provider (asterism has no groups of its own; it copies them from the provider) and add the people who should administer the relay.
+5. Set the released claims and the `admin` scope policy (below), before any user connects.
+
+#### Running asterism
+
+asterism is a separate project: [Mahasamuha/asterism-proxy](https://github.com/Mahasamuha/asterism-proxy), published as the Docker image `mahasamuha/asterism-proxy`. It needs its own PostgreSQL database and its own public HTTPS hostname (`ASTERISM_ISSUER` is a bare origin such as `https://auth.example.com`, so it cannot share the relay's). Its settings are documented in that repo's `.env.example` and `docs/deployment.md`.
+
+- **Bundled with the relay.** `docker/standard/` and `docker/cloudflare-tunnel/` include an optional `asterism-proxy` service with its own Postgres, enabled by the `asterism` compose profile. Set `COMPOSE_PROFILES=asterism` in `.env`, copy `asterism.env.example` to `asterism.env` and fill it in, then `docker compose up -d`. asterism's `ISSUER_URL` is taken from the relay's `ASTERISM_ISSUER`, so they always match. Its other settings stay in `asterism.env`, which the relay never reads, and its database sits on a network the relay is not attached to. In `docker/standard/` asterism listens on `127.0.0.1:4000`: point your reverse proxy's asterism hostname there. For the tunnel, see [Self-hosted with Cloudflare Tunnel](self-hosted-cloudflare-tunnel.md#optional-run-asterism-in-the-same-compose-project).
+- **Elsewhere.** Run it from its own repo or image (for example its compose file on another host) and set `ASTERISM_ISSUER` to its issuer URL. Railway deployments need asterism hosted separately.
+
+**Use an OIDC identity provider.** asterism can federate to a provider such as Authentik (`ENABLE_OIDC`) or keep its own local accounts (`ENABLE_LOCAL_ACCOUNTS`). Local accounts carry no groups and no released claims. A local-account user can register nodes and use MCP clients, but can never be a Constellation admin (so cannot register a hub or use admin endpoints), gets no group-based share access and has no `constellation_username` for a hub (only the hub's `identity.user_map` by `sub`). Run asterism with OIDC if you need any of those.
 
 **Admin** means the access token holds the `admin` scope **and** its `groups` claim contains `ADMIN_GROUP` (default `constellation-admins`). asterism issues the scope only after a fresh sign-in (a `403 insufficient_scope` from the relay), good for 5 minutes. The relay checks the group itself, so admin never depends on the asterism scope policy having been set. A stale `groups` claim can only deny admin, never grant it, because the scope is required too. An account with the scope but not the group gets a plain `403` (no step-up challenge, since stepping up cannot help). It gates `GET /api/admin/hub-shares`, `GET /api/admin/activity` and hub registration. There is no stored role and no admin bootstrap token.
 
 #### Operator runbook: configure asterism before users connect
 
-Run these in asterism (`<relay-url>` is `RELAY_URL`; the resource server identifier is `<relay-url>/mcp`):
+Run these in asterism (`<relay-url>` is `RELAY_URL`; the resource server identifier is `<relay-url>/mcp`). Run them from the directory of the compose project that runs asterism: the relay's `docker/standard/` or `docker/cloudflare-tunnel/` for the bundled service, otherwise asterism's own. Outside compose, run `asterism-cli` in the asterism container:
 
 ```sh
 docker compose exec asterism-proxy asterism-cli resource-server approve <relay-url>/mcp \

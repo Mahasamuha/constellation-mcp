@@ -69,8 +69,13 @@ which before you decide how aggressively to back it up:
   `relay_path_filters` rows. If lost, they're gone; there's no node- or
   hub-side copy to fall back on. If you rely on filters for anything
   important, make sure your backup cadence reflects that.
-- **Accounts, groups and admin membership** — these live in asterism, not
-  the relay. Back up asterism's own database. The relay's `users` table holds
+- **Accounts, groups and admin membership** — these live in asterism (and
+  groups in its identity provider), not the relay. Back up asterism's own
+  database. With the bundled `asterism` compose profile that is the
+  `asterism-postgres` service, a separate database from the relay's:
+  `docker compose exec asterism-postgres sh -c 'pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB"' | gzip > "asterism-$(date +%F).sql.gz"`.
+  It also holds asterism's signing keys, so keep that dump as private as the
+  keys themselves. The relay's `users` table holds
   only ids; a lost row is recreated the next time that user's token is seen,
   but their executors, shares and filters are gone with the backup gap.
 - **Activity log** — historical audit data only; losing it has no functional
@@ -135,6 +140,12 @@ schema change, taking a fresh backup immediately before pulling a new image
 is cheap insurance, particularly across a large version jump; check the
 relay's changelog/migration history for that range if you're skipping
 several releases at once.
+
+The bundled asterism (the `asterism` compose profile) is pinned separately, as
+`image: mahasamuha/asterism-proxy:<tag>` in the same file. Bump it the same way;
+asterism applies its own migrations on start. Read asterism's
+`docs/deployment.md` for upgrade notes first: some of its upgrades need
+operator steps, such as approving resource servers again.
 
 Upgrade notes for the move to asterism as the authorization server
 ([ADR 0022](adr/0022-asterism-authorization-server.md)):

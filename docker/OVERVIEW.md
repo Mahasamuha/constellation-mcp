@@ -6,7 +6,7 @@ The relay component of [Constellation](https://github.com/Mahasamuha/constellati
 MCP client → relay (VPS / Railway / Fly) → node (your machine)
 ```
 
-Nodes connect outbound to the relay over WebSocket — no inbound ports required on the machines you expose. The relay verifies OAuth 2.1 access tokens issued by asterism (an external authorization server) and routes tool calls to the appropriate node.
+Nodes connect outbound to the relay over WebSocket — no inbound ports required on the machines you expose. The relay verifies OAuth 2.1 access tokens issued by [asterism](https://github.com/Mahasamuha/asterism-proxy) (an external authorization server, image [`mahasamuha/asterism-proxy`](https://hub.docker.com/r/mahasamuha/asterism-proxy)) and routes tool calls to the appropriate node.
 
 ## Quick Start
 
@@ -37,7 +37,7 @@ volumes:
   pgdata:
 ```
 
-Pre-configured Compose files for standard and Cloudflare Tunnel deployments are in the [GitHub repo](https://github.com/Mahasamuha/constellation-mcp/tree/main/docker).
+Pre-configured Compose files for standard and Cloudflare Tunnel deployments are in the [GitHub repo](https://github.com/Mahasamuha/constellation-mcp/tree/main/docker). Both can also run asterism alongside the relay through the optional `asterism` profile; see [Running asterism](https://github.com/Mahasamuha/constellation-mcp/blob/main/docs/configuration.md#running-asterism).
 
 ## Environment Variables
 
@@ -54,7 +54,7 @@ Pre-configured Compose files for standard and Cloudflare Tunnel deployments are 
 | Variable | Description |
 |---|---|
 | `ADMIN_GROUP` | Group an account must be in, besides holding the `admin` scope, to administer the relay (default `constellation-admins`). |
-| `ASTERISM_ISSUER` | Issuer URL of your [asterism](https://github.com/Mahasamuha/constellation-mcp/blob/main/docs/adr/0022-asterism-authorization-server.md) authorization server (`https:`). asterism handles sign-in and accounts; register the relay in asterism as a resource server. |
+| `ASTERISM_ISSUER` | Issuer URL of your [asterism](https://github.com/Mahasamuha/asterism-proxy) authorization server (`https:`, its own hostname). asterism handles sign-in and accounts; register the relay in asterism as a resource server. |
 
 ### Common Optional Variables
 
@@ -69,7 +69,7 @@ Full variable reference: [docs/configuration.md](https://github.com/Mahasamuha/c
 
 ## First Run
 
-Database migrations apply automatically on every start. Register the relay in asterism as a resource server and add administrators to its `constellation-admins` group; there is no setup wizard.
+Database migrations apply automatically on every start. Register the relay in asterism as a resource server and add administrators to the `constellation-admins` group in the identity provider asterism federates to (asterism's local accounts have no groups); there is no setup wizard. See the [operator runbook](https://github.com/Mahasamuha/constellation-mcp/blob/main/docs/configuration.md#operator-runbook-configure-asterism-before-users-connect).
 
 ## Node Setup
 
