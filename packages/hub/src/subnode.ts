@@ -57,6 +57,9 @@ interface Worker {
    *  freshly-resolved identity it no longer matches. */
   uid: number;
   gid: number;
+  /** Set once removeWorker has run, so a second call (from the exit or error
+   *  handler, or from a kill() error raised inside the first call) is a no-op. */
+  removed: boolean;
 }
 
 interface QueuedRequest {
@@ -448,6 +451,7 @@ export class SubnodePool {
       tier,
       uid,
       gid,
+      removed: false,
     };
 
     this.wireChildHandlers(subnode, worker);
@@ -643,6 +647,13 @@ export class SubnodePool {
     });
 
     child.on("error", (err) => {
+      // kill() reports EPERM as an "error" event, not a throw. It is expected once
+      // the worker has setuid()'d to another account; terminateChild already
+      // closed the IPC channel, which is how that worker gets told to exit.
+      if ((err as NodeJS.ErrnoException).syscall === "kill" && (err as NodeJS.ErrnoException).code === "EPERM") {
+        log.debug({ username }, "Cannot signal subnode worker running as another user (EPERM)");
+        return;
+      }
       log.error({ err, username }, "Subnode worker process error");
       this.removeWorker(subnode, worker, (err as Error).message);
     });
@@ -650,14 +661,15 @@ export class SubnodePool {
 
   /**
    * Removes a worker from its subnode, kills the process, and rejects any
-   * in-flight requests. Closures capture worker/subnode directly, so an async
-   * exit event for an already-removed worker is a harmless no-op (indexOf
-   * returns -1, splice does nothing).
+   * in-flight requests. Runs at most once per worker: a later exit or error
+   * event for an already-removed worker returns immediately.
    *
    * If the last worker is removed and the queue is non-empty, those requests
    * are rejected — the next dispatch from this user will spawn a fresh subnode.
    */
   private removeWorker(subnode: Subnode, worker: Worker, reason: string): void {
+    if (worker.removed) return;
+    worker.removed = true;
     const idx = subnode.workers.indexOf(worker);
     if (idx !== -1) subnode.workers.splice(idx, 1);
     this.clearIdleTimer(worker);
@@ -691,13 +703,22 @@ export class SubnodePool {
   }
 
   /**
-   * Sends SIGTERM, then escalates to SIGKILL if the process hasn't exited
-   * within FORCE_KILL_GRACE_MS. The worker is expected to exit on its own
-   * well within that window (see SHUTDOWN_GRACE_MS in subnode-worker.ts) —
-   * this is the backstop for a worker that never gets the chance to (killed
-   * before its handler installs) or is too wedged to honor its own timers.
+   * Closes the IPC channel and sends SIGTERM, then escalates to SIGKILL if the
+   * process hasn't exited within FORCE_KILL_GRACE_MS.
+   *
+   * The disconnect is what actually stops a worker that has dropped privileges:
+   * setuid() moves its real, effective and saved uid to the target user, and
+   * without CAP_KILL the hub can no longer signal it (kill() fails with EPERM).
+   * The worker treats disconnect like SIGTERM (see SHUTDOWN_GRACE_MS in
+   * subnode-worker.ts). The signals still reach a worker that hasn't dropped
+   * privileges yet, or one running as the hub's own account. A worker that has
+   * dropped privileges and is too wedged to run its disconnect handler can't be
+   * killed from here; it goes when the service stops (systemd kills the cgroup).
    */
   private terminateChild(child: ChildProcess, reason: string): void {
+    if (child.connected) {
+      try { child.disconnect(); } catch { /* already disconnected */ }
+    }
     try { child.kill("SIGTERM"); } catch { /* already dead */ }
     setTimeout(() => {
       if (child.exitCode === null && child.signalCode === null) {
